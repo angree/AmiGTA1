@@ -13,12 +13,13 @@
  * the question left for the Amiga is not "does it look right" but "is it fast
  * enough, and does it survive a 68020 without an FPU".
  *
- * Everything it needs is in Work: - GTADATA/ is deployed there by
- * tools/bin/deploy.sh. It writes only to stdout, which Work:run redirects to
- * Work:gta.log, because the boot volume is mounted read-only.
+ * Everything it needs is in its OWN drawer, PROGDIR: - GTADATA/ sits beside
+ * the executable and tools/bin/deploy.sh puts it there. It writes only to
+ * stdout, which the `run` script redirects to a log beside it, because the
+ * boot volume is mounted read-only.
  *
  * Controls: arrow keys scroll, shift scrolls faster, - and = (or keypad - and
- * +) zoom out and in, SPACE dumps the current frame to Work:frame_live.raw,
+ * +) zoom out and in, SPACE dumps the current frame to frame_live.raw,
  * ESC quits. F3 shows or hides the Workbench title bar - it is on by default,
  * because this is an Amiga port and the screen's depth gadget is how the
  * machine gets multitasked in and out of the game.
@@ -44,13 +45,15 @@
  * 320x200 is what an AGA screen gives and what every measurement in
  * the notes was taken at. RTG can do better, and a tester should get the
  * screen they were handed a binary for without having to write a text file
- * into Work: - so the three shipped builds differ here and nowhere else.
+ * into the game drawer - so the three shipped builds differ here and
+ * nowhere else.
  *
  *   gta-aga        320x200, AGA          the reference, unchanged
  *   gta-rtg240     320x240, RTG          the same picture, more of the city
  *   gta-rtg480     640x480, RTG          320x240 doubled; see GTA_SCALE2X
  *
- * `Work:backend.txt` still overrides the backend at runtime, so a single
+ * `backend.txt` beside the binary still overrides the backend at runtime,
+ * so a single
  * binary can still be pointed at either screen for an A/B measurement. */
 #ifndef GTA_SCREEN_W
 #define GTA_SCREEN_W 320
@@ -79,8 +82,25 @@
 #define SCREEN_W RENDER_W
 #define SCREEN_H RENDER_H
 
-#define TILES_PATH "Work:GTADATA/style001.til"
-#define MAP_PATH   "Work:GTADATA/nyc.cmp"
+/* EVERY PATH THIS PROGRAM OPENS IS RELATIVE TO ITS OWN DRAWER.
+ *
+ * `PROGDIR:` is the automatic assign AmigaOS makes for the directory the
+ * running executable was loaded from - it is set for a Workbench double-click
+ * and for a CLI start alike, and it needs no assign from the player.
+ *
+ * It used to be `Work:`, which is not a place - it is whatever the machine
+ * happens to have assigned, usually the boot partition's work drawer. So a
+ * player who unpacked the archive to DH1:Games/AmiGTA got "cannot open
+ * Work:GTADATA/..." and the v0.0.1 README had to tell them to assign Work:
+ * to the game drawer, which is asking the player to work around a bug.
+ * Reported from the outside: people were asking what the work directory is.
+ *
+ * Anything reading or writing a file goes through this, so there is one place
+ * to change and nowhere for a nineteenth hard-coded `Work:` to hide. */
+#define GTA_DIR    "PROGDIR:"
+
+#define TILES_PATH GTA_DIR "GTADATA/style001.til"
+#define MAP_PATH   GTA_DIR "GTADATA/nyc.cmp"
 
 /* Amiga raw key codes. These are the codes the keyboard sends, not ASCII, and
  * amigagfx_poll() passes every one of them through with bit 7 set on release
@@ -186,7 +206,7 @@
  * played a slow game. Costs nothing where it is not needed: on the 020 test
  * machine catchup 2 and catchup 8 both measured 29.3 fps, back to back.
  *
- * `catchup <n>` in Work:opts.txt sets it for a measurement without a rebuild. */
+ * `catchup <n>` in opts.txt sets it for a measurement without a rebuild. */
 #define MAX_CATCHUP  3
 
 /* The frame cap. Without one the loop renders as fast as the machine allows,
@@ -276,9 +296,10 @@ static unsigned long prof_sim_us, prof_ren_us, prof_pre_us, prof_c2p_us;
 static long prof_ticks, prof_frames;
 static unsigned long prof_t0;
 
-/* A/B SWITCHES READ FROM Work:opts.txt, one `word value` per line.
+/* A/B SWITCHES READ FROM opts.txt beside the binary, one `word value` per
+ * line.
  *
- * Same idea as Work:backend.txt: the emulator runs unattended, so a comparison
+ * Same idea as backend.txt: the emulator runs unattended, so a comparison
  * has to be selectable without a rebuild, and two binaries built at different
  * moments are not comparable.
  *
@@ -291,7 +312,7 @@ static unsigned long prof_t0;
 /* The reservation overlay is DEACTIVATED by default since 2026-08-26 - the
  * developer's call once traffic was accepted ("zdezaktywuj je, nie wywalaj
  * bo moze jeszcze sie przydadza"). The code stays; `overlay 1` in
- * Work:opts.txt brings it back for the next traffic investigation. */
+ * opts.txt brings it back for the next traffic investigation. */
 static int opt_overlay = 0;
 static int opt_traffic = 1;
 static int opt_fleet   = -1;
@@ -313,14 +334,14 @@ static int opt_camh    = 0;
 static gta_traffic traffic;
 static gta_peds peds;
 
-/* THE SELF-DRIVING TEST - Work:autodrive.txt, read once at startup.
+/* THE SELF-DRIVING TEST - autodrive.txt beside the binary, read at startup.
  * Host input synthesis is banned, so this is how an agent verifies that
  * entering a car and driving it works at all: the file is a queue of
  * orders the interactive tick consumes in place of the keyboard.
  *     wait <ticks>                    do nothing (let the fleet spawn)
  *     enter                           press RETURN once
  *     run <ticks> <thr> <brk> <steer> <hb>
- *     dump                            write Work:frame_live.raw
+ *     dump                            write frame_live.raw
  * Missing file means no script - the keyboard is live as always. */
 #define AUTODRIVE_MAX 64
 static struct { int op, t, thr, brk, st, hb; } adq[AUTODRIVE_MAX];
@@ -353,7 +374,7 @@ static gta_nav nav;
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.0.1"
+#define GTA_VERSION "v0.0.2"
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
 
 #ifdef GTA_SCALE2X
@@ -770,7 +791,7 @@ static void present_frame(gta_view *v, const gta_player *pl, int with_player)
 }
 
 
-/* Write the chunky buffer and its palette to Work:frame.raw so the host can
+/* Write the chunky buffer and its palette to frame.raw so the host can
  * look at exactly what the 68020 drew.
  *
  * This exists because PrintWindow screenshots of the WinUAE window come back
@@ -860,7 +881,7 @@ static int scan_int(const char **p, int *out)
     return 1;
 }
 
-/* Replay a scripted camera path from Work:autoinput.txt.
+/* Replay a scripted camera path from autoinput.txt beside the binary.
  *
  * Driving the game from INSIDE the guest is this project's rule, not a
  * convenience: synthesising mouse or keyboard events on the host is banned
@@ -877,7 +898,7 @@ static int autoinput_run(gta_view *v, int w, int h,
                          unsigned char *chunky, int pitch,
                          const unsigned char *palette)
 {
-    FILE *f = fopen("Work:autoinput.txt", "r");
+    FILE *f = fopen(GTA_DIR "autoinput.txt", "r");
     char line[128];
     int total = 0;
     int leg = 0;
@@ -914,7 +935,7 @@ static int autoinput_run(gta_view *v, int w, int h,
          * the artefacts that spot happens to have. */
         if (leg < 99) {
             char path[64];
-            snprintf(path, sizeof path, "Work:tour%02d.raw", leg);
+            snprintf(path, sizeof path, GTA_DIR "tour%02d.raw", leg);
             dump_frame(path, chunky, pitch, w, h, palette);
             leg++;
         }
@@ -923,11 +944,11 @@ static int autoinput_run(gta_view *v, int w, int h,
     return total;
 }
 
-/* Replay a scripted WALK from Work:autowalk.txt.
+/* Replay a scripted WALK from autowalk.txt beside the binary.
  *
  * Deliberately the same file format as the host harness (gtadump walk), so a
  * script that reproduces a problem on the PC can be dropped straight into
- * Work: and run on the 68020 without editing. One line per leg:
+ * the game drawer and run on the 68020 without editing. One line per leg:
  *
  *     start <bx> <by>
  *     turn forward walk ticks
@@ -939,7 +960,7 @@ static int autowalk_run(gta_view *v, gta_player *p, const gta_map *m,
                         int w, int h, unsigned char *chunky, int pitch,
                         const unsigned char *palette)
 {
-    FILE *f = fopen("Work:autowalk.txt", "r");
+    FILE *f = fopen(GTA_DIR "autowalk.txt", "r");
     char line[128];
     int total = 0, leg = 0;
 
@@ -1007,7 +1028,7 @@ static int autowalk_run(gta_view *v, gta_player *p, const gta_map *m,
 
         if (leg < 99) {
             char path[64];
-            snprintf(path, sizeof path, "Work:walk%02d.raw", leg);
+            snprintf(path, sizeof path, GTA_DIR "walk%02d.raw", leg);
             dump_frame(path, chunky, pitch, w, h, palette);
             leg++;
         }
@@ -1144,12 +1165,12 @@ int main(void)
      * The same binary has to run on the AGA machine and on the RTG one,
      * because the whole point of measuring RTG is to compare it against AGA -
      * and two binaries built at different moments are not comparable. Both
-     * WinUAE configs mount the same Work:, so the switch is a file, exactly
+     * WinUAE configs mount the same drawer, so the switch is a file, exactly
      * like autoinput.txt and autowalk.txt.
      *
      * Missing file means AGA, which is the target machine. */
     {
-        FILE *bf = fopen("Work:backend.txt", "r");
+        FILE *bf = fopen(GTA_DIR "backend.txt", "r");
         if (bf) {
             char word[16];
             if (fscanf(bf, "%15s", word) == 1) {
@@ -1168,7 +1189,7 @@ int main(void)
 
     /* The A/B switches, same shape as the backend file above. */
     {
-        FILE *of = fopen("Work:opts.txt", "r");
+        FILE *of = fopen(GTA_DIR "opts.txt", "r");
         if (of) {
             char word[16];
             long val;
@@ -1298,7 +1319,7 @@ int main(void)
     printf("gta: first frame - %ld columns, %ld lids, %ld walls\n",
            view.columns_visited, view.lids_drawn, view.walls_drawn);
     fflush(stdout);
-    dump_frame("Work:frame.raw", chunky, pitch, SCREEN_W, SCREEN_H,
+    dump_frame(GTA_DIR "frame.raw", chunky, pitch, SCREEN_W, SCREEN_H,
                tiles.palette);
 
     /* SELF-TEST OF THE F3 PATH, once, before anything depends on it.
@@ -1321,7 +1342,7 @@ int main(void)
         present_frame(&view, &player, 0);
         printf("gta: self-test passed - chunky %p pitch %d, bar %s\n",
                (void *)g_chunky, g_pitch, g_show_bar ? "ON" : "OFF");
-        dump_frame("Work:frame_bar.raw", g_chunky, g_pitch,
+        dump_frame(GTA_DIR "frame_bar.raw", g_chunky, g_pitch,
                    SCREEN_W, SCREEN_H, tiles.palette);
     } else {
         log_line("gta: self-test FAILED - the screen could not be reopened");
@@ -1583,7 +1604,7 @@ int main(void)
              * correctly is to look at the bytes c2p is about to consume. */
             {
                 char path[64];
-                snprintf(path, sizeof path, "Work:mode%d.raw", m);
+                snprintf(path, sizeof path, GTA_DIR "mode%d.raw", m);
                 dump_frame(path, chunky, pitch, SCREEN_W, SCREEN_H,
                            tiles.palette);
             }
@@ -1694,7 +1715,7 @@ int main(void)
                            view.columns_visited);
                     fflush(stdout);
 
-                    snprintf(path, sizeof path, "Work:w%d%s.raw",
+                    snprintf(path, sizeof path, GTA_DIR "w%d%s.raw",
                              render_w(), (si == 2) ? "h" : "");
                     dump_frame(path, chunky, pitch, SCREEN_W, SCREEN_H,
                                tiles.palette);
@@ -1721,7 +1742,7 @@ int main(void)
         printf("gta: autoinput drew %d frames, camera now at block (%ld,%ld)\n",
                frames, view.cam_x >> 21, view.cam_y >> 21);
         fflush(stdout);
-        dump_frame("Work:frame_end.raw", chunky, pitch, SCREEN_W, SCREEN_H,
+        dump_frame(GTA_DIR "frame_end.raw", chunky, pitch, SCREEN_W, SCREEN_H,
                    tiles.palette);
     }
 
@@ -1730,7 +1751,7 @@ int main(void)
      * and is drawn, without anybody pressing a key. Same file format as the
      * host harness (gtadump walk), so one script runs in both places. */
     {
-        FILE *adf = fopen("Work:autodrive.txt", "r");
+        FILE *adf = fopen(GTA_DIR "autodrive.txt", "r");
         if (adf) {
             char ln[96];
             while (adq_n < AUTODRIVE_MAX && fgets(ln, sizeof ln, adf)) {
@@ -1765,7 +1786,7 @@ int main(void)
                "layer %d\n", frames, player.x >> 21, player.y >> 21,
                player.layer);
         fflush(stdout);
-        dump_frame("Work:walk_end.raw", chunky, pitch, SCREEN_W, SCREEN_H,
+        dump_frame(GTA_DIR "walk_end.raw", chunky, pitch, SCREEN_W, SCREEN_H,
                    tiles.palette);
     }
 
@@ -1964,7 +1985,7 @@ int main(void)
                      * start. One keypress turns "there is a cut-out block over
                      * here" into a file that can be measured. */
                     if (!held) {
-                        dump_frame("Work:frame_live.raw", chunky, pitch,
+                        dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
                                    SCREEN_W, SCREEN_H, tiles.palette);
                         printf("gta: camera at block (%ld,%ld)\n",
                                view.cam_x >> 21, view.cam_y >> 21);
@@ -2041,7 +2062,7 @@ int main(void)
                         handbrake = adq[adq_i].hb;
                         break;
                     case 3:
-                        dump_frame("Work:frame_live.raw", chunky, pitch,
+                        dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
                                    SCREEN_W, SCREEN_H, tiles.palette);
                         break;
                     }
@@ -2478,11 +2499,11 @@ int main(void)
                  * so nobody can press it during an unattended run.
                  *
                  * This is the same dump on a timer, so the newest
-                 * Work:frame_live.raw is always the city as it looks NOW.
+                 * frame_live.raw is always the city as it looks NOW.
                  * Interactive only, so it cannot touch the benchmarks, and
                  * once every ten seconds so the write cannot matter. */
                 if ((sim_ticks % 500) == 0)
-                    dump_frame("Work:frame_live.raw", chunky, pitch,
+                    dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
                                SCREEN_W, SCREEN_H, tiles.palette);
             }
             /* `now` was read before any of the simulation ran, so this covers

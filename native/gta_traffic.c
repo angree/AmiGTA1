@@ -5844,6 +5844,16 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
 
             long was = *p;
 
+            /* A CAR STRAIGHTENING UP AFTER A KNOCK DRIFTS BACK, NOT DARTS.
+             * At the full 2 px a tick a car shunted half a lane out is back
+             * on its line in a third of a second, sliding sideways with no
+             * turn - the developer's "auta za szybko probuja wrocic na swoj
+             * tor". While the heading is still being walked back (recover),
+             * the slide runs at a quarter rate, so the way back takes about
+             * as long as the straightening does. */
+            if (c->recover > 0)
+                step >>= 2;
+
             if (c->lane_fix > 0) {
                 *p -= step;
                 if (*p < centre) *p = centre;
@@ -6202,10 +6212,23 @@ static void fleet_collide(gta_traffic *tr, gta_car *a, gta_car *b)
     am = ai->mass >> 16;  if (am < 1) am = 1;
     bm = bi->mass >> 16;  if (bm < 1) bm = 1;
 
-    /* Separate them first, by inverse mass, so the pair does not grind. */
+    /* Separate them first, by inverse mass, so the pair does not grind.
+     * Half the overlap beyond a pixel of slop per tick, same recipe and same
+     * reason as gta_traffic_ram(): all of it at once overshoots and the pair
+     * visibly jumps apart and back. */
     {
-        long sep = (depth << 2) / (am + bm);
-        long mvx = NRAM_MUL(sep * am, nx), mvy = NRAM_MUL(sep * am, ny);
+        long sep = depth > GTA_SEP_SLOP ? depth - GTA_SEP_SLOP : 0;
+        long mvx, mvy;
+        sep = (sep << 1) / (am + bm);
+        mvx = NRAM_MUL(sep * am, nx);
+        mvy = NRAM_MUL(sep * am, ny);
+        /* The excess beyond the band goes to the victim alone, in full -
+         * same three rules as gta_traffic_ram(). */
+        if (depth > GTA_SEP_DEEP) {
+            long extra = (depth - GTA_SEP_DEEP) << 2;
+            mvx += NRAM_MUL(extra, nx);
+            mvy += NRAM_MUL(extra, ny);
+        }
         if (mvx >  NRAM_MAXPUSH) mvx =  NRAM_MAXPUSH;
         if (mvx < -NRAM_MAXPUSH) mvx = -NRAM_MAXPUSH;
         if (mvy >  NRAM_MAXPUSH) mvy =  NRAM_MAXPUSH;
@@ -6214,6 +6237,11 @@ static void fleet_collide(gta_traffic *tr, gta_car *a, gta_car *b)
         a->x -= NRAM_MUL(sep * bm, nx);
         a->y -= NRAM_MUL(sep * bm, ny);
     }
+
+    /* ONE RESPONSE PER CONTACT - the original's `car+0x230` latch. The pair
+     * has been separated above; while the latch stands it pays nothing else. */
+    if (b->hit_latch)
+        return;
 
     /* The original's push: (striker's step + the vector striker->victim) times
      * the striker's mass, clamped, over 42. */
@@ -6261,6 +6289,7 @@ static void fleet_collide(gta_traffic *tr, gta_car *a, gta_car *b)
     if (b->speed < GTA_SPEED_UNIT)
         b->speed = 4 * GTA_SPEED_UNIT;
     b->knock = GTA_KNOCK_TICKS;
+    b->hit_latch = GTA_HIT_LATCH;       /* one response per contact */
     b->hold = GTA_HOLD_NONE;
 
     /* And the striker is halved, as the original halves the aggressor. */
@@ -6464,9 +6493,11 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
         long px = tr->cars[i].x, py = tr->cars[i].y;
         long mx, my;
 
-        /* The collision cool-down, run down once a tick per car. */
+        /* The collision cool-downs, run down once a tick per car. */
         if (tr->cars[i].ram_cool)
             tr->cars[i].ram_cool--;
+        if (tr->cars[i].hit_latch)
+            tr->cars[i].hit_latch--;
 
         drive_one(tr, m, i);
 
@@ -6729,18 +6760,44 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
          * to come apart even if they are drifting apart on their own. The
          * split is by inverse mass, so the bus moves a tenth of what the
          * saloon does. `depth` is Q14 px; NRAM_MUL takes a 16.16 magnitude
-         * against a Q14 unit axis and returns 16.16. */
-        sep = RCHK(depth << 2, "sep depth") / (pm + om);
-        mvx = NRAM_MUL(RCHK(sep * om, "sep*om"), nx);
-        mvy = NRAM_MUL(sep * om, ny);
+         * against a Q14 unit axis and returns 16.16.
+         *
+         * HOW MUCH, AND WHO PAYS IT - three rules, each one measured in
+         * (the hitcar REVERSALS counter is the developer's "teleportuje
+         * w te i we wte" as a number):
+         *
+         * 1. HALF the overlap beyond a pixel of slop, per tick. It was 100
+         *    percent with no slop, which is the textbook oscillator: undo
+         *    everything, the AI closes the gap, undo everything again.
+         * 2. EACH SIDE MOVES BY THE OTHER'S MASS SHARE. This was backwards
+         *    - the victim moved by its OWN mass, so a bus ramming a saloon
+         *    took 91 percent of the correction itself and was seen thrown
+         *    back. fleet_collide() always had it the right way round.
+         * 3. The EXCESS beyond GTA_SEP_DEEP goes to the VICTIM ALONE, in
+         *    full. A striker stepping 16 px in one tick opens more overlap
+         *    than a 50-percent split can clear (ramsweep read worst 13 px)
+         *    - but paying any of that excess on the striker's side is a
+         *    backwards jump of the player's own car, which is the jerk
+         *    this whole exercise removes. Shoving the excess into the
+         *    victim matches the original, whose response is a force on the
+         *    victim and never a displacement of the striker. */
+        sep = depth > GTA_SEP_SLOP ? depth - GTA_SEP_SLOP : 0;
+        sep = RCHK(sep << 1, "sep depth") / (pm + om);
+        mvx = NRAM_MUL(RCHK(sep * pm, "sep*pm"), nx);
+        mvy = NRAM_MUL(sep * pm, ny);
+        if (depth > GTA_SEP_DEEP) {
+            long extra = (depth - GTA_SEP_DEEP) << 2;   /* Q14 -> 16.16 */
+            mvx += NRAM_MUL(extra, nx);
+            mvy += NRAM_MUL(extra, ny);
+        }
         if (mvx > NRAM_MAXPUSH)  mvx = NRAM_MAXPUSH;
         if (mvx < -NRAM_MAXPUSH) mvx = -NRAM_MAXPUSH;
         if (mvy > NRAM_MAXPUSH)  mvy = NRAM_MAXPUSH;
         if (mvy < -NRAM_MAXPUSH) mvy = -NRAM_MAXPUSH;
         o->x += mvx;
         o->y += mvy;
-        *dpx -= NRAM_MUL(RCHK(sep * pm, "sep*pm"), nx);
-        *dpy -= NRAM_MUL(sep * pm, ny);
+        *dpx -= NRAM_MUL(RCHK(sep * om, "sep*om"), nx);
+        *dpy -= NRAM_MUL(sep * om, ny);
 
         /* Closing speed along that normal - the player's velocity less the
          * car's own along its face. Only a CLOSING pair exchanges an impulse;
@@ -6749,6 +6806,18 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
         vrel = RCHK((((pvx - ovx) >> 8) * nx) + (((pvy - ovy) >> 8) * ny),
                     "vrel") >> 6;
         if (vrel <= 0)
+            continue;
+
+        /* ONE RESPONSE PER CONTACT - the original's `car+0x230` latch
+         * - a car whose response is latched refuses a second one until the
+         * physics step re-arms it. While it is up the pair has been
+         * separated above and pays nothing else: no impulse, no spin, no
+         * shove, no halving of the striker. Without this every
+         * tick the boxes still overlapped paid the whole response again -
+         * hitcar read ONE bus-into-saloon contact as thirteen knocks, and
+         * the striker's velocity, halved per tick, is the "my car
+         * teleports" jerk. */
+        if (o->hit_latch)
             continue;
 
         /* e ~ 0.25, and the two shares differ by the mass ratio. */
@@ -6917,11 +6986,13 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
             if (!o->knock)
                 o->face16 = (long)o->face << 16;
             o->knock = GTA_KNOCK_TICKS;
+            o->hit_latch = GTA_HIT_LATCH;   /* one response per contact */
             tr->stat_knocked++;
 
             /* AND THE AGGRESSOR IS HALVED - the original halves the striker's
-             * own speed on the same tick. Returned as a velocity delta here
-             * because the caller owns the car. */
+             * own speed on the same tick, ONCE, behind the same latch.
+             * Returned as a velocity delta here because the caller owns the
+             * car. */
             *dvx -= pvx >> 1;
             *dvy -= pvy >> 1;
         } else {
@@ -6948,11 +7019,12 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
          * latch - set to 2 and cleared when the impulse is applied - and
          * charges a flat 20 points.
          *
-         * Two gates stand in for that latch. The closing speed has to be
-         * worth calling a crash, and the same pair cannot be charged again
-         * for half a second. The IMPULSE is not gated - a lean still pushes
-         * the cars apart, which is what stops them interpenetrating; it is
-         * only the bodywork that is spared. */
+         * Two gates stand in for that latch here. The closing speed has to
+         * be worth calling a crash, and the same pair cannot be charged
+         * again for half a second. The HARD impulse has its own latch now
+         * (hit_latch above, the original's 0x230); the LEAN is deliberately
+         * ungated - a car being leant on is pushed every tick, which is what
+         * stops the pair interpenetrating, and it costs no bodywork. */
         if (vrel > GTA_RAM_HARD && o->ram_cool == 0) {
             o->damage += (int)(jp >> 14) + 1;
             o->ram_cool = GTA_RAM_COOL;

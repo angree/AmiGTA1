@@ -8,8 +8,8 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.0.1.zip    the three binaries, the tile converter, icons, run
-#   AmiGTA-v0.0.1.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.0.2.zip    the three binaries, the tile converter, icons, run
+#   AmiGTA-v0.0.2.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -39,7 +39,7 @@ WORK=/mnt/c/temp/amiga_gta/work
 #
 #   Windows: C:\temp\amiga_gta\dist\
 DIST=/mnt/c/temp/amiga_gta/dist
-VER=v0.0.1
+VER=v0.0.2
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory
@@ -99,8 +99,6 @@ mkdir -p "$STAGE/GTADATA"
 python3 "$ROOT/tools/bin/readme_gen.py" --datanote \
     "$STAGE/GTADATA/_PUT_YOUR_GTA_FILES_HERE.txt"
 
-# NO SECOND ARCHIVE WITH THE DATA IN IT. There used to be one; see above.
-
 # --- archive ----------------------------------------------------------------
 cd "$DIST"
 zip -r -q "AmiGTA-$VER.zip" "AmiGTA-$VER"
@@ -108,6 +106,45 @@ zip -r -q "AmiGTA-$VER.zip" "AmiGTA-$VER"
 # the archive name and leaves a file literally called "-q" behind, which is
 # exactly what the first run of this script did.
 lha a "AmiGTA-$VER.lha" "AmiGTA-$VER" >/dev/null 2>&1 || echo "package: lha failed"
+
+# --- and, ONLY ON REQUEST, the same thing with the data in it ---------------
+#
+# `--with-data` adds AmiGTA-$VER-full.zip / .lha, which contain the player's
+# GTADATA - the converted tiles and the map.
+#
+# THESE TWO ARE NOT RELEASE ARTEFACTS AND MUST NEVER BE PUBLISHED. They
+# redistribute Grand Theft Auto, which LICENSING.md line 88 forbids and which
+# the developer himself stopped an earlier version of this script from doing.
+# They exist for one purpose: handing a ready-to-run drawer to somebody who
+# already owns the game, without walking them through gtabake first. Whoever
+# receives one needs their own copy of GTA for it to be theirs to run.
+#
+# publish.sh refuses any file over 1 MB and any *.til or *.cmp, so these
+# cannot reach the public repository by accident.
+if [ "$1" = "--with-data" ]; then
+    if [ -d "$WORK/GTADATA" ]; then
+        # EXACTLY THE TWO FILES THE GAME READS, and not the other 179.
+        # Copying the drawer whole made a 30 MB archive out of a 2.3 MB need -
+        # every other city, every sound bank, the lot. Shipping somebody
+        # else's game at all is the thing to keep small.
+        for f in style001.til nyc.cmp; do
+            [ -f "$WORK/GTADATA/$f" ] || {
+                echo "package: --with-data needs $WORK/GTADATA/$f"; exit 1; }
+            cp "$WORK/GTADATA/$f" "$STAGE/GTADATA/$f"
+        done
+        # The note about supplying your own files is wrong once they are here.
+        rm -f "$STAGE/GTADATA/_PUT_YOUR_GTA_FILES_HERE.txt"
+        zip -r -q "AmiGTA-$VER-full.zip" "AmiGTA-$VER"
+        lha a "AmiGTA-$VER-full.lha" "AmiGTA-$VER" >/dev/null 2>&1 \
+            || echo "package: lha (full) failed"
+        echo "package: ALSO built -full.zip / -full.lha WITH GAME DATA."
+        echo "package: those two are local only - do not publish them."
+    else
+        echo "package: --with-data asked for, but $WORK/GTADATA is not there"
+        exit 1
+    fi
+fi
+
 cd "$DIST"
 rm -rf "AmiGTA-$VER"
 ls -la "$DIST"

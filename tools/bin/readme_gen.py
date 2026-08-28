@@ -50,7 +50,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.0.1
+TEXT = """AmiGTA v0.0.2
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -85,8 +85,9 @@ WHAT IS IN THIS ARCHIVE
 
   run           Startup script. Its last line chooses which build runs.
 
-All three binaries also read Work:backend.txt if it exists - one word,
-"rtg", "aga" or "wb" - which overrides the built-in default.
+All three binaries also read backend.txt if it exists, beside the
+program - one word, "rtg", "aga" or "wb" - which overrides the built-in
+default.
 
 ===========================================================================
 WHAT YOU NEED
@@ -113,9 +114,9 @@ the game's GTADATA directory:
     style001.gry     about 2.7 MB  - the Liberty City art
     nyc.cmp          about 460 KB  - the Liberty City map
 
-STEP 1 - unpack this archive somewhere on the Amiga, for example to
-    Work:AmiGTA . You get the three binaries, gtabake, run, and an empty
-    GTADATA drawer with a note in it.
+STEP 1 - unpack this archive anywhere you like - DH1:Games/AmiGTA,
+    Work:AmiGTA, a CF card, it does not matter. You get the three
+    binaries, gtabake, run, and an empty GTADATA drawer with a note in it.
 
 STEP 2 - copy style001.gry and nyc.cmp from the PC into the GTADATA
     drawer that is already there, IN BINARY MODE.
@@ -144,22 +145,28 @@ STEP 4 - you should now have:
         AmiGTA/gta-rtg480
         AmiGTA/gtabake
         AmiGTA/run
-        AmiGTA/GTADATA/style001.til     (made in step 4)
-        AmiGTA/GTADATA/nyc.cmp          (copied in step 3)
+        AmiGTA/GTADATA/style001.til     (made in step 3)
+        AmiGTA/GTADATA/nyc.cmp          (copied in step 2)
+
+    ...and that whole drawer can sit anywhere on any volume.
 
 ===========================================================================
 RUNNING IT
 ===========================================================================
 
-The game looks for its data as Work:GTADATA, so the simplest thing is to
-assign Work: to the drawer you unpacked into:
+THERE IS NOTHING TO ASSIGN. Put the game wherever you like, go to that
+drawer and start it:
 
-        assign Work: Work:AmiGTA
+        cd DH1:Games/AmiGTA
         execute run
 
-Or, if the drawer already IS your Work: partition root, just:
+Or double-click one of the three icons in Workbench - they carry the same
+1 MB stack the script sets.
 
-        execute run
+Up to v0.0.1 every path was hard-coded to Work: and this section told you to
+assign Work: to the game drawer. That was a bug with a workaround printed
+next to it. Since v0.0.2 the game finds its own data through PROGDIR:, the
+drawer the program was started from.
 
 The run script sets a 1 MB stack before starting the game, and that is not
 optional: libnix gives a CLI process 4 KB by default and the map and sprite
@@ -196,11 +203,11 @@ CONTROLS
     F6              60 fps cap on/off
     F7 / F8         camera height
     - / =           zoom out / in
-    SPACE           write the framebuffer to Work:frame.raw
+    SPACE           write the framebuffer to frame.raw, beside the game
     ESC             quit
 
 ===========================================================================
-WHAT IS NOT IN v0.0.1
+WHAT IS NOT IN v0.0.2
 ===========================================================================
 
   * No missions, no weapons, no police, no wanted level.
@@ -213,12 +220,15 @@ IF IT DOES NOT START
 ===========================================================================
 
   Nothing happens, or it exits at once
-      Look at Work:gta.log - the game writes what it was doing there.
+      Look at gta.log in the game's drawer - the game writes what it
+      was doing there.
       The usual cause is a missing or text-mode-corrupted data file.
 
-  "Cannot open Work:GTADATA/..."
-      The game looks for Work:GTADATA specifically. Either assign Work: to
-      the drawer you unpacked into, or move the files to your real Work:.
+  "Cannot open PROGDIR:GTADATA/..."
+      The two data files are not in the GTADATA drawer next to the
+      program, or style001.til was never made - see STEP 3. The game looks
+      beside its own executable and nowhere else, so this is never an
+      assign problem.
 
   gtabake says the style file is not one
       style001.gry was copied in text mode and is corrupted. Copy it again
@@ -230,7 +240,7 @@ IF IT DOES NOT START
 
   The RTG builds open nothing
       There is no CyberGraphX or Picasso96 screen available. Use gta-aga,
-      or put the word "aga" into Work:backend.txt.
+      or put the word "aga" into backend.txt beside the game.
 
   A black screen with the machine still alive
       Try F3 to toggle the title bar, which reopens the screen.

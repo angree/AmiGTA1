@@ -402,7 +402,51 @@
  * overflow 32 bits. NOT a free parameter - it is a unit conversion. */
 #define GTA_HIT_SPIN         41721
 #define GTA_KNOCK_SPIN_MAX   (3L << 16)  /* 3 of 256 a tick = 4.2 deg */
-#define GTA_KNOCK_TICKS   25
+
+/* ONE RESPONSE PER CONTACT - the original's own rule. Its collision handler
+ * latches the car on the way in and refuses to respond a second time until
+ * the physics step clears the latch again. This port paid the impulse, the
+ * spin, the shove and the aggressor's halving EVERY TICK the
+ * boxes still overlapped: `hitcar` measured ONE bus-into-saloon contact as
+ * "cars knocked loose 13" and the victim's velocity was thirteen impulses
+ * deep. While the latch is up the pair still separates positionally - bodies
+ * may not rest inside each other - but pays nothing else. Six ticks: long
+ * enough that a 50-percent-a-tick separation has undone the overlap, short
+ * enough that a genuine second collision still lands. */
+#define GTA_HIT_LATCH        6
+
+/* HOW MUCH OF THE OVERLAP ONE TICK UNDOES, and how much may stand.
+ *
+ * The canonical stability recipe (Box2D / Catto GDC06; Gaul's tutorial; see
+ * the project notes): positional correction is a PERCENTAGE of
+ * the penetration beyond a small SLOP, never the whole of it. Undoing 100
+ * percent in one tick - which is what this port shipped - overshoots, the
+ * AI closes the gap again next tick, and the pair visibly jumps apart and
+ * back: "teleportuje w te i we wte". Half per tick clears a real overlap in
+ * two or three ticks and cannot oscillate; the one-pixel slop lets a queue
+ * rest bumper to bumper without being ground apart every tick.
+ *
+ * GTA_SEP_SLOP is in the Q14 pixels box_mtv() reports depth in. The percent
+ * is applied as a shift at the two call sites: depth << 2 was 100 percent
+ * (the << 2 is the Q14-to-16.16 conversion), << 1 is 50. */
+#define GTA_SEP_SLOP      (1L << 14)     /* 1 px, Q14 */
+/* Above this depth the correction stops being 50 percent and closes the
+ * whole excess: the band [slop..deep] is where contact is allowed to live,
+ * so a driven-in body settles at ~4 px instead of sinking to 13, and a
+ * shallow touch is still handled gently enough not to jump. */
+#define GTA_SEP_DEEP      (2L << 14)     /* 2 px, Q14 */
+
+/* THE TIMER IS THE BACKSTOP, NOT THE EXIT. A knocked car is meant to leave
+ * the loose state when it has STOPPED SLIDING (GTA_KNOCK_REST below); the
+ * timer only catches a car that somehow never slows. At 25 this was inverted:
+ * kvx damps by 246/256 a tick, so a 4 px/tick shunt takes ~77 ticks to reach
+ * the rest threshold, and the 25-tick timer cut nearly every knock off at
+ * ~1.9 px/tick - the car clicked back onto the rails in mid-slide and the AI
+ * darted it straight back into lane. That was the developer's "auta za
+ * szybko probuja wrocic na swoj tor". 25 was chosen when spin ran away
+ * ("baczki"); komega has had its own damping and clamp since, so the reason
+ * for 25 is gone and 75 restores rest-speed as the normal exit. */
+#define GTA_KNOCK_TICKS   75
 /* How long the drawn heading takes to come back to the road's after a knock.
  * A second at 50 Hz - the car is seen to straighten out rather than clicking
  * straight, which is what made the rotation look like it was not happening. */
@@ -1116,6 +1160,13 @@ typedef struct {
      * stands in for the original's one-shot impulse latch: without it, a
      * player resting against a parked car bills it every tick for ever. */
     unsigned char ram_cool;
+
+    /* Ticks left before this car can take a collision IMPULSE again - the
+     * original's `car+0x230` latch (GTA_HIT_LATCH). ram_cool above gates only
+     * the DAMAGE; this gates the physics: impulse, spin, shove and the
+     * aggressor's halving all fire once per contact, not once per
+     * overlapping tick. Positional separation is never gated. */
+    unsigned char hit_latch;
 
     /* PARKED BY A PERSON, NOT BY THE SPAWNER.
      *

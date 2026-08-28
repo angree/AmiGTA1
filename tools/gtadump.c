@@ -4340,6 +4340,15 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
     int vface0 = 0;
     long best_push = 0, best_along = 0, best_speed = 0;
     int best_turn = 0, moving_again = -1;
+    /* THE JITTER COUNTER. A body being resolved smoothly moves the same way
+     * on consecutive ticks; one being over-corrected goes out and comes
+     * straight back. Inside the impact window, count every tick whose
+     * displacement points AGAINST the previous tick's, both above a quarter
+     * of a pixel so resting noise does not register. The developer's report
+     * is literally this number: "teleportuje w te i we wte na moment". */
+    int rev_victim = 0, rev_player = 0, have_last = 0;
+    long lvx = 0, lvy = 0, lpx = 0, lpy = 0;        /* last positions     */
+    long ldvx = 0, ldvy = 0, ldpx = 0, ldpy = 0;    /* last displacements */
 
     if (gta_map_load(mapPath, &mp) != 0) return 1;
     if (gta_tiles_load(tilesPath, &ti) != 0) { gta_map_free(&mp); return 1; }
@@ -4486,6 +4495,30 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
                        "(%+d), speed %ld.%02ld\n",
                        t, c->x >> 16, c->y >> 16, push, c->face, turn,
                        c->speed >> 16, ((c->speed & 0xFFFF) * 100) >> 16);
+
+            /* Out-and-back, victim and player alike. Three stages: prime the
+             * position, prime the displacement, then compare displacements. */
+            if (!have_last) {
+                lvx = c->x; lvy = c->y; lpx = v.ox; lpy = v.oy;
+                have_last = 1;
+            } else {
+                long dvx2 = c->x - lvx, dvy2 = c->y - lvy;
+                long dpx2 = v.ox - lpx, dpy2 = v.oy - lpy;
+                if (have_last == 2) {
+                    long q, m1, m0;
+                    q  = (dvx2 >> 8) * (ldvx >> 8) + (dvy2 >> 8) * (ldvy >> 8);
+                    m1 = (dvx2 < 0 ? -dvx2 : dvx2) + (dvy2 < 0 ? -dvy2 : dvy2);
+                    m0 = (ldvx < 0 ? -ldvx : ldvx) + (ldvy < 0 ? -ldvy : ldvy);
+                    if (q < 0 && m1 > 16384 && m0 > 16384) rev_victim++;
+                    q  = (dpx2 >> 8) * (ldpx >> 8) + (dpy2 >> 8) * (ldpy >> 8);
+                    m1 = (dpx2 < 0 ? -dpx2 : dpx2) + (dpy2 < 0 ? -dpy2 : dpy2);
+                    m0 = (ldpx < 0 ? -ldpx : ldpx) + (ldpy < 0 ? -ldpy : ldpy);
+                    if (q < 0 && m1 > 16384 && m0 > 16384) rev_player++;
+                }
+                ldvx = dvx2; ldvy = dvy2; ldpx = dpx2; ldpy = dpy2;
+                lvx = c->x; lvy = c->y; lpx = v.ox; lpy = v.oy;
+                have_last = 2;
+            }
         }
     }
 
@@ -4501,6 +4534,10 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
                "%ld.%02ld px/tick\n",
                best_along, best_push, best_turn, best_turn * 360 / 256,
                best_speed >> 16, ((best_speed & 0xFFFF) * 100) >> 16);
+    if (victim >= 0 || contact_at >= 0)
+        printf("hitcar: REVERSALS in the window - victim %d, player %d "
+               "(0 = smooth, >0 = the out-and-back jump)\n",
+               rev_victim, rev_player);
 
     gta_nav_free(&nav);
     gta_tiles_free(&ti);

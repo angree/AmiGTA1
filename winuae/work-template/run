@@ -1,18 +1,28 @@
-; Auto-start script for the WinUAE test machine.
+; Start AmiGTA with the stack it needs.
 ;
-; The HDF's User-Startup runs Work: run at boot, so one test cycle is: build on
-; the host (which deploys into C:\temp\amiga_gta\work), then start WinUAE with
-; -f <config>. Nothing inside the HDF image ever changes - it is mounted
-; read-only, so it cannot.
+; RUN THIS FROM THE GAME'S OWN DRAWER:
 ;
-; This file is the version-controlled template. tools/bin/deploy.sh copies it
-; to the shared folder; edit it here, not there.
+;     cd DH1:Games/AmiGTA
+;     execute run
+;
+; There is nothing to assign. The game finds its data through PROGDIR:, the
+; drawer the executable itself was loaded from, so it works wherever you put
+; it. Up to v0.0.1 every path was hard-coded to Work: and the README had to
+; tell you to assign Work: to the game drawer - that was a bug with a
+; workaround printed next to it, and people quite reasonably asked what the
+; work directory was supposed to be.
 ;
 ; Stack: libnix gives a CLI process 4 KB by default. That is nowhere near
 ; enough for a game that recurses through map and sprite loading; the OpenTTD
-; and OpenXcom ports both needed 1 MB for the same reason.
+; and OpenXcom ports both needed 1 MB for the same reason. The .info files
+; carry the same number for a Workbench double-click.
 ;
-; Change the last line to switch which build runs.
+; Change the last line to switch which build runs:
+;   gta-aga      320x200 AGA          gta-rtg240   320x240 RTG
+;   gta-rtg480   640x480 RTG
+;
+; This file is the version-controlled template. tools/bin/deploy.sh copies it
+; to the emulator's shared folder (adding a CD for the unattended test rig)
+; and tools/bin/package.sh ships it as-is; edit it here, not there.
 Stack 1000000
-CD Work:
-gta-aga >Work:gta.log
+gta-aga >gta.log

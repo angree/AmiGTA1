@@ -20,8 +20,17 @@ mkdir -p "$WORK"
 
 # The startup script is version-controlled in the repo; the copy in Work: is
 # disposable. Edit winuae/work-template/run, never the deployed one.
-cp "$ROOT/winuae/work-template/run" "$WORK/run"
-echo "deployed: run"
+#
+# THE TEST RIG NEEDS ONE EXTRA LINE THAT PLAYERS MUST NOT GET. The HDF's
+# User-Startup runs `Work:run` without changing directory first, so the script
+# has to CD to the shared folder itself. A player unpacks the game wherever
+# they like and cds there before `execute run`, and a hard-coded `CD Work:`
+# would send them somewhere else entirely - which is the whole fault being
+# fixed in v0.0.2. So the line is added HERE, on deploy, and the shipped
+# script stays clean.
+sed 's|^Stack 1000000$|Stack 1000000\nCD Work:|' \
+    "$ROOT/winuae/work-template/run" > "$WORK/run"
+echo "deployed: run (with the test rig's CD Work:)"
 
 # The scripted camera path the game replays before going interactive. Same rule
 # as `run`: the template in the repo is the original, the copy in Work: is
