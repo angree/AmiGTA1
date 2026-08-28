@@ -32,6 +32,25 @@ sed 's|^Stack 1000000$|Stack 1000000\nCD Work:|' \
     "$ROOT/winuae/work-template/run" > "$WORK/run"
 echo "deployed: run (with the test rig's CD Work:)"
 
+# THE STARTUP SELF-TEST RUNS HERE AND NOWHERE ELSE.
+#
+# It closes and reopens the screen twice right after the first frame, to prove
+# the F3 path rebinds g_chunky, g_pitch and the renderer's target - a real
+# regression check, and the only way to reach that path without a keypress.
+#
+# But it is a screen teardown before the player has touched anything, and a
+# system where reopening a display is not routine dies there: MorphOS was
+# reported as "draws one frame and crashes", which is exactly this. So the
+# game defaults it OFF and the rig turns it on, keeping the cover where it was
+# designed to run without shipping it to anybody.
+#
+# Append rather than overwrite: opts.txt is also where an A/B under
+# investigation lives, and this must not wipe one.
+if [ ! -f "$WORK/opts.txt" ] || ! grep -q '^selftest ' "$WORK/opts.txt"; then
+    echo "selftest 1" >> "$WORK/opts.txt"
+    echo "deployed: opts.txt selftest 1 (the rig keeps the F3 regression check)"
+fi
+
 # The scripted camera path the game replays before going interactive. Same rule
 # as `run`: the template in the repo is the original, the copy in Work: is
 # disposable. Delete Work:autoinput.txt to get a purely interactive session.

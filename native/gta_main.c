@@ -308,6 +308,7 @@ static unsigned long prof_t0;
  *   traffic 0|1   run the simulation at all        (default 1)
  *   catchup <n>   simulation ticks a frame may pay (default MAX_CATCHUP)
  *   benchframes <n>  frames per startup benchmark  (default BENCH_FRAMES)
+ *   selftest 0|1  close and reopen the screen once at startup (default 0)
  */
 /* The reservation overlay is DEACTIVATED by default since 2026-08-26 - the
  * developer's call once traffic was accepted ("zdezaktywuj je, nie wywalaj
@@ -330,6 +331,20 @@ static int opt_width   = 0;
 /* Starting camera height in quarter levels (32 = C8 shipped, 64 = C16, the
  * pre-24.08 look) - measurement only; F7/F8 still move it live. 0 = default. */
 static int opt_camh    = 0;
+/* THE STARTUP SELF-TEST IS OFF FOR PLAYERS AND ON FOR THE TEST RIG.
+ *
+ * It closes and reopens the screen twice, immediately after the first frame,
+ * to prove the F3 path rebinds its pointers (see the self-test itself for why
+ * that check is worth having). But a full screen teardown and rebuild before
+ * the player has done anything is a liability on any system where reopening a
+ * display is not the cheap, well-trodden operation it is on 68k AmigaOS -
+ * reported from MorphOS as "draws one frame and dies", which is exactly where
+ * this sits in the startup order.
+ *
+ * So it is opt-in. `deploy.sh` writes `selftest 1` into the emulator's
+ * opts.txt, so every unattended run still exercises it and the regression
+ * cover is unchanged; a shipped archive has no opts.txt and skips it. */
+static int opt_selftest = 0;
 
 static gta_traffic traffic;
 static gta_peds peds;
@@ -1201,6 +1216,7 @@ int main(void)
                 else if (strcmp(word, "benchframes") == 0) opt_benchf = (int)val;
                 else if (strcmp(word, "width") == 0)   opt_width   = (int)val;
                 else if (strcmp(word, "camh") == 0)    opt_camh    = (int)val;
+                else if (strcmp(word, "selftest") == 0) opt_selftest = (int)val;
             }
             fclose(of);
         }
@@ -1334,6 +1350,9 @@ int main(void)
      * So the path is exercised here instead. Off, then on again, ending in the
      * state it started in, with a frame drawn and dumped afterwards - if the
      * rebinding were wrong, that frame would be the crash. */
+    if (!opt_selftest) {
+        log_line("gta: self-test skipped (opts.txt `selftest 1` runs it)");
+    } else {
     log_line("gta: self-test - toggling the title bar off and back on");
     if (toggle_bar(&view) && toggle_bar(&view)) {
         chunky = g_chunky;
@@ -1346,6 +1365,7 @@ int main(void)
                    SCREEN_W, SCREEN_H, tiles.palette);
     } else {
         log_line("gta: self-test FAILED - the screen could not be reopened");
+    }
     }
     fflush(stdout);
 
