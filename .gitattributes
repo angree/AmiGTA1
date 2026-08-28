@@ -5,3 +5,8 @@
 
 *.info binary
 *.raw  binary
+
+# The two Kalms kernels are included verbatim. Their line endings are theirs
+# too - nothing here rewrites a file that carries somebody else's name.
+native/c2p1x1_6_c5_bm_040.s -text
+native/c2p_rect.s           -text
