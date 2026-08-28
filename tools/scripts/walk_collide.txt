@@ -1,0 +1,10 @@
+# Walk straight into a building and stay there, to prove the collision holds
+# rather than merely slowing him down. Block (66,62) is the building column
+# whose walls start on layer 2; (66,60) is the road two blocks north of it.
+start 66 59
+
+# Face south (the art's own facing) and walk into the building.
+0 1 0 40
+0 1 0 40
+0 1 0 40
+0 1 0 60

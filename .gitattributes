@@ -1,0 +1,7 @@
+# LF everywhere. The shell scripts run under WSL and the startup script runs
+# under AmigaDOS; neither wants CRLF, and Windows checkouts default to adding
+# it. The one file that must not be touched at all is the Workbench icon.
+* text=auto eol=lf
+
+*.info binary
+*.raw  binary

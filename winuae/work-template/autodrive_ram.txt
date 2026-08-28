@@ -1,0 +1,21 @@
+; RAM A CAR ON THE CORNER AND LOOK AT IT.
+;
+; The measurements say a car struck off centre turns; this is the picture of it.
+; Three frames: just before contact, right after, and a second later once the
+; slew has straightened out.
+;
+; NOT DEPLOYED - deploy.sh does not copy this. Copy it to the runtime by hand
+; as autodrive.txt for the test, and DELETE it afterwards, or it will drive the
+; developer's own session.
+
+wait 100
+enter
+wait 60
+run 90 1 0 0 0
+dump
+run 25 1 0 0 0
+dump
+wait 50
+dump
+wait 60
+dump

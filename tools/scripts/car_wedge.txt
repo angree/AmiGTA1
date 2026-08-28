@@ -1,0 +1,16 @@
+# DRIVE INTO A BUILDING AND TRY TO GET OUT AGAIN.
+#
+# The wall tests prove the body never ENTERS a wall. This one proves the car
+# can still leave once it is pressed against one - "the player's car sticks to
+# buildings and jams" is the other failure, and a car that never enters a wall
+# can still be wedged by a shove, a rotation, or a spawn.
+#
+# Facing east at (63,64), throttle down, straight into the block of buildings
+# at x=66..69. Then full lock and throttle for a long time: a car that can free
+# itself will be somewhere else by the end, a wedged one will still be at the
+# same pixel.
+start 63 64 64
+run 150 1 0 0 0
+run 150 1 0 1 0
+run 150 1 0 -1 0
+run 150 0 1 0 0

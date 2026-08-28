@@ -1,0 +1,67 @@
+config_description=Amiga GTA - THE test machine: 68020 core, max speed, JIT off, throttle -50%
+; THIS IS THE ONLY MACHINE WE TEST AND MEASURE ON. Decided 2026-08-21, closed.
+; Do not add variants, do not reopen the calibration argument.
+;
+;   68020 core + cpu_speed=max + JIT off + cpu_throttle -50%
+;
+; WHY A 68020 CORE AND NOT A REAL 68060 CORE: on an 020 core the machine itself
+; enforces the compatibility floor - a 68060-only instruction cannot slip into
+; the build unnoticed - while the throttle supplies the speed of the faster
+; machine. Every timing run is therefore also a compatibility test.
+;
+; WHY -50% AND NOT -60%: measured. At -60% SysInfo reported 34.11 MIPS, and a
+; real 68060/50 is about 50 MIPS, so -60% was too slow. -50% is the agreed
+; setting; it is a target, not a claim, and nothing here depends on it being
+; exact to a decimal place.
+;
+; JIT IS OFF (cachesize=0, cpu_compatible=true). Throttling a JIT-compiled core
+; measures the host, not the Amiga.
+;
+; gta-aga.uae is the fast functional config (JIT on) for "did it draw the right
+; thing" runs where speed does not matter. gta-rtg.uae is the same machine with
+; a uaegfx board, for separating "the renderer is slow" from "c2p is slow".
+;
+; Shared rules, spelled out in gta-aga.uae: use_gui=no plus launching as
+; "winuae-gta.exe -f <config>"; win32.posx/posy must be set; the boot hardfile
+; is mounted READ-ONLY so the port can only write to Work:.
+
+cpu_type=68040
+cpu_model=68040
+fpu_model=0
+cpu_compatible=true
+cpu_24bit_addressing=false
+cpu_speed=max
+cpu_throttle=-80.0
+cachesize=0
+
+chipset=aga
+chipset_compatible=A4000
+chipmem_size=4
+fastmem_size=0
+z3mem_size=32
+
+kickstart_rom_file=C:\temp\amiga_gta_prof\ROM3.1_A4000.40.70.ROM
+hardfile2=ro,DH0:C:\temp\amiga_gta_prof\boot.hdf,32,1,2,512,0,,uae
+filesystem2=rw,WORK:Work:C:\temp\amiga_gta_prof\work,-128
+
+; No gfxcard_size: AGA only, so c2p is inside every measurement.
+
+gfx_api=0
+gfx_width_windowed=800
+gfx_height_windowed=600
+gfx_fullscreen_amiga=false
+win32.posx=100
+win32.posy=60
+
+magic_mouse=true
+magic_mousecursor=1
+input.mouse_speed=100
+
+use_gui=no
+show_leds=true
+sound_output=normal
+sound_channels=stereo
+sound_frequency=44100
+sound_interpol=none
+sound_filter=emulated
+sound_stereo_separation=10

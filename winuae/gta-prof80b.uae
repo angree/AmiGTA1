@@ -1,0 +1,77 @@
+config_description=Amiga GTA - PURE AGA on a PLAIN 68020, no FPU (the target machine)
+; Adapted from Amiga_OpenXCOM/winuae/oxc-aga.uae, which was itself adapted from
+; the openttd_amiga_68k configs. Every rule below cost someone a wasted test
+; cycle to learn; none of them is style.
+;
+;   - use_gui=no plus launching as "winuae-gta.exe -f <config>" boots straight
+;     into emulation. Anything else opens the configuration window and waits
+;     for a human, which looks like a hang.
+;   - win32.posx/posy must be set. WinUAE remembers the last window position in
+;     winuae.ini, and a remembered monitor that no longer exists leaves the
+;     window off-screen: process alive, no window, no output. With gfx_api=0 a
+;     window on a SECONDARY monitor also captures as pure black.
+;   - The hardfile is mounted READ-ONLY on purpose. The port must write only to
+;     Work: (PROGDIR:), and this makes that a property of the machine rather
+;     than a promise. AmigaOS boots fine write-protected; T: and ENV: are in RAM:.
+;   - JIT (cachesize) is ON for turnaround. Any timing claim about real hardware
+;     must be re-measured with JIT OFF - it distorts results by roughly 70%.
+;
+; RUNTIME LIVES ON THE SSD, NOT IN THE REPOSITORY. The repo is on a network
+; drive; WinUAE mounting a directory filesystem of thousands of small files
+; across it is the prime suspect for the emulator stalling during boot in the
+; OpenXcom port. Binaries and data are deployed to C:\temp\amiga_gta_prof2\work.
+
+; --- CPU: PLAIN 68020, NO FPU. This is the machine the port exists for.
+;     Do not test on an 040 and call it a pass. ---
+cpu_type=68020
+cpu_model=68020
+fpu_model=0
+cpu_compatible=false
+cpu_24bit_addressing=false
+cpu_speed=max
+cpu_throttle=-800.0
+cachesize=0
+
+; --- Chipset: A4000 AGA ---
+chipset=aga
+chipset_compatible=A4000
+chipmem_size=4
+fastmem_size=0
+z3mem_size=32
+
+; --- Kickstart 3.1 (A4000, 40.70) ---
+kickstart_rom_file=C:\temp\amiga_gta_prof2\ROM3.1_A4000.40.70.ROM
+
+; --- Boot: plain AGA Workbench 3.1, WRITE PROTECTED ---
+hardfile2=ro,DH0:C:\temp\amiga_gta_prof2\boot.hdf,32,1,2,512,0,,uae
+
+; --- WORK: the shared folder. Binaries and game data are swapped here from the
+;     host without ever touching the HDF image. This is the whole test loop. ---
+filesystem2=rw,WORK:Work:C:\temp\amiga_gta_prof2\work,-128
+
+; --- DELIBERATELY NO gfxcard_size: no uaegfx board exists, so the display code
+;     MUST take the AGA c2p path. This config is the AGA proof. ---
+
+; --- Display: DirectDraw, so host-side PrintWindow capture works ---
+gfx_api=0
+gfx_width_windowed=800
+gfx_height_windowed=600
+gfx_fullscreen_amiga=false
+win32.posx=100
+win32.posy=60
+
+; --- Mouse: magic mouse ON, so the host pointer is NOT captured and stays
+;     usable outside the emulator window. ---
+magic_mouse=true
+magic_mousecursor=1
+input.mouse_speed=100
+
+; --- Boot straight into emulation ---
+use_gui=no
+show_leds=true
+sound_output=normal
+sound_channels=stereo
+sound_frequency=44100
+sound_interpol=none
+sound_filter=emulated
+sound_stereo_separation=10

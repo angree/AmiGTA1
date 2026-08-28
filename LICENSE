@@ -1,0 +1,52 @@
+MIT License
+
+Copyright (c) 2026 angree
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+===========================================================================
+THIRD-PARTY CODE INCLUDED IN THIS REPOSITORY
+===========================================================================
+
+Two files are NOT covered by the MIT licence above. They are the
+chunky-to-planar conversion kernels, and they are included verbatim, with
+their original headers, as scene code has been shared and reused on the Amiga
+for twenty-five years:
+
+    native/c2p1x1_6_c5_bm_040.s     (c) Mikael Kalms <mikael@kalms.org>
+    native/c2p_rect.s               (c) Mikael Kalms
+
+The wrappers around them in native/c2p_glue.s are MIT, like the rest.
+If you need a bare MIT tree, remove those two files and write your own c2p.
+
+
+===========================================================================
+NOT INCLUDED
+===========================================================================
+
+CyberGraphX developer headers (native/cgx-include/) are (c) phase5 digital
+products, all rights reserved, and are NOT redistributable. They are needed to
+build the RTG backend and you must supply them yourself. See README.md.
+
+No part of Grand Theft Auto (1997) is included in this repository or in any
+release built from it - no art, no maps, no sounds, no code, and nothing
+derived from any of them. GTA is (c) DMA Design / BMG Interactive / Take-Two
+Interactive. You supply your own copy of the game; the port reads your files
+and converts them on your own machine.

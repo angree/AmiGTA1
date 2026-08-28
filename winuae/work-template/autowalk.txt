@@ -1,0 +1,49 @@
+# The scripted walk the Amiga replays before it goes interactive.
+#
+# Same format as the host harness, on purpose - `gtadump walk` reads this exact
+# file, so a script that reproduces something on the PC runs unchanged on the
+# 68020. One line per leg:
+#
+#     turn forward walk ticks
+#       turn     -1 left, 0 straight, +1 right
+#       forward  -1 back, 0 still,   +1 forward
+#       walk      1 to walk; 0 RUNS, which is the game's default
+#
+# A frame is dumped to Work:walkNN.raw at the end of every leg.
+# Delete this file from Work: for a purely interactive session.
+
+# Block (62,60) is the plain road column GTA_GREF was measured from, so the
+# player starts on a surface whose layer is known rather than guessed.
+start 62 60
+
+# Standing still, unrotated: the one frame in which a rotation bug cannot hide
+# behind a movement bug.
+0 0 0 1
+
+# Face all four compass points without moving. Four frames that answer "which
+# way does the art face" on their own.
+1 0 0 16
+1 0 0 16
+1 0 0 16
+1 0 0 16
+
+# Walk south down the street.
+0 1 0 40
+0 1 0 40
+
+# Turn right, walk west, then run west.
+1 0 0 16
+0 1 0 40
+0 1 1 40
+
+# Straight on until something stops him. The log line says BLOCKED when the
+# collision has actually taken hold, so this leg is a test and not a stroll.
+0 1 0 80
+0 1 0 80
+
+# Turn around and come back, so the frame left on screen for the interactive
+# session is somewhere worth looking at. 32 ticks at 4 angle units each is a
+# half turn; 64 would be a full circle back to where he started, which is what
+# the first version of this line actually did.
+1 0 0 32
+0 1 1 60

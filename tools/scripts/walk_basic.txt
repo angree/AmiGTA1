@@ -1,0 +1,37 @@
+# The first walk script. One line per leg: turn forward walk ticks.
+#   turn    -1 left, 0 straight, +1 right
+#   forward -1 back, 0 still,   +1 forward
+#   walk    1 to walk; 0 RUNS, which is the game's default
+#
+# Block (62,60) is the plain road column that GTA_GREF was measured from, so
+# the player starts on a surface whose layer is known rather than guessed.
+start 62 60
+
+# Stand still first: one frame of the unrotated pose, which is the only frame
+# in which a rotation bug cannot hide behind a movement bug.
+0 0 0 1
+
+# Face each of the four compass points in turn, standing still, so the four
+# frames answer "which way does the art face" on their own.
+1 0 0 16
+1 0 0 16
+1 0 0 16
+1 0 0 16
+
+# Now walk. South first, since that is where he is facing again.
+0 1 0 24
+0 1 0 24
+0 1 0 24
+
+# Turn right and walk west along the street.
+1 0 0 16
+0 1 0 32
+0 1 0 32
+
+# Run.
+0 1 1 32
+0 1 1 32
+
+# Straight into whatever is ahead, to see the collision stop him.
+0 1 0 60
+0 1 0 60

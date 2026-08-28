@@ -1,0 +1,45 @@
+# Build output
+build/
+out/
+*.o
+*.tar.gz
+
+# NEVER PUBLISH ANY OF THIS.
+#
+# This working tree also holds the game itself, the research material and the
+# tools that produced it. None of it is ours to distribute, and a single
+# `git add -A` in the wrong directory would ship several hundred megabytes of
+# somebody else's copyright. The public repository is built by
+# tools/bin/publish.sh, which copies an allow-list rather than excluding a
+# deny-list - this file is the second line of defence, not the first.
+dos/
+pc/
+ref/
+re/
+GTA*/
+docs/
+*.iso
+*.mp4
+*.gry
+*.cmp
+*.til
+*.raw
+
+# Reverse-engineering drivers - not part of the port
+tools/ghidra*
+tools/bin/ghidra_*.sh
+tools/bin/install_watcom_cspec.py
+
+# CyberGraphX developer headers: (c) phase5, not redistributable.
+# Supply them yourself - see README.md.
+native/cgx-include/
+
+# Working documents, kept privately
+PROGRESS.md
+LEFTOFF.md
+PLAN.md
+PERF.md
+RESEARCH.md
+LICENSING.md
+CLAUDE.md
+.claude/

@@ -1,0 +1,55 @@
+; Scripted camera path for an unattended test run.
+;
+; native/gta_main.c reads this from Work: at startup and replays it before the
+; interactive loop. It exists because driving the game has to happen INSIDE the
+; guest: synthesising mouse or keyboard input on the host is banned in this
+; project - WinUAE drops the input trap silently and the events then go to
+; whatever the user has on screen.
+;
+; One movement per line:   dx dy frames
+; dx/dy are pixels per frame at the reference scale, so 32 is one block.
+; Lines starting with ';' or '#' are ignored.
+;
+; EVERY LINE DUMPS A FRAME to Work:tourNN.raw when it ends, and
+; tools/bin/tour2png.py assembles them into one contact sheet. That is the
+; point of the tour: re-rendering one spot over and over only finds the
+; artefacts that spot happens to have, and the corner-square gap proved how
+; easily a rendering bug hides in the two or three views you keep looking at.
+;
+; This file is the version-controlled template. tools/bin/deploy.sh copies it
+; into Work:; edit it here, not there.
+
+; A lap of the block downtown: right, down, left, up. Four close-up views of
+; the same junction, which is where the projection is easiest to judge.
+ 3  0  60
+ 0  3  60
+-3  0  60
+ 0 -3  60
+
+; Then a diagonal sweep across the whole city at 16 px a frame, stopping in a
+; different district each time. Start is block (64,64); 60 frames at 16 px is
+; 960 px, which is 30 blocks.
+ 16   0  60
+  0  16  60
+ 16   0  60
+  0  16  60
+ 16   0  60
+  0  16  60
+ 16   0  60
+  0  16  60
+-16   0  60
+  0  16  40
+-16   0  80
+-16 -16  60
+-16 -16  60
+  0 -16  60
+
+; Straight at the north-west corner of the map, fast, and keep going long after
+; arriving. The point is not the view - it is that gta_render_move()'s clamp
+; holds and the renderer does not walk off the edge of nyc.cmp. A crash here
+; would be the classic one: a column index that goes negative.
+-12 -12 150
+
+; ...and back downtown, so the frame this run leaves in Work:frame_end.raw is a
+; view worth looking at rather than the empty corner of the map.
+ 12  12 133

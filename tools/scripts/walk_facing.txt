@@ -1,0 +1,33 @@
+# walk_facing.txt - the one script whose only job is "which way is he facing".
+#
+# Every leg stands STILL and only turns, so nothing in the picture can be a
+# movement bug wearing a rotation bug's clothes. Run it zoomed right in:
+#
+#   build/host/gtadump walk <nyc.cmp> build/data/style001.til \
+#       tools/scripts/walk_facing.txt out/facing/f 320 200 96
+#
+# The player starts at angle 128 (south), which is the angle at which the ped
+# art is UNROTATED - proven by frame 89, shoot_pistol_while_standing, whose
+# pistol points down the screen in the raw contact sheet.
+#
+# TURN_RATE is 5, so a quarter turn is 64/5 = 12.8 ticks and exact compass
+# points are not reachable. 13 ticks lands within 1/256 of a turn, which is
+# 1.4 degrees - far below anything a half-turn error could hide in.
+start 62 60
+
+# leg 0: angle 128, SOUTH. Head should be at the BOTTOM of the sprite.
+0 0 0 1
+
+# leg 1: angle 193, WEST. He should point LEFT.
+1 0 0 13
+
+# leg 2: angle 2, NORTH. He should point UP.
+1 0 0 13
+
+# leg 3: angle 67, EAST. He should point RIGHT.
+1 0 0 13
+
+# leg 4: back to angle 132, SOUTH again - the round trip closes, so a
+# cumulative drift in the turn code shows up as a picture that does not match
+# leg 0 rather than as a number nobody reads.
+1 0 0 13

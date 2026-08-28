@@ -1,0 +1,26 @@
+# walk_overhead.txt - the draw-order test.
+#
+# Block (233,4) is a ROAD block on layer 2 that ALSO carries a lid (131), so
+# the renderer draws that lid at grid 3 - directly over the head of anything
+# standing there. Found with:
+#
+#   build/host/gtadump overhead dos/Grand_Theft_Auto/gtadata/nyc.cmp 24
+#
+# The player stands still under it. If he is drawn ON TOP of the thing above
+# him, the sprite is going in at the wrong point of the layer loop.
+#
+# Leg 1 walks him a little way out from under it, so the same run also shows
+# what he looks like when there is genuinely nothing overhead - which is the
+# control, and the thing any fix must not break.
+start 233 4
+
+# leg 0: standing under the overhead lid.
+0 0 0 1
+
+# leg 1: out from under it, southward.
+0 1 0 40
+
+# leg 2: and back.
+1 0 0 26
+1 0 0 26
+0 1 0 40

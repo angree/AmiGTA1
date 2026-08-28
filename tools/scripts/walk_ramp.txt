@@ -1,0 +1,35 @@
+# walk_ramp.txt - THE TWO-LEVEL TEST.
+#
+# Row 44 of nyc.cmp carries a real ramp: blocks x=11..18 on layer 2 with slope
+# values 33..40, the "E" group in ascending order, so it climbs eastward. Found
+# with:
+#
+#   build/host/gtadump slopes dos/Grand_Theft_Auto/gtadata/nyc.cmp 22
+#
+# And block (19,44) - just past the top - has ROAD on layer 2 AND on layer 3:
+# the street below and the road on the bridge above it. That is the whole point
+# of the test. Walking east off the top of the ramp must arrive on LAYER 3. The
+# old code preferred the layer the player was already on, found layer 2
+# walkable, and put him under the bridge he had just climbed.
+#
+#   build/host/gtadump walk <nyc.cmp> build/data/style001.til \
+#       tools/scripts/walk_ramp.txt out/ramp/r 320 200 48
+#
+# READ THE LOG, not the pictures: every leg prints the layer. The pass
+# condition is that the player reaches layer 3 and stays there.
+start 9 44
+
+# Face east. Starting angle is 128 (south); TURN_RATE is 5, so 13 ticks of
+# turning left lands on 63, one unit off due east, which is 1.4 degrees.
+-1 0 0 13
+
+# Up the ramp and off the end of it. Eight blocks of slope plus a couple more.
+0 1 0 40
+0 1 0 40
+0 1 0 40
+0 1 0 40
+0 1 0 40
+
+# And keep going along whatever he ended up on.
+0 1 0 60
+0 1 0 60

@@ -1,0 +1,64 @@
+config_description=Amiga GTA - gta-test.uae CPU + a uaegfx RTG board, no FPU
+; THIS IS gta-test.uae WITH A GRAPHICS CARD IN IT. That is the whole point and
+; it is why the CPU block below is a byte-for-byte copy of gta-test.uae's: a
+; uaegfx board exists, so an 8-bit RTG screen is available and the chunky
+; buffer IS the display format - no c2p at all. Everything else is identical,
+; so the difference between the two runs is c2p and nothing else.
+;
+; IT DID NOT USED TO BE. Until 2026-08-21 this config ran cpu_compatible=false,
+; cpu_throttle=0.0 and cachesize=8192 - JIT ON and no throttle - so its frame
+; rates were not comparable with anything, and "gta-rtg separates renderer cost
+; from c2p cost" was a claim the file could not actually support. Comparing a
+; JIT run against a non-JIT one would have made c2p look free. If these three
+; lines ever drift from gta-test.uae again, every number taken here is void.
+;
+; Which backend the game opens is NOT chosen here: it reads Work:backend.txt,
+; one word, "rtg" or "aga", missing means AGA. Both configs mount the same
+; Work:, so the same binary serves both machines - and two binaries built at
+; different moments would not be comparable either.
+;
+; Read gta-aga.uae for the rules that apply to both (use_gui, window position,
+; read-only hardfile). They are not repeated here.
+
+cpu_type=68020
+cpu_model=68020
+fpu_model=0
+cpu_compatible=true
+cpu_24bit_addressing=false
+cpu_speed=max
+cpu_throttle=-500.0
+cachesize=0
+
+chipset=aga
+chipset_compatible=A4000
+chipmem_size=4
+fastmem_size=0
+z3mem_size=32
+
+; --- The RTG board. This is the only real difference from the AGA config. ---
+gfxcard_size=8
+gfxcard_type=uaegfx
+
+kickstart_rom_file=C:\temp\amiga_gta\ROM3.1_A4000.40.70.ROM
+hardfile2=ro,DH0:C:\temp\amiga_gta\boot.hdf,32,1,2,512,0,,uae
+filesystem2=rw,WORK:Work:C:\temp\amiga_gta\work,-128
+
+gfx_api=0
+gfx_width_windowed=800
+gfx_height_windowed=600
+gfx_fullscreen_amiga=false
+win32.posx=100
+win32.posy=60
+
+magic_mouse=true
+magic_mousecursor=1
+input.mouse_speed=100
+
+use_gui=no
+show_leds=true
+sound_output=normal
+sound_channels=stereo
+sound_frequency=44100
+sound_interpol=none
+sound_filter=emulated
+sound_stereo_separation=10

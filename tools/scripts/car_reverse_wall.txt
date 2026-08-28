@@ -1,0 +1,11 @@
+# REVERSING INTO A BUILDING - what a nose-only wall test cannot see.
+#
+# The old collision sampled ONE point, half a body length AHEAD of the centre.
+# Backing into something puts the impact at the other end of the car, so that
+# point is still over clear road and nothing is detected at all.
+#
+# Facing west at (63,64) - a northbound lane block - with reverse held, so the
+# car travels EAST across the pavement at x=64,65 (ground 3, legal) and into
+# the block of buildings at x=66..69 (ground 5).
+start 63 64 192
+run 400 0 1 0 0

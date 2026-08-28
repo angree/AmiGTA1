@@ -1,0 +1,29 @@
+; GET IN, DRIVE, GET OUT - the unattended test for the car entry rework.
+;
+; Host input synthesis is banned in this project, so this file IS the
+; keyboard: gta_main.c reads it once at startup and the interactive tick
+; consumes it in place of key presses.
+;
+; What this run proves, in the log:
+;   "dragged the driver out"  the carjack fired (the car had a driver)
+;   "in car - model N"        the ten-step get-in animation finished
+;   "getting out"             the exit started and the car went back to the fleet
+;   "on foot"                 the exit animation finished
+; and NOT "fleet full, car lost".
+;
+; The frame dumps either side of the exit are the visual half: the car has to
+; still be there in the second one.
+
+wait 120
+enter
+wait 60
+run 200 1 0 0 0
+run 60 0 0 1 0
+run 120 1 0 0 0
+dump
+wait 20
+enter
+wait 60
+dump
+wait 100
+dump

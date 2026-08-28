@@ -1,0 +1,11 @@
+# DRIVING DOWN A REAL STREET, which car_ram.txt does not do.
+#
+# car_ram.txt starts on the PAVEMENT at (64,64) and drives east straight into
+# the block of buildings at x=66..69 - it is a ram test, and its name says so.
+# Anything that measures "does the car drive normally" has to be on a road.
+#
+# `gtadump dirmap nyc.cmp 56 56 20 20 2` shows the lane: column x=62 is
+# northbound ("|") continuously from y=75 up to y=56, crossing junctions at
+# y=69, 63 and 58. So: start at the bottom of it, facing north, throttle down.
+start 62 74 0
+run 500 1 0 0 0
