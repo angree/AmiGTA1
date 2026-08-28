@@ -72,7 +72,9 @@ done
 # --- front matter ----------------------------------------------------------
 copy README.md
 copy LICENSE
+copy THIRD-PARTY.md
 copy .gitignore
+copy .gitattributes
 
 # --- and now refuse to be wrong --------------------------------------------
 echo "--- checks ---"

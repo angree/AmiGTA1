@@ -126,7 +126,9 @@ MIT — see [LICENSE](LICENSE).
 
 Two files are not mine and keep their own headers: the chunky-to-planar kernels
 `native/c2p1x1_6_c5_bm_040.s` and `native/c2p_rect.s`, both © **Mikael Kalms**.
-The wrappers around them are MIT like everything else.
+The wrappers around them are MIT like everything else. What is included but not
+mine, and what is deliberately absent, is set out in
+[THIRD-PARTY.md](THIRD-PARTY.md).
 
 ## Credits
 
