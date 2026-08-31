@@ -58,14 +58,38 @@
  * `backend.txt` beside the binary still overrides the backend at runtime,
  * so a single
  * binary can still be pointed at either screen for an A/B measurement. */
+/* MorphOS renders 640x480 and does NOT define GTA_SCALE2X.
+ *
+ * The Amiga's own 640x480 build renders 320x240 and doubles it, because a
+ * 68020 cannot rasterise four times the pixels at a playable rate - see
+ * scale2x_rows() below. That constraint is the CPU's, not the renderer's, and
+ * it does not survive the move to PowerPC: the slowest machine MorphOS runs on
+ * is orders of magnitude past a 68020, so the picture is drawn at full
+ * resolution instead of magnified. 200 lines was an AGA screen's shape and
+ * there is no AGA here either. */
 #ifndef GTA_SCREEN_W
+#ifdef __MORPHOS__
+#define GTA_SCREEN_W 640
+#else
 #define GTA_SCREEN_W 320
 #endif
+#endif
 #ifndef GTA_SCREEN_H
+#ifdef __MORPHOS__
+#define GTA_SCREEN_H 480
+#else
 #define GTA_SCREEN_H 200
 #endif
+#endif
 #ifndef GTA_DEFAULT_BACKEND
+#ifdef __MORPHOS__
+/* There are no bitplanes to convert to, so AGA is not a fallback here - it is
+ * a mode that does not exist. native/morphos_gfx.c implements the RTG path and
+ * nothing else. */
+#define GTA_DEFAULT_BACKEND AMIGAGFX_BACKEND_RTG
+#else
 #define GTA_DEFAULT_BACKEND AMIGAGFX_BACKEND_AGA
+#endif
 #endif
 
 /* WHAT THE RENDERER DRAWS, which is not always what the screen shows.
@@ -634,15 +658,43 @@ static int game_speed = 100;   /* percent of real time, F9/F10, 10..100 */
  * They are still cleared in the chunky buffer every frame, because the
  * renderer's own clear covers only its target rectangle and a zoom or a mode
  * change can leave anything behind. */
+#ifdef __MORPHOS__
+/* THE SAME FRACTION OF THE SCREEN, not the same 256 pixels.
+ *
+ * 256 is four fifths of 320, and every Amiga build renders 320 wide - the
+ * 640x480 one included, because it renders 320x240 and doubles it. MorphOS
+ * renders 640 for real, and a literal 256 there is not a narrow mode, it is a
+ * quarter of the screen sitting in bars three times its own width.
+ *
+ * So the fraction is what carries over. Rounded UP to a multiple of 32 so the
+ * "centred and on the grid" property in the note above still holds, which
+ * costs nothing here and keeps the two targets describable by one rule:
+ * 320 -> 256 exactly, as before; 640 -> 512.
+ *
+ * Worth saying plainly that this mode has no PURPOSE on MorphOS - it exists to
+ * skip a fifth of the chunky-to-planar, and there is no chunky-to-planar here.
+ * It stays because it is also a fifth less renderer, and because a key that
+ * does something sensible is better than one that does something absurd. */
+#define FAST_W   ((((SCREEN_W * 4) / 5) + 31) & ~31)
+#else
 #define FAST_W   256
+#endif
 #define FAST_X   ((SCREEN_W - FAST_W) / 2)        /* 32 - centred AND on it   */
 
 static const struct {
     int w, x;
     const char *name;
 } view_modes[] = {
+#ifdef __MORPHOS__
+    /* The widths are in the readout already ("640x480" in the HUD line), so
+     * these say what the mode IS rather than repeating a number that is only
+     * right for one screen. */
+    { SCREEN_W, 0,        "full width"               },
+    { FAST_W,   FAST_X,   "5:4 narrow"               }
+#else
     { SCREEN_W, 0,        "full 320"                 },
     { FAST_W,   FAST_X,   "5:4 256 (c2p-aligned)"    }
+#endif
 };
 
 /* Named indices and a count taken from the table itself. Anything that picks a
@@ -1481,9 +1533,30 @@ int main(void)
         gta_prefs prefs;
         int had = gta_prefs_load(GTA_DIR, &prefs);
         opt_audio = prefs.audio;
+#ifdef __MORPHOS__
+        /* THE GRAPHICS SETTING HAS ONE LEGAL VALUE HERE, so it is read and
+         * then overruled rather than obeyed.
+         *
+         * AGA is a chipset this machine does not have, and the Workbench-window
+         * backend shares a screen's palette through ObtainBestPen - both live
+         * in amiga_gfx.c, which this build does not compile. native/morphos_gfx.c
+         * is the RTG path and nothing else.
+         *
+         * Worth being explicit about WHY the setting exists at all on a
+         * MorphOS drawer: gtaprefs also reports what the machine has, and the
+         * file is shared with an Amiga install. Honouring a setting that
+         * cannot be honoured would end in morphos_gfx.c logging "backend 0
+         * requested" and opening RTG anyway - the same outcome, reached
+         * confusingly. */
+        if (prefs.gfx != GTA_GFX_RTG)
+            printf("gta: prefs ask for %s - ignored, MorphOS has only the"
+                   " RTG path\n", gta_prefs_gfx_name(prefs.gfx));
+        backend = AMIGAGFX_BACKEND_RTG;
+#else
         if (prefs.gfx == GTA_GFX_AGA)      backend = AMIGAGFX_BACKEND_AGA;
         else if (prefs.gfx == GTA_GFX_RTG) backend = AMIGAGFX_BACKEND_RTG;
         else if (prefs.gfx == GTA_GFX_WB)  backend = AMIGAGFX_BACKEND_WB;
+#endif
         printf("gta: prefs %s - audio %s, gfx %s\n",
                had ? "read" : "(none, defaults)",
                gta_prefs_audio_name(prefs.audio),
@@ -1499,10 +1572,21 @@ int main(void)
         if (bf) {
             char word[16];
             if (fscanf(bf, "%15s", word) == 1) {
+#ifdef __MORPHOS__
+                /* The file is read so a drawer shared with the Amiga build
+                 * does not look broken, but there is exactly one backend on
+                 * this target and asking for another cannot be honoured.
+                 * Saying so beats silently opening something else. */
+                if (word[0] != 'r' && word[0] != 'R')
+                    printf("gta: backend.txt asks for '%s' - ignored,"
+                           " MorphOS has only the RTG path\n", word);
+                backend = AMIGAGFX_BACKEND_RTG;
+#else
                 if (word[0] == 'r' || word[0] == 'R')
                     backend = AMIGAGFX_BACKEND_RTG;
                 else if (word[0] == 'w' || word[0] == 'W')
                     backend = AMIGAGFX_BACKEND_WB;
+#endif
             }
             fclose(bf);
         }
@@ -2182,9 +2266,28 @@ int main(void)
      * VIEW_FAST is defined next to the table, so the two cannot drift apart
      * again, and the index is bounds-checked as well - a mode that does not
      * exist should fall back to full width, not to a number. */
+#ifdef __MORPHOS__
+    /* FULL WIDTH BY DEFAULT HERE, and `width` compared against the widths this
+     * build actually has.
+     *
+     * Starting narrow is right on the Amiga: VIEW_FAST is a fifth less
+     * chunky-to-planar and a fifth less renderer on a machine that needs both.
+     * Neither reason survives - there is no c2p, and the renderer is not what
+     * limits this target - so the default is the whole screen.
+     *
+     * The two literals had to go with it. `320` and `256` are the widths of
+     * ONE build; on a 640-wide screen the only value that selects full width is
+     * a number this build never uses, so `width 640` in opts.txt was read,
+     * matched nothing, and left the game in a narrow mode the player had asked
+     * it to leave. Comparing against SCREEN_W and FAST_W says what was meant. */
+    mode_narrow = VIEW_FULL;
+    if (opt_width == SCREEN_W) mode_narrow = VIEW_FULL;
+    if (opt_width == FAST_W)   mode_narrow = VIEW_FAST;
+#else
     mode_narrow = VIEW_FAST;
     if (opt_width == 320) mode_narrow = VIEW_FULL;
     if (opt_width == 256) mode_narrow = VIEW_FAST;
+#endif
     if (opt_camh >= 25 && opt_camh <= 96)
         gta_render_set_cam_h(&view, opt_camh);
     mode_apply(&view);
@@ -2194,8 +2297,18 @@ int main(void)
     frame_t0 = sim_last;
     log_line("gta: interactive - ON FOOT: arrows run and turn, shift walks, "
              "TAB frees the camera, -/= zoom, SPACE dumps a frame, ESC quits");
+#ifdef __MORPHOS__
+    /* The two widths are not 320/256 here - see the FAST_W note - so the help
+     * line says what they are rather than a pair of numbers from another
+     * build. */
+    printf("gta:   F1 full res  F2 half res  F3 title bar  "
+           "F4 width %d/%d  F5 2.5D / 2.5D-light / flat  F6 frame cap  F7/F8 camera\n",
+           SCREEN_W, FAST_W);
+    fflush(stdout);
+#else
     log_line("gta:   F1 full res  F2 half res  F3 title bar  "
              "F4 width 320/256  F5 2.5D / 2.5D-light / flat  F6 frame cap  F7/F8 camera");
+#endif
     frames = 0;
     t0 = amiga_uclock_us();
     prof_t0 = t0;
@@ -3721,9 +3834,24 @@ int main(void)
          * every 71 minutes - a session longer than that would otherwise
          * freeze here for the rest of the wrap. */
         if (frame_cap) {
+#ifdef __MORPHOS__
+            /* MorphOS SLEEPS the leftover instead of spinning on it, and the
+             * difference is not a micro-optimisation. A 68020 that has
+             * finished a frame early has no spare capacity worth donating, so
+             * the busy-wait below costs it nothing. A G4 finishes a 320x240
+             * frame in a fraction of the 16 ms budget and then burns the whole
+             * remainder pinning a core at 100% - Ambient crawls, the fans spin
+             * up, and a game that is running perfectly looks like one that has
+             * locked the machine. The wait is on timer.device, so the time
+             * goes back to the system. Same wrap-safe subtraction as below. */
+            unsigned long spent = (unsigned long)(amiga_uclock_us() - frame_t0);
+            if (spent < (unsigned long)FRAME_CAP_US)
+                amiga_uclock_sleep_us((unsigned long)FRAME_CAP_US - spent);
+#else
             while ((unsigned long)(amiga_uclock_us() - frame_t0)
                        < (unsigned long)FRAME_CAP_US)
                 ;
+#endif
         }
         frame_t0 = amiga_uclock_us();
     }

@@ -137,7 +137,28 @@
  * across - far past anything an Amiga will open, and past the 640x400 the host
  * tools use to inspect frames. A target bigger than that still renders; it
  * just falls back to asking the map every time. */
+#ifdef __MORPHOS__
+/* 64, BECAUSE 32 WAS SIZED FOR A 320-WIDE SCREEN AND THIS ONE IS 640.
+ *
+ * The ring count is dst_w / (2 * step0) + 2, and step0 shrinks with the zoom.
+ * At 320 wide the worst corner the game can reach - zoom 8 at camera height
+ * 25 - works out at 31, which is how 32 was arrived at: exactly one ring of
+ * headroom. Double the width and that same corner is 60.
+ *
+ * Nothing BREAKS at 32 - `cache` turns itself off and every lookup goes to the
+ * map instead, exactly as the paragraph above promises. But it turns off for
+ * every zoom below 16, and it then costs six map lookups per cell instead of
+ * one, over four times as many cells: a slowdown of more than an order of
+ * magnitude, arriving precisely at the wide zoom where the frame is already
+ * the heaviest. 25 KB of BSS to keep the cache alive across the whole zoom
+ * range is not a close call.
+ *
+ * The Amiga keeps 32. It cannot reach past 31, so the extra would be 25 KB of
+ * a 68020's memory bought to hold nothing. */
+#define GTA_MAX_RINGS 64
+#else
 #define GTA_MAX_RINGS 32
+#endif
 
 /* Largest lid height the row map covers. A lid taller than this is off the
  * bottom of a 320x200 frame long before it is reached. */
