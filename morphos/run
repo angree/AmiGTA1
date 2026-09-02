@@ -1,0 +1,25 @@
+; Start AmiGTA on MorphOS.
+;
+; RUN THIS FROM THE GAME'S OWN DRAWER:
+;
+;     cd Work:Games/AmiGTA
+;     execute run
+;
+; There is nothing to assign. The game finds its data through PROGDIR:, the
+; drawer the executable itself was loaded from, so it works wherever you put
+; it - and PROGDIR: is set for a double-click from Ambient just as it is for a
+; shell start.
+;
+; WHY THE REDIRECT IS NOT OPTIONAL. The engine reports everything it does on
+; stdout: which screen mode it got, which blit method the screen turned out to
+; support, the tile and map summaries, the frame timings, and the reason for
+; every failure. Started from Ambient there is no console for any of that to go
+; to, so the one thing you would need in order to say what went wrong is the
+; one thing you would not have. It goes to a file beside the executable
+; instead.
+;
+; NO `Stack` LINE, unlike the Amiga build's script. The MorphOS binary carries
+; its own 1 MB stack in the __stack symbol (see native/morphos_gfx.c), so it
+; gets it however it was started - from here, from a shell, or from an icon.
+; The Amiga version cannot do that under libnix and needs the script.
+gta-morphos >gta.log

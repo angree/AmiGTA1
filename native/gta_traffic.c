@@ -431,7 +431,23 @@ void gta_traffic_set_view_blocks(gta_traffic *tr, int blocks)
      * spawn cars on top of the player, and high so a wide one cannot make the
      * band scan walk the whole map every half second. */
     if (blocks < 3)  blocks = 3;
+#ifdef __MORPHOS__
+    /* THE CEILING IS TWICE AS HIGH BECAUSE THE SCREEN IS TWICE AS WIDE.
+     *
+     * 24 was chosen against a 320-pixel view, where nothing can ask for more.
+     * At 640 the widest zoom asks for 41, gets 24, and the ring this function
+     * exists to keep OFF-SCREEN ends up well inside the frame: cars despawn at
+     * 33 blocks while the renderer is still drawing out to 55, so they vanish
+     * and pop into existence in plain sight - the exact failure the caller's
+     * comment in gta_main.c says this call was added to prevent.
+     *
+     * The other half of the reason for a ceiling - "a wide one cannot make the
+     * band scan walk the whole map every half second" - is a budget, and it is
+     * a 68020's budget. Doubling it costs a PowerPC nothing measurable. */
+    if (blocks > 48) blocks = 48;
+#else
     if (blocks > 24) blocks = 24;
+#endif
     tr->view_blocks = blocks;
 }
 

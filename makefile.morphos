@@ -1,0 +1,112 @@
+# AmiGTA for MorphOS - the release commands.  GNU make.
+#
+#	make -f makefile.morphos                        # build
+#	make -f makefile.morphos beta    ARCHIVEDIR=    # a snapshot archive
+#	make -f makefile.morphos release ARCHIVEDIR=    # the versioned archive
+#	make -f makefile.morphos clean
+#
+# THE COMPILING IS NOT HERE. It is in tools/bin/build_morphos.sh, next to
+# build.sh and build_host.sh, because that is where this repository keeps its
+# builds - and because one place for the flags is the only arrangement in which
+# they cannot drift. This file adds what a shell script is bad at: the staged
+# drawer and the two archive commands.
+#
+# beta/release write into ram: by default, which is a path on MorphOS and is
+# not one on the Linux cross-compile box where this normally runs. Pass
+# ARCHIVEDIR= there and the archives land in build/morphos/dist/ instead.
+
+ROOT   := $(dir $(lastword $(MAKEFILE_LIST)))
+OUTDIR = build/morphos
+TOOLS  = tools
+
+EXE    = $(OUTDIR)/gta-morphos
+BAKE   = $(OUTDIR)/gtabake
+PREFS  = $(OUTDIR)/gtaprefs
+
+VER      = v0.0.3
+DISTNAME = AmiGTA
+# The staged drawer sits a level below $(OUTDIR) so the loose build products
+# and the shippable drawer never share a directory - `stage` is then free to
+# wipe its own tree without going near the binaries it is about to copy.
+STAGEROOT = $(OUTDIR)/dist
+DISTDIR   = $(STAGEROOT)/$(DISTNAME)
+
+# No trailing slash in the default: `ram:` does not take one. A plain directory
+# does, so pass ARCHIVEDIR=dist/ rather than ARCHIVEDIR=dist.
+ARCHIVEDIR = ram:
+
+.DEFAULT_GOAL := all
+.PHONY: all clean stage beta release dump
+
+all:
+	@sh $(TOOLS)/bin/build_morphos.sh
+
+$(EXE) $(BAKE) $(PREFS): all
+
+# --- the distribution drawer ------------------------------------------------
+#
+# Built fresh every time, because the alternative is an archive carrying
+# whatever the last test run left lying around - frame dumps, gta.log, a
+# backend.txt somebody set once. Those are debris from testing, not part of a
+# release, and the only reliable way to keep them out is to not start from a
+# directory that could contain them.
+#
+# NO GAME DATA, and nothing derived from any - the same rule package.sh states
+# at length. The drawer ships the CONVERTER and an empty GTADATA with a note
+# naming the two files the player has to put there. gtabake produces a
+# byte-identical .til to the host baker, so the player converts their own art
+# on their own machine and nothing of DMA's ever leaves this one.
+stage: all
+	rm -rf $(DISTDIR) $(DISTDIR).info
+	mkdir -p $(DISTDIR)/GTADATA
+	cp $(EXE) $(BAKE) $(PREFS) $(DISTDIR)/
+	cp morphos/run $(DISTDIR)/run
+	cp morphos/README.txt $(DISTDIR)/README.txt
+	python3 $(TOOLS)/bin/readme_gen.py --datanote \
+		$(DISTDIR)/GTADATA/_PUT_YOUR_GTA_FILES_HERE.txt
+	cp winuae/work-template/AmiGTA.info $(DISTDIR).info
+	@echo "staged $(DISTDIR)"
+
+# --- archives ---------------------------------------------------------------
+#
+# lha takes the archive name FIRST and has no -q: passing one makes it the
+# archive name and leaves a file literally called "-q" behind. package.sh
+# learned that the hard way and says so.
+#
+# AND IT IS ALLOWED TO FAIL, on purpose. The `lha` on a Linux box is usually
+# Lhasa, which only ever EXTRACTS - it has no `a` command at all - so a build
+# run on the cross-compile machine cannot write a .lha and must not stop
+# because of it. On MorphOS, where a real lha lives and where these targets are
+# meant to be run, it works and the .lha is the archive that matters. The .zip
+# is written either way, so the cross box still produces something shippable.
+#
+# Both targets cd into $(STAGEROOT) first so members come out as "AmiGTA/..."
+# rather than "build/morphos/dist/AmiGTA/...", which is what decides whether
+# unpacking gives you a drawer or a path. zip writes forward slashes, for the
+# reason package.sh insists on: an archive carrying backslashes unpacks on an
+# Amiga-family machine as one file called "AmiGTA\run" instead of a drawer.
+LHA_NOTE = echo "  (no working lha here - .lha skipped, see the note above)"
+
+beta: stage
+	cd $(STAGEROOT) && { lha a $(ARCHIVEDIR)$(DISTNAME)-morphos-beta.lha \
+		$(DISTNAME) $(DISTNAME).info || $(LHA_NOTE); }
+	cd $(STAGEROOT) && zip -r -q $(ARCHIVEDIR)$(DISTNAME)-morphos-beta.zip \
+		$(DISTNAME) $(DISTNAME).info
+	@echo "beta: $(ARCHIVEDIR)$(DISTNAME)-morphos-beta.{lha,zip}"
+
+release: stage
+	cd $(STAGEROOT) && { lha a $(ARCHIVEDIR)$(DISTNAME)-$(VER)-morphos.lha \
+		$(DISTNAME) $(DISTNAME).info || $(LHA_NOTE); }
+	cd $(STAGEROOT) && zip -r -q $(ARCHIVEDIR)$(DISTNAME)-$(VER)-morphos.zip \
+		$(DISTNAME) $(DISTNAME).info
+	@echo "release: $(ARCHIVEDIR)$(DISTNAME)-$(VER)-morphos.{lha,zip}"
+
+clean:
+	rm -rf $(OUTDIR)
+
+# MorphOS binaries are ELF and carry their symbols; `dump` is how a PC in a
+# crash log becomes a function name. Never strip a release either - the same
+# rule build.sh states, for the same reason.
+dump: all
+	ppc-morphos-objdump --syms --reloc --disassemble-all $(EXE) \
+		> $(OUTDIR)/gta-morphos.dump

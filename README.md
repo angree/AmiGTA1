@@ -40,9 +40,13 @@ gtaprefs GFX=WB            set it and save, no window
 gtaprefs AUDIO=AHI
 ```
 
-**On MorphOS, set Graphics to Window** (`gtaprefs GFX=WB`). The port otherwise
-opens a screen of its own, cannot get an 8-bit mode, falls back to the planar +
-c2p path that needs the real Amiga chipset, and draws the city as colour noise.
+**On MorphOS, use the native build instead** — see [MorphOS](#morphos). If you
+do run the 68k binaries there under emulation, set Graphics to Window
+(`gtaprefs GFX=WB`): they otherwise open a screen of their own, cannot get an
+8-bit mode, fall back to the planar + c2p path that needs the real Amiga
+chipset, and draw the city as colour noise. That fallback is exactly what the
+native build removes.
+
 Sound does not play yet on any machine; the setting is recorded for when it
 does.
 
@@ -96,10 +100,92 @@ an optimisation but a hazard: Kickstart 3.1's `mathieeesingbas.library` has
 broken single-precision multiply and divide entries on FPU-less machines, and
 68040/68060 FPUs are partly trap-emulated anyway.
 
+## MorphOS
+
+There is a native PowerPC build for **MorphOS**. It is not the 68k binary under
+emulation — that does not work, and the reason is worth stating: the RTG build
+asks CyberGraphX for an 8-bit screen and *falls back to AGA* when there is none,
+and modern MorphOS hardware (a Radeon) frequently offers no 8-bit chunky mode at
+all. The fallback then allocates bitplanes and runs Kalms' 68020
+chunky-to-planar against a chipset that is not there.
+
+```sh
+tools/bin/build_morphos.sh                      # gta-morphos, gtabake, gtaprefs
+make -f makefile.morphos release ARCHIVEDIR=    # the shippable drawer, archived
+```
+
+`build_morphos.sh` sits beside `build.sh` and has the same shape — same root
+discovery, same compile helper, same written-out file list, same refusal to
+strip. The binary is `gta-morphos`, named the way `gta-aga` and `gta-rtg240`
+are, so the four can share a drawer and still be told apart.
+
+`makefile.morphos` adds only what a shell script is bad at: `beta` and
+`release` stage a clean `AmiGTA` drawer — binary, `gtabake`, `gtaprefs`, `run`,
+a MorphOS README and an empty `GTADATA` with a note saying which two of the
+player's own files go in it — and archive it. They write into `ram:` by
+default; pass `ARCHIVEDIR=` when building on the Linux cross box, where `ram:`
+is not a path. The `.lha` is skipped there with a note (Linux `lha` is usually
+Lhasa, which only extracts); the `.zip` is always written.
+
+Toolchain: `ppc-morphos-gcc-9` with the MorphOS SDK at `/gg`. Nothing else — no
+`vasm`, and **no vendored CyberGraphX headers**: `cybergraphx/` is part of the
+MorphOS SDK, so the "you must supply your own" note below does not apply here.
+
+The whole engine — every line of the rendering, physics, traffic and data code —
+is compiled from the same sources the Amiga build uses, unmodified. It was
+already portable: fixed point throughout with no floating point anywhere, and
+GTA's little-endian data files read a byte at a time rather than by casting a
+struct over them, because the same code has to build for the big-endian 68k and
+for the host test harness. PowerPC is big-endian too and got that for free.
+
+What changes is the platform layer, and only that:
+
+| | |
+|---|---|
+| `native/morphos_gfx.c` | new. The RTG path, natively — screen, palette, blit, input. Replaces `native/amiga_gfx.c` wholesale. |
+| `native/amiga_uclock.c` | `TimerBase` is `struct Library *` here, and there is a `timer.device` sleep for the frame cap. |
+| `native/gta_main.c` | 640x480 and RTG by default; the frame cap sleeps instead of spinning. |
+
+Everything MorphOS-specific is under `#ifdef __MORPHOS__`. `amiga_gfx.c`,
+`amiga_startup.c`, `amiga_trap.c`, `fp_single.c`, `fp_conv.c`, `libnix_fixes.c`
+and the four assembler files are not built at all — they are 68k Chip RAM, 68k
+exception frames, workarounds for Kickstart 3.1's broken soft-float and for
+libnix's `wmemcpy`, and chunky-to-planar. None of them mean anything on
+PowerPC.
+
+The 68k build is unaffected, and that is checked rather than asserted: with
+`__MORPHOS__` undefined, `gta_main.c`, `gta_peds.c` and `gta_traffic.c`
+preprocess byte-for-byte identically to the commit this branched from.
+
+Three differences you will actually notice:
+
+* **640x480, rendered.** The Amiga's own `gta-rtg480` renders 320x240 and
+  doubles it, because a 68020 cannot rasterise four times the pixels at a
+  playable rate. That constraint is the CPU's, not the renderer's, and it does
+  not survive the move — so here the picture is drawn at full resolution and
+  `GTA_SCALE2X` is never defined. `SCREEN_W`/`SCREEN_H` at the top of
+  `makefile.morphos` are the only place it is decided.
+* **The screen is whatever depth the machine has.** 8-bit is asked for first,
+  because the chunky buffer *is* the display format there and a blit becomes a
+  memcpy; 32/16/24/15 are tried after, and on those the blit is
+  `WriteLUTPixelArray`. The granted size is read back and the picture centred
+  in it, so a display that hands back something other than what was asked for
+  still works.
+* **The frame cap sleeps.** A 68020 that finishes a frame early has no spare
+  capacity worth donating, so the Amiga build busy-waits. A G4 finishes in a
+  fraction of the budget and would spend the rest pinning a core at 100%, which
+  makes a game that is running perfectly look like one that has locked the
+  machine.
+
+Start it with `morphos/run`, or redirect stdout yourself — the engine reports
+the screen mode it got, the blit method, and the reason for every failure there,
+and from Ambient there is no console for it to go to.
+
 ## Building
 
 Toolchain: [bebbo amiga-gcc](https://github.com/bebbo/amiga-gcc) 6.5.0b, plus
-`vasm`. The build runs under WSL or any Linux.
+`vasm`. The build runs under WSL or any Linux. (For MorphOS see
+[above](#morphos).)
 
 ```sh
 tools/bin/build.sh          # the three Amiga binaries and the tile converter
