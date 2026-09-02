@@ -566,10 +566,28 @@ long amigagfx_planes_bytes(void)
 static int cgx_open(void)
 {
 	if (CyberGfxBase != NULL) return 1;
+	/* v41 IS A PREFERENCE, NOT A REQUIREMENT.
+	 *
+	 * Asking for 41 and giving up is how MorphOS ended up with no RTG at all:
+	 * the screen path then fell through to a planar screen and c2p painted
+	 * colour noise into it. Everything used here - BestCModeIDTagList,
+	 * GetCyberMapAttr, WriteLUTPixelArray, LockBitMapTags - is v40, and the
+	 * mode that comes back is validated three ways anyway (see
+	 * rtg_best_mode), so a lower library cannot smuggle a bad one through. */
 	CyberGfxBase = OpenLibrary((CONST_STRPTR)CYBERGFXNAME, 41L);
+	if (CyberGfxBase == NULL)
+		CyberGfxBase = OpenLibrary((CONST_STRPTR)CYBERGFXNAME, 40L);
+	if (CyberGfxBase == NULL)
+		CyberGfxBase = OpenLibrary((CONST_STRPTR)CYBERGFXNAME, 0L);
 	if (CyberGfxBase == NULL) {
-		amigagfx_log("cybergraphics.library v41 not available - RTG modes disabled");
+		amigagfx_log("no cybergraphics.library at all - RTG modes disabled");
 		return 0;
+	}
+	{
+		char b[80];
+		snprintf(b, sizeof b, "cybergraphics.library v%d opened",
+		         (int)((struct Library *)CyberGfxBase)->lib_Version);
+		amigagfx_log(b);
 	}
 	return 1;
 }
@@ -941,6 +959,41 @@ static int open_screen_aga(int w, int h, ULONG quiet, ULONG title, int depth)
 		}
 	}
 	return 0;
+}
+
+/* IS THIS MACHINE GRAPHICS-CARD-ONLY?
+ *
+ * Asked when the RTG screen could not be had, to decide between a planar
+ * screen and a window. The test is the Workbench screen's own depth: the
+ * Amiga chipset cannot show more than 8 bitplanes, so a deeper public screen
+ * means the display is a card and a planar screen here would be emulated -
+ * Intuition grants it, c2p writes into bitplanes that are not laid out the way
+ * it assumes, and the result is a recognisable city in shredded colours.
+ *
+ * Deliberately NOT asked through cybergraphics.library: the case this exists
+ * for is precisely the one where that library could not be opened.
+ *
+ * MEASURED 2026-08-28 ON MORPHOS 3.20: IT DID NOT FIRE. The port still took
+ * the planar path there and still drew colour noise. GetBitMapAttr is known
+ * to report 8 for CGX bitmaps whatever the display really is, so this test is
+ * probably answering the wrong question - but that is a guess, and guessing
+ * is what produced three failed fixes in a row. What would settle it is the
+ * port's own startup log, which could not be read inside MorphOS: the game
+ * covers the console, the console never took keyboard focus, and the CD has
+ * no serial.device or Port-Handler to mount SER: with. Until that log can be
+ * read, `backend.txt` containing `wb` is the working answer on MorphOS and it
+ * is documented as such. */
+static int wb_screen_is_deep(void)
+{
+	struct Screen *pub = LockPubScreen(NULL);
+	int deep = 0;
+
+	if (pub != NULL) {
+		if (pub->RastPort.BitMap != NULL)
+			deep = ((int)GetBitMapAttr(pub->RastPort.BitMap, BMA_DEPTH) > 8);
+		UnlockPubScreen(NULL, pub);
+	}
+	return deep;
 }
 
 /* RTG: an 8-bit CyberGraphX/Picasso96 screen. Deliberately NO SA_BitMap - the
@@ -1481,7 +1534,34 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 			break;
 	}
 	if (err != 0) {
-		if (backend == AMIGAGFX_BACKEND_RTG) cgx_close();
+		/* AN RTG-ONLY MACHINE MUST NOT FALL BACK TO A PLANAR SCREEN.
+		 *
+		 * If cybergraphics.library opened but had no 8-bit mode to give, this
+		 * is a graphics-card-only system - MorphOS on a Pegasos, a Picasso96
+		 * setup with no LUT8 modes. Intuition will still GRANT a planar
+		 * screen there, so `open_screen_aga` below succeeds and c2p writes
+		 * into bitplanes that are not laid out the way it assumes: the
+		 * geometry comes out right and every colour is noise.
+		 *
+		 * Measured on MorphOS 3.20 under QEMU pegasos2, 2026-08-28: all three
+		 * builds drew a recognisable but colour-shredded city, at 320x240,
+		 * 640x480 and 800x600 alike, with `c2p` in the profile line. The same
+		 * binary with `wb` in backend.txt drew Liberty City correctly - the
+		 * window path goes through WriteLUTPixelArray, which does not care
+		 * how deep the display is.
+		 *
+		 * So: window first, planar only if there is no window either. On a
+		 * real Amiga with no card cgx_open() fails and none of this runs, so
+		 * the AGA path is exactly what it always was. */
+		if (backend == AMIGAGFX_BACKEND_RTG && wb_screen_is_deep()) {
+			amigagfx_log("RTG has no 8-bit mode - a planar screen here would "
+			             "be c2p garbage; opening a WINDOW instead");
+			cgx_close();
+			if (open_window_wb(w, h) == 0) return finish_window_open();
+			amigagfx_log("...and no window either - falling back to planar");
+		} else if (backend == AMIGAGFX_BACKEND_RTG) {
+			cgx_close();
+		}
 		err = open_screen_aga(w, h, quiet, title, DEPTH_AGA);
 		if (err != 0) { amigagfx_close(); return err; }
 	}

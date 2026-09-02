@@ -8,8 +8,9 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.0.2.zip    the three binaries, the tile converter, icons, run
-#   AmiGTA-v0.0.2.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.0.3.zip    the three binaries, the settings editor, the tile
+#                        converter, icons, run
+#   AmiGTA-v0.0.3.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -39,7 +40,12 @@ WORK=/mnt/c/temp/amiga_gta/work
 #
 #   Windows: C:\temp\amiga_gta\dist\
 DIST=/mnt/c/temp/amiga_gta/dist
-VER=v0.0.2
+# BUMPED TO 0.0.3 WHEN gtaprefs WAS ADDED, and that is bookkeeping rather
+# than a release: nothing is published until somebody runs this script and
+# uploads what it makes. The number moved because the archive now contains a
+# program that v0.0.2 did not, and an archive labelled with a version whose
+# contents it does not have is a support problem nobody can debug remotely.
+VER=v0.0.3
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory
@@ -50,7 +56,12 @@ mkdir -p "$STAGE" 2>/dev/null || true
 [ -d "$STAGE" ] || { echo "package: cannot create $STAGE"; exit 1; }
 
 # --- the binaries and what they need to start -------------------------------
-for b in gta-aga gta-rtg240 gta-rtg480; do
+# gtaprefs ships WITH the game and not as an extra download, because the case
+# it exists for is a player whose machine draws nothing usable. Telling them to
+# go and fetch a second archive at that point would be the same fault as
+# telling them to create backend.txt in a text editor, which is what it
+# replaces.
+for b in gta-aga gta-rtg240 gta-rtg480 gtaprefs; do
     [ -f "$ROOT/build/$b" ] || { echo "package: missing build/$b - run build.sh"; exit 1; }
     cp "$ROOT/build/$b" "$STAGE/$b"
     [ -f "$WORK/$b.info" ] && cp "$WORK/$b.info" "$STAGE/$b.info"

@@ -38,7 +38,7 @@
  *
  * If SIM_HZ changes, scale these by the same factor. */
 #define WALK_SPEED  (39321L)        /* 0.60 world px/tick = 0.94 blocks/s */
-#define RUN_SPEED   (85197L)        /* 1.30 world px/tick = 2.03 blocks/s */
+#define RUN_SPEED   GTA_RUN_SPEED_FP /* 1.30 world px/tick = 2.03 blocks/s */
 
 /* Angle units per tick. A turn is 256 units, so 5 at 50 Hz is a full circle in
  * just over a second. Judged right on screen and deliberately NOT changed when
@@ -392,6 +392,27 @@ int gta_player_sprite(const gta_player *p)
         f = GTA_PED_EXITCAR_FIRST
           + (p->frame < GTA_PED_EXITCAR_FRAMES
              ? p->frame : GTA_PED_EXITCAR_FRAMES - 1);
+        break;
+    case GTA_ANIM_ENTER_BIKE:
+        f = GTA_PED_ENTER_BIKE_FIRST
+          + (p->frame < GTA_PED_ENTER_BIKE_FRAMES
+             ? p->frame : GTA_PED_ENTER_BIKE_FRAMES - 1);
+        break;
+    case GTA_ANIM_EXIT_BIKE:
+        f = GTA_PED_EXIT_BIKE_FIRST
+          + (p->frame < GTA_PED_EXIT_BIKE_FRAMES
+             ? p->frame : GTA_PED_EXIT_BIKE_FRAMES - 1);
+        break;
+    case GTA_ANIM_VAULT:
+        f = GTA_PED_VAULT_FIRST
+          + (p->frame < GTA_PED_VAULT_FRAMES
+             ? p->frame : GTA_PED_VAULT_FRAMES - 1);
+        break;
+    case GTA_ANIM_SLIDE_UNDER: f = GTA_PED_SLIDE_UNDER; break;
+    case GTA_ANIM_PUNCH:
+        f = GTA_PED_PUNCH_FIRST
+          + (p->frame < GTA_PED_PUNCH_FRAMES
+             ? p->frame : GTA_PED_PUNCH_FRAMES - 1);
         break;
     default:            f = GTA_PED_STAND;                 break;
     }

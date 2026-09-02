@@ -2,6 +2,13 @@
  * loads at runtime.
  *
  *   build/host/gtabake <style.gry> <out.til>
+ *   build/host/gtabake -sfx <audio/level001> <out.snd>
+ *
+ * The second form bakes the SOUND bank instead: it reads <prefix>.sdt and
+ * <prefix>.raw - GTA's own pair - and writes the Paula-ready bank described in
+ * native/gta_sfx.h. Same tool because it is the same job (convert the player's
+ * own files, once, on whichever machine they have) and because shipping one
+ * converter is one thing for a player to find instead of two.
  *
  * HOST TOOL. It runs on the PC at build time so that the Amiga never has to
  * parse a .GRY, never downscales a block, and never rotates one. See
@@ -23,6 +30,7 @@
 
 #include "../native/gta_style.h"
 #include "../native/gta_tiles.h"
+#include "../native/gta_sfx.h"
 
 #define SRC_DIM  GTA_BLOCK_DIM      /* 64 */
 #define DST_DIM  GTA_TILE_DIM       /* 32 */
@@ -72,6 +80,12 @@ static void put_be32(unsigned char *p, unsigned long v)
     p[3] = (unsigned char)v;
 }
 
+static void put_be16(unsigned char *p, unsigned int v)
+{
+    p[0] = (unsigned char)(v >> 8);
+    p[1] = (unsigned char)v;
+}
+
 /* Fetch block `index` of `type`, shrink it, and hand back a pointer to a
  * static 32x32 buffer. Returns NULL if the style file has no such block. */
 static const unsigned char *fetch(const gta_style *st, gta_block_type type,
@@ -95,10 +109,28 @@ int main(int argc, char **argv)
     int n_side, n_lid, n_aux, i, r;
     long written = 0;
     int n_remaps = 0;
+    long n_deltas = 0, n_delta_bytes = 0;
     unsigned long n_sprite_bytes = 0;
+
+    if (argc == 4 && strcmp(argv[1], "-sfx") == 0) {
+        /* THE SOUND BANK. Two input files from one prefix, because that is how
+         * the original names them - level001.sdt beside level001.raw - and
+         * asking the player to type both would be asking them to get one
+         * wrong. */
+        char sdt[512], raw[512];
+        size_t n = strlen(argv[2]);
+        if (n + 5 >= sizeof sdt) {
+            fprintf(stderr, "gtabake: path too long\n");
+            return 2;
+        }
+        memcpy(sdt, argv[2], n); memcpy(sdt + n, ".sdt", 5);
+        memcpy(raw, argv[2], n); memcpy(raw + n, ".raw", 5);
+        return gta_sfx_bake(sdt, raw, argv[3], stdout) == 0 ? 0 : 1;
+    }
 
     if (argc != 3) {
         fprintf(stderr, "usage: %s <style.gry> <out.til>\n", argv[0]);
+        fprintf(stderr, "       %s -sfx <audio/level001> <out.snd>\n", argv[0]);
         return 2;
     }
 
@@ -244,6 +276,93 @@ int main(int argc, char **argv)
         n_remaps = st.remap_count;
     }
 
+    /* THE SPRITE DELTAS, after the remaps. Open doors, damage panels, brake
+     * lights - see gta_tiles.h for the layout and PROGRESS.md 111 for why the
+     * record format is a fact rather than a reading.
+     *
+     * The streams are COPIED OUT of sprite_graphics rather than referenced,
+     * so the baked file stays self-contained: the Amiga never opens a .GRY.
+     * Offsets are rewritten to be relative to the copied blob. */
+    {
+        unsigned char n[8], rec[8], idx[4];
+        long i, blob = 0;
+
+        for (i = 0; i < st.delta_count; i++)
+            blob += (long)st.deltas[i].size;
+
+        put_be32(n,     (unsigned long)st.delta_count);
+        put_be32(n + 4, (unsigned long)blob);
+        fwrite(n, 1, 8, out);
+
+        for (i = 0; i < st.sprite_count; i++) {
+            int f = st.sprites[i].delta_first;
+            put_be16(idx,     (unsigned)(f < 0 ? 0 : f));
+            put_be16(idx + 2, (unsigned)st.sprites[i].delta_count);
+            fwrite(idx, 1, 4, out);
+        }
+
+        {
+            unsigned long at = 0;
+            for (i = 0; i < st.delta_count; i++) {
+                put_be32(rec,     at);
+                put_be32(rec + 4, (unsigned long)st.deltas[i].size);
+                fwrite(rec, 1, 8, out);
+                at += st.deltas[i].size;
+            }
+        }
+
+        for (i = 0; i < st.delta_count; i++) {
+            unsigned long off = st.deltas[i].offset;
+            unsigned long sz  = st.deltas[i].size;
+            /* A record pointing outside sprite_graphics is a corrupt style
+             * file. Write zeros rather than reading wild, and say so - a
+             * silently shortened blob would desynchronise every later
+             * offset. */
+            if (sz == 0) continue;
+            if (off > st.sprite_graphics_len ||
+                sz > st.sprite_graphics_len - off) {
+                long k;
+                fprintf(stderr, "gtabake: delta %ld is outside the sprite "
+                                "graphics (off %lu size %lu) - zeroed\n",
+                        i, off, sz);
+                for (k = 0; k < (long)sz; k++) fputc(0, out);
+                continue;
+            }
+            fwrite(st.sprite_graphics + off, 1, (size_t)sz, out);
+        }
+
+        written += 8 + (long)st.sprite_count * 4
+                     + (long)st.delta_count * 8 + blob;
+        n_deltas = st.delta_count;
+        n_delta_bytes = blob;
+    }
+
+    /* THE OBJECT TABLE, last (version 7). Sprite indices are RESOLVED here
+     * - absolute, the way the car records carry theirs - so the Amiga never
+     * needs the category sums. See gta_tiles.h for the record. */
+    {
+        unsigned char n[4], rec[GTA_TIL_OBJREC];
+        int i;
+        put_be32(n, (unsigned long)st.object_count);
+        fwrite(n, 1, 4, out);
+        for (i = 0; i < st.object_count; i++) {
+            const struct gta_object_info *o = &st.objects[i];
+            long w = o->w, h = o->h, d = o->depth;
+            memset(rec, 0, sizeof rec);
+            put_be16(rec, o->sprite_index < 0 ? 0xffffU
+                                              : (unsigned)o->sprite_index);
+            put_be16(rec + 2,  (unsigned)(w < 0 ? 0 : w > 65535 ? 65535 : w));
+            put_be16(rec + 4,  (unsigned)(h < 0 ? 0 : h > 65535 ? 65535 : h));
+            put_be16(rec + 6,  (unsigned)(d < 0 ? 0 : d > 65535 ? 65535 : d));
+            put_be16(rec + 8,  (unsigned)(o->weight & 0xffff));
+            put_be16(rec + 10, (unsigned)(o->aux & 0xffff));
+            rec[12] = (unsigned char)o->status;
+            rec[13] = (unsigned char)o->num_into;
+            fwrite(rec, 1, GTA_TIL_OBJREC, out);
+        }
+        written += 4 + (long)st.object_count * GTA_TIL_OBJREC;
+    }
+
     if (fclose(out) != 0) {
         fprintf(stderr, "gtabake: write failed on %s\n", argv[2]);
         gta_style_free(&st);
@@ -254,6 +373,11 @@ int main(int argc, char **argv)
     printf("  %d side, %d lid x%d rotations, %d aux\n",
            n_side, n_lid, GTA_LID_ROTATIONS, n_aux);
     printf("  %d palette remap tables\n", n_remaps);
+    printf("  %ld sprite deltas, %ld stream bytes\n", n_deltas, n_delta_bytes);
+    printf("  %d object types (bullet 0x4a -> sprite %d, splat 0xd -> %d)\n",
+           st.object_count,
+           st.object_count > 0x4a ? st.objects[0x4a].sprite_index : -1,
+           st.object_count > 0x0d ? st.objects[0x0d].sprite_index : -1);
     printf("  %d sprites at source scale, %lu pixel bytes (%d ped from %d)\n",
            st.sprite_count, n_sprite_bytes,
            gta_style_sprite_count(&st, GTA_SPR_PED),

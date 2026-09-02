@@ -33,7 +33,7 @@ cd "$ROOT"
 mkdir -p build/host out
 
 WARN="-Wall -Wextra -std=c89 -pedantic -Wno-overlength-strings"
-SRC_COMMON="native/gta_style.c native/gta_map.c native/gta_tiles.c native/gta_render.c native/gta_hud.c native/gta_trig.c native/gta_player.c native/gta_car.c native/gta_nav.c native/gta_route.c native/gta_traffic.c native/gta_vehphys.c native/gta_peds.c"
+SRC_COMMON="native/gta_style.c native/gta_map.c native/gta_tiles.c native/gta_render.c native/gta_hud.c native/gta_trig.c native/gta_player.c native/gta_car.c native/gta_nav.c native/gta_route.c native/gta_traffic.c native/gta_vehphys.c native/gta_peds.c native/gta_weapon.c native/gta_sfx.c"
 
 echo "--- gtadump (release) ---"
 gcc -O2 $WARN -o build/host/gtadump tools/gtadump.c $SRC_COMMON
@@ -43,6 +43,17 @@ gcc -O2 $WARN -o build/host/vehruler tools/vehruler.c $SRC_COMMON
 
 echo "--- gtabake (release) ---"
 gcc -O2 $WARN -o build/host/gtabake tools/gtabake.c $SRC_COMMON
+
+# THE SETTINGS FILE'S REGRESSION TEST, and it earned its place the same day it
+# was written. The first version of the reader used fscanf("%s %s"), which does
+# not know what a line is, so the multi-word comment header that the WRITER
+# emits shifted every following pair out of phase and the file came back as all
+# defaults - silently, because a misaligned pair is just an unrecognised key.
+# That cost a two-minute emulator round trip to notice and would have shipped
+# as "the settings program does nothing".
+echo "--- prefstest ---"
+gcc -O2 $WARN -o build/host/prefstest tools/prefstest.c native/gta_prefs.c
+( cd build/host && ./prefstest ) || { echo "prefstest FAILED"; exit 1; }
 
 if [ "$1" != "release" ]; then
     echo "--- gtadump (asan) ---"

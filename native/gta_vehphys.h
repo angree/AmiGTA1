@@ -135,6 +135,11 @@ void gta_veh_step(gta_veh *v, int throttle, int brake, int steer,
 /* The heading as the rest of the port speaks it. */
 #define gta_veh_angle(v)  ((int)(((v)->ang16 >> 16) & 255))
 
+/* The original refuses to let the driver out at |car+0x1c| >= 5 of its speed
+ * units; VEH_SPEED_UNIT (gta_vehphys.c) is that unit in 16.16 px per step,
+ * half a world pixel. */
+#define GTA_VEH_EXIT_MAX_SPEED  (5L * 32768L)
+
 /* How long a car may sit against a wall going nowhere under power before it is
  * eased back out. Half a second at 50 Hz: long enough that an ordinary
  * nose-to-wall stop is undisturbed, short enough that "it sticks to buildings

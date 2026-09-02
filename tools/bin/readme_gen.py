@@ -50,7 +50,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.0.2
+TEXT = """AmiGTA v0.0.3
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -80,14 +80,16 @@ WHAT IS IN THIS ARCHIVE
                 A 68020 cannot rasterise 640x480 at a playable rate; this
                 way the picture is sharp and chunky rather than slow.
 
-  gtabake       The tile converter. Runs ON THE AMIGA. It reads the game's
-                own style001.gry and writes the tile set the engine loads.
+  gtaprefs      Settings. Pick the sound and display path here rather
+                than by editing files by hand. Double-click it, or run it
+                from a shell. New in v0.0.3 - see SETTINGS below.
+
+  gtabake       The converter. Runs ON THE AMIGA. It reads the game's own
+                style001.gry and writes the tile set the engine loads, and
+                with -sfx it converts the sound bank too - see WHAT IS NOT
+                IN v0.0.3 for why you do not need that yet.
 
   run           Startup script. Its last line chooses which build runs.
-
-All three binaries also read backend.txt if it exists, beside the
-program - one word, "rtg", "aga" or "wb" - which overrides the built-in
-default.
 
 ===========================================================================
 WHAT YOU NEED
@@ -143,6 +145,7 @@ STEP 4 - you should now have:
         AmiGTA/gta-aga
         AmiGTA/gta-rtg240
         AmiGTA/gta-rtg480
+        AmiGTA/gtaprefs
         AmiGTA/gtabake
         AmiGTA/run
         AmiGTA/GTADATA/style001.til     (made in step 3)
@@ -186,7 +189,16 @@ CONTROLS
     Shift           WALK. He runs by default - GTA 1 has no walk key at
                     all, so running is the normal state, not a modifier.
     Enter           get into the nearest car. If somebody is driving it,
-                    they are dragged out.
+                    they are dragged out. From the wrong side of the car
+                    he jumps over it first, as in the original.
+    Space           jump: running at a low car he goes over it, at a
+                    bus he slides under it.
+    Ctrl            fire. Held down it keeps firing, as in the original.
+                    With fists it is a punch; the man you hit goes down
+                    and gets up again. With the pistol a bullet carries
+                    four blocks and stops at the first person, car or
+                    wall it meets. People nearby run from the shot.
+    X / Z           next / previous weapon.
 
   In a car
     Up / Down       throttle / reverse
@@ -203,17 +215,68 @@ CONTROLS
     F6              60 fps cap on/off
     F7 / F8         camera height
     - / =           zoom out / in
-    SPACE           write the framebuffer to frame.raw, beside the game
+    SPACE           on foot with no car ahead: write the framebuffer to
+                    frame.raw, beside the game
     ESC             quit
 
 ===========================================================================
-WHAT IS NOT IN v0.0.2
+SETTINGS
 ===========================================================================
 
-  * No missions, no weapons, no police, no wanted level.
+Run gtaprefs - double-click it, or type its name in the game's drawer.
+It opens a small window on Workbench with two choices:
+
+  Sound       Auto, Off, Paula or AHI.
+              Paula is the Amiga chipset, played straight through
+              audio.device. AHI is the sound API that sound cards,
+              MorphOS and OS4 all speak, and it costs some CPU because it
+              mixes in software. Auto picks Paula where a real chipset
+              exists and AHI where one does not.
+
+              NOTHING PLAYS YET. v0.0.3 has no sound at all; the setting
+              is read and reported in gta.log and nothing more. It is here
+              because the choice has to be settled before the sound layer
+              is written, not after.
+
+  Graphics    Auto, AGA, RTG or Window.
+              Auto uses whatever the build you start was made for. Window
+              runs the game inside a window on Workbench: it is the
+              slowest of the three and it works on machines where the
+              other two do not - MorphOS in particular.
+
+The window also tells you what it found on YOUR machine - AGA, RTG and
+AHI, each yes or no.
+
+It needs no mouse. A cycles the sound, G the graphics, S saves, Esc
+cancels. And there is a command line for a machine with no pointer at all:
+
+    gtaprefs SHOW              print the settings and what was detected
+    gtaprefs GFX=WB            set it and save, without opening a window
+    gtaprefs AUDIO=AHI GFX=RTG
+    gtaprefs ?                 the full list
+
+Settings are written to gta.prefs beside the game, which is plain text you
+can edit by hand. backend.txt still works and still wins if you have one;
+gtaprefs keeps it in step with what it saves, so the two cannot disagree.
+
+===========================================================================
+WHAT IS NOT IN v0.0.3
+===========================================================================
+
+  * Fists and the pistol only - no machine gun, rocket launcher or
+    flamethrower, and no crates to pick them up from.
+  * No missions, no police, no wanted level.
   * Tyre marks, blood and oil are not drawn.
   * Only Liberty City. The startup path is fixed to nyc.cmp.
-  * Sound is not wired up yet.
+  * Sound is not wired up yet. The DATA side is done - gtabake can
+    already convert GTA's own sound bank, and the game loads it and
+    reports what is in it - but nothing plays. There is no point
+    converting it until something does:
+
+        gtabake -sfx GTADATA/audio/level001 GTADATA/level001.snd
+
+    (level001 is Liberty City. You would need audio/level001.sdt and
+    audio/level001.raw from your PC copy, about 1 MB.)
 
 ===========================================================================
 IF IT DOES NOT START
@@ -239,8 +302,14 @@ IF IT DOES NOT START
       other programs; it needs roughly 6 MB free.
 
   The RTG builds open nothing
-      There is no CyberGraphX or Picasso96 screen available. Use gta-aga,
-      or put the word "aga" into backend.txt beside the game.
+      There is no CyberGraphX or Picasso96 screen available. Run gtaprefs
+      and set Graphics to AGA, or to Window if AGA is no good either.
+
+  The city is drawn in the wrong colours, or as noise
+      The game asked for an 8-bit screen, did not get one, and fell back
+      to a path that needs the real Amiga chipset. Run gtaprefs and set
+      Graphics to Window. This is what MorphOS does.
+      With no pointer:  gtaprefs GFX=WB
 
   A black screen with the machine still alive
       Try F3 to toggle the title bar, which reopens the screen.

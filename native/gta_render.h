@@ -215,6 +215,11 @@ typedef struct {
      * one pedestrian sheet dresses a whole city and one car sprite comes in a
      * dozen colours. Ranges are in gta_style.h: 1..43 cars, 128..187 people. */
     int  remap;
+    /* SPRITE DELTA to lay over the base art, or -1 for the plain sprite.
+     * An open car door, a damage panel, a brake light: see gta_tiles.h. The
+     * overlay is decoded into the view's scratch buffer at draw time, because
+     * the base sprite in the tile set is shared and must never be edited. */
+    int  delta;
 } gta_sprite_req;
 
 typedef struct {
@@ -383,6 +388,13 @@ typedef struct {
     gta_sprite_req sprites[GTA_MAX_SPRITES];
     int n_sprites;
 
+    /* WHERE A SPRITE WITH A DELTA IS ASSEMBLED. One buffer, grown on demand
+     * and never shrunk, because only one sprite in a frame has ever needed
+     * one - the car the player is getting into. A game that never opens a
+     * door never allocates it. */
+    unsigned char *spr_scratch;
+    unsigned long  spr_scratch_cap;
+
     /* Counters for the last frame, for the log and for measurement. */
     long lids_drawn, walls_drawn, columns_visited, sprites_drawn;
 } gta_view;
@@ -435,6 +447,11 @@ int gta_render_add_sprite(gta_view *v, long wx, long wy, int layer, int grid,
  * it is exactly gta_render_add_sprite(). */
 int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap);
+
+/* The same again, with a sprite DELTA laid over the base art - see
+ * gta_sprite_req.delta. Pass -1 and it is exactly gta_render_add_sprite_r(). */
+int gta_render_add_sprite_d(gta_view *v, long wx, long wy, int layer, int grid,
+                            int index, int angle, int remap, int delta);
 
 /* Draw one sprite immediately, rotated and scaled, wherever the camera
  * currently is. gta_render_frame() calls this at the right point in the layer

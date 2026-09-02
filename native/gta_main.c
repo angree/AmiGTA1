@@ -39,6 +39,9 @@
 #include "gta_traffic.h"
 #include "gta_vehphys.h"
 #include "gta_peds.h"
+#include "gta_weapon.h"
+#include "gta_prefs.h"
+#include "gta_sfx.h"
 
 /* THE SCREEN, AND WHY IT IS A COMPILE-TIME CHOICE NOW.
  *
@@ -101,6 +104,13 @@
 
 #define TILES_PATH GTA_DIR "GTADATA/style001.til"
 #define MAP_PATH   GTA_DIR "GTADATA/nyc.cmp"
+/* THE SOUND BANK IS OPTIONAL, and that is not laziness.
+ *
+ * Nothing plays it yet, the shipped archive has no game data at all, and a
+ * player who has only converted the art must still get a running game rather
+ * than an error about a file they were never told to make. Absent means
+ * silent. When there is a player, it will still mean silent. */
+#define SFX_PATH   GTA_DIR "GTADATA/level001.snd"
 
 /* Amiga raw key codes. These are the codes the keyboard sends, not ASCII, and
  * amigagfx_poll() passes every one of them through with bit 7 set on release
@@ -119,6 +129,9 @@
 #define KEY_RSHIFT 0x61
 #define KEY_TAB    0x42     /* switch between walking and free camera */
 #define KEY_RETURN 0x44     /* enter / leave the nearest car */
+#define KEY_CTRL   0x63     /* fire - the original's Left Ctrl, a latch */
+#define KEY_X      0x32     /* next weapon */
+#define KEY_Z      0x31     /* previous weapon */
 
 /* Function keys. F1..F10 are 0x50..0x59 on the Amiga keyboard. */
 #define KEY_F1     0x50
@@ -346,6 +359,21 @@ static int opt_camh    = 0;
  * cover is unchanged; a shipped archive has no opts.txt and skips it. */
 static int opt_selftest = 0;
 
+/* WHAT THE PLAYER CHOSE FOR SOUND, read from gta.prefs by gtaprefs.
+ *
+ * NOTHING PLAYS YET. There is no audio in this port: amiga_audio.c is in the
+ * tree, carried over from openttd_amiga_68k, and build.sh does not compile it.
+ * The setting is read and reported anyway, because the choice has to be
+ * settled before a sound layer is written and not after - the reason it
+ * exists is that Paula is unreachable on MorphOS, and that constraint belongs
+ * in the design of the audio layer rather than being discovered by it.
+ *
+ * Whoever adds sound: this is the variable to branch on. GTA_AUDIO_AUTO means
+ * Paula where the chipset is real and AHI where it is not; the test for "real
+ * chipset" is GfxBase->ChipRevBits0 & GFXF_AA_ALICE, which tools/gtaprefs.c
+ * already does in have_aga(). */
+static int opt_audio = GTA_AUDIO_AUTO;
+
 static gta_traffic traffic;
 static gta_peds peds;
 
@@ -389,7 +417,7 @@ static gta_nav nav;
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.0.2"
+#define GTA_VERSION "v0.0.3"
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
 
 #ifdef GTA_SCALE2X
@@ -818,6 +846,61 @@ static void present_frame(gta_view *v, const gta_player *pl, int with_player)
  *
  * Format is deliberately trivial - 768 bytes of RGB palette then w*h indices,
  * no header - because tools/bin/raw2png.py is the only thing that reads it. */
+/* Which numbered live frame comes next - see the `film` order in the
+ * autodrive script. */
+static int live_n = 0;
+
+/* WHICH DOOR FRAME IS SHOWING, from a tick count.
+ *
+ * The door has its own clock at 10 frames a second - Carnage3D's
+ * CAR_DELTA_ANIMS_SPEED - so at this port's 50 Hz simulation that is five
+ * ticks a frame. Five frames out and the same five back: frame 0 is shut,
+ * 1..4 are sprite delta records 6..9 (see gta_tiles.h for why those four and
+ * not the car table's own field), then it closes through the same four.
+ *
+ * Fifty ticks in all against the get-in animation's forty, so the door is
+ * still swinging shut when the player is already seated. That overlap is in
+ * the original too - Carnage3D asks for the close as soon as the open
+ * finishes, regardless of where the ped is up to. */
+static int door_delta(int tick)
+{
+    int f;
+    if (tick < 0) return -1;
+    f = tick / 5;
+    if (f <= 0 || f >= 8) return -1;        /* shut, at either end */
+    if (f > 4) f = 8 - f;                   /* the closing half */
+    return GTA_DELTA_DOOR1 + (f - 1);
+}
+
+/* ---- the two interpolators the get-in / get-out animation needs ---------
+ *
+ * 16.16 world coordinates in a 32-bit long. The naive a + (b-a)*t/T is safe at
+ * the distances involved here (a block and a half is 3.1 million, times forty
+ * ticks is still inside a long) but only just, and a longer animation or a
+ * bigger grab radius would silently overflow it. Dividing first and carrying
+ * the remainder separately costs one extra divide a tick and cannot. */
+static long lerp_fp(long a, long b, int t, int T)
+{
+    long d;
+    if (T <= 0 || t >= T) return b;
+    if (t <= 0) return a;
+    d = b - a;
+    return a + (d / T) * t + ((d % T) * t) / T;
+}
+
+/* Angles are 0..255 and wrap, so interpolating them as plain numbers sends a
+ * man turning from 250 to 6 the long way round - 244 units of spin instead of
+ * 12. Take the signed short way. */
+static int lerp_angle(int a, int b, int t, int T)
+{
+    int d;
+    if (T <= 0 || t >= T) return b & 255;
+    if (t <= 0) return a & 255;
+    d = (b - a) & 255;
+    if (d > 128) d -= 256;
+    return (a + (d * t) / T) & 255;
+}
+
 static void dump_frame(const char *path, const unsigned char *chunky,
                        int pitch, int w, int h, const unsigned char *palette)
 {
@@ -1082,6 +1165,10 @@ static int autowalk_run(gta_view *v, gta_player *p, const gta_map *m,
  * linker accounts for, instead of stack, which nothing does. */
 static gta_map   map;
 static gta_tiles tiles;
+/* A megabyte of samples. Static for the same reason the map is: it is memory
+ * the linker accounts for rather than a surprise at the far end of a load. */
+static gta_sfx   sfx;
+static gta_weapons weapons;
 static gta_view  view;
 static gta_player player;
 
@@ -1119,14 +1206,133 @@ static void car_door_point(const gta_car_info *ci, long cx, long cy, int face,
         across = -1;
     }
     {
+        /* AND THE SIDE IS THE SIDE THE ART'S DOOR IS ON.
+         *
+         * The sign is INVERTED against the table's rpy, and that is not a
+         * guess: the car sprite is drawn rotated by GTA_SPRITE_ART_SOUTH
+         * because the art faces south, so the body's right in the picture is
+         * the opposite of (rx,ry) here. With the sign taken literally the man
+         * walked to the left flank while the door delta swung open on the
+         * right - visible the moment the doors started animating
+         * (PROGRESS.md 112, out/door_sheet.png).
+         *
+         * The original agrees with the ART, not with the raw sign: its in-car
+         * steps put the ped at a POSITIVE lateral offset throughout
+         * (half_wid-2 walking in, half_wid-{4,8,12,14} sliding across), so
+         * the door art and the ped are on one side by construction. */
         long out = (long)gta_car_world_wid(ci) / 2 + 5;
-        across = (across < 0) ? -out : out;
+        across = (across < 0) ? out : -out;
     }
 
     *dx = cx + (fx * along + rx * across) * 4;
     *dy = cy + (fy * along + ry * across) * 4;
 }
 
+/* WHICH FLANK THE DOOR IS ON, +1 for the body's right, -1 for its left - the
+ * same reading of the table's rpy that car_door_point() settled on
+ * (PROGRESS.md 112), in one place. A vehicle with no door record mounts from
+ * its right. */
+static int car_door_side(const gta_car_info *ci)
+{
+    if (ci->n_doors > 0)
+        return ci->doors[0].rpy < 0 ? 1 : -1;
+    return 1;
+}
+
+/* A POINT NEAR THE DOOR, in the car's own frame: `along_off` world px from
+ * the hinge along the body, and `lat_off` px outside the body's edge on the
+ * door side (negative = inside the body). This is how the original places
+ * the ped through every state of the exit - car + cos[rot] * along +
+ * cos[rot + 90] * lateral - and it is what those per-state tables need. */
+static void car_door_pos(const gta_car_info *ci, long cx, long cy, int face,
+                         long along_off, long lat_off, long *px, long *py)
+{
+    long fx = gta_sin(face), fy = -gta_cos(face);
+    long rx = gta_cos(face), ry = gta_sin(face);
+    long along  = (ci->n_doors > 0 ? (long)ci->doors[0].rpx / 2 : 0) + along_off;
+    long across = car_door_side(ci)
+                * ((long)gta_car_world_wid(ci) / 2 + lat_off);
+    *px = cx + (fx * along + rx * across) * 4;
+    *py = cy + (fy * along + ry * across) * 4;
+}
+
+/* THE EXIT, STATE BY STATE - the original's 0x11..0x19 (LEFTOFF.md, the
+ * exit), nine states of GTA_EXIT_TICKS each,
+ * sprite 16 + state. Per state: the door counter AFTER it (1..4 = delta
+ * records 6..9, 0 = shut; it was stepped to 1 on the key press), and the
+ * ped's offsets from the hinge in world px - the original's are in half
+ * pixels: along -1 -> 0, -4 -> -2; lateral hw-4 -> hw-2, hw-3 -> hw-1,
+ * hw+2 -> hw+1. The door is held open through states 3 and 4 while he
+ * swings out, and closes over the last four while he stands beside it. */
+static const signed char exit_door[GTA_PED_EXITCAR_FRAMES]  = { 2, 3, 4, 4, 4, 3, 2, 1, 0 };
+static const signed char exit_along[GTA_PED_EXITCAR_FRAMES] = { 0, 0, 0, 0, 0, -2, -2, -2, -2 };
+static const signed char exit_lat[GTA_PED_EXITCAR_FRAMES]   = { -2, -2, -2, -1, 1, 0, 0, 0, 1 };
+
+/* ---- the vault's two questions about a car body ---------------------- */
+
+/* Is the world point (px,py) inside the body of a car at (cx,cy) facing
+ * `face`, half-length hl and half-width hw in world px, grown by `margin`
+ * px all round? The original asks this with a 6x6-unit box 2 units ahead
+ * of the ped every vault state ("is there still a car in front of me") and
+ * with a 2x4 box 6 units ahead to fire the vault; a point with a margin is
+ * the same test on a 68020 budget. */
+static int car_body_hit(long cx, long cy, int face, int hl, int hw,
+                        long px, long py, int margin)
+{
+    long fx = gta_sin(face), fy = -gta_cos(face);
+    long rx = gta_cos(face), ry = gta_sin(face);
+    long dx = (px - cx) >> 16, dy = (py - cy) >> 16;
+    long along  = (dx * fx + dy * fy) >> 14;
+    long across = (dx * rx + dy * ry) >> 14;
+    if (along < 0)  along  = -along;
+    if (across < 0) across = -across;
+    return along <= hl + margin && across <= hw + margin;
+}
+
+/* The same question asked of every car in the fleet on the ped's layer.
+ * Returns the fleet index or -1; `*low` says whether that vehicle is one
+ * to leap over (GTA_VAULT_MAX_VERT) or one to slide under. */
+static int fleet_car_at(const gta_traffic *tr, const gta_tiles *t,
+                        long px, long py, int layer, int margin, int *low)
+{
+    int i;
+    for (i = 0; i < tr->n; i++) {
+        const gta_car *c = &tr->cars[i];
+        const gta_car_info *ci;
+        if (c->done || c->layer != layer)
+            continue;
+        ci = &t->cars[c->model];
+        if (car_body_hit(c->x, c->y, c->face,
+                         gta_car_world_len(ci) / 2, gta_car_world_wid(ci) / 2,
+                         px, py, margin)) {
+            if (low) *low = ci->vert < GTA_VAULT_MAX_VERT;
+            return i;
+        }
+    }
+    return -1;
+}
+
+
+/* THE ARMED LOOK, as the original draws it: while the fire
+ * latch is held a standing player is drawn as 89 and a walking or running
+ * one with the cycle's frame + 99; a running punch is the run frame + 0xad.
+ * Only the sprite changes - the state machine knows nothing of it. */
+static int armed_sprite(const gta_player *p, int punch_left, int armed)
+{
+    int s = gta_player_sprite(p);
+    if (punch_left > 0 && p->anim == GTA_ANIM_RUN)
+        return s + GTA_PED_RUNPUNCH_OFFSET;
+    if (!armed)
+        return s;
+    if (p->anim == GTA_ANIM_WALK || p->anim == GTA_ANIM_RUN)
+        return s + GTA_PED_PISTOL_OFFSET;
+    if (p->anim == GTA_ANIM_STAND)
+        return p->ped_base + GTA_PED_SHOOT_STAND;
+    return s;
+}
+/* ...and when it applies: the latch held, a gun selected, on foot. */
+#define ARMED_NOW (fire_held && weapon != 0 && !in_car && !enter_anim \
+                   && !vault && !slide)
 
 int main(void)
 {
@@ -1144,7 +1350,64 @@ int main(void)
      * in, 2 = getting out; the rest is what has to survive the animation. */
     int enter_anim = 0, enter_step = 0, enter_tick = 0;
     int enter_model = 0, enter_face = 0, enter_remap = -1, enter_damage = 0;
+    /* A BIKE IS MOUNTED, NOT ENTERED: four frames, no door, and the rider
+     * stays visible on top. Decided once from the vehicle class when the
+     * animation starts, so the per-tick code does not re-read the table. */
+    int enter_bike = 0;
+    /* THE VAULT (LEFTOFF.md, the vault).
+     *
+     * 0 = none; 1 = part of getting in - he is on the wrong flank, runs at
+     * the door, meets the body and goes over it; 2 = SPACE while running at
+     * a car. Same six states either way, 4 ticks each, and every state
+     * boundary asks "is there still a car one pixel ahead of me?" - the
+     * first no lands him. vault_pending is the decision taken at RETURN,
+     * waiting for the walk to reach the body; vault_dx/dy keep the real
+     * door point while enter_dx/dy hold the point on the flank he runs at. */
+    /* THE DRIVER TO BE DRAGGED OUT - remembered at RETURN, pulled when the
+     * door is open, as the original's jacker state 0x1c does. */
+    int  enter_driver = 0;
+    int  vault = 0, vault_pending = 0, vault_step = 0, vault_tick = 0;
+    int  vault_head = 0, vault_hold = 0;
+    long vault_dx = 0, vault_dy = 0;
+    /* And state 0x92: under a vehicle too tall to vault, sliding a pixel
+     * every state while a car is still over him. */
+    int  slide = 0, slide_tick = 0;
+    int  jump_req = 0;
+    /* THE WEAPONS - Phase 5 item 5(a). The fire key is a LATCH (held down)
+     * and the cooldown meters the rate, as in the original; `weapon` 0 is
+     * the fists, 1 the pistol; `ammo` per weapon. The pistol with a crate's
+     * load is the start loadout until crates exist - the original starts
+     * with fists and a crate nearby. `punch_left` counts the ticks of a
+     * punch in flight (six states of GTA_PUNCH_TICKS). */
+    int  fire_held = 0, fire_cool = 0;
+    int  weapon = 1;
+    int  ammo[5] = { 0, GTA_PISTOL_AMMO, 0, 0, 0 };
+    int  punch_left = 0;
     long enter_cx = 0, enter_cy = 0;
+    /* THE THREE POINTS THE ANIMATION MOVES BETWEEN.
+     *
+     * He starts where he is standing, walks to the door handle, and ends in
+     * the seat. Before 2026-09-01 he was TELEPORTED to the handle on the
+     * RETURN tick and teleported again into the seat forty ticks later - two
+     * camera jumps of up to a block and a half, with him standing motionless
+     * in the road in between. The filmstrip is out/before_enter_sheet.png. */
+    long enter_x0 = 0, enter_y0 = 0;    /* where he was standing */
+    long enter_dx = 0, enter_dy = 0;    /* the door handle */
+    int  enter_a0 = 0;                  /* the way he was facing */
+    /* THE DOOR'S OWN CLOCK, or -1 when it is shut and staying shut. It runs
+     * independently of the ten-step sequence because the door is a property
+     * of the CAR, not of the man - see door_delta(). */
+    int  door_tick = -1;
+    /* THE APPROACH IS ITS OWN PHASE, before the ten-step sequence.
+     *
+     * All ten frames of gta_ped_enter_seq happen AT the car - 26 is reaching
+     * for the handle, 25 is leaning into the doorway, 29..33 are legs over the
+     * sill and down into the seat. None of them is a walk. So covering the
+     * distance with them playing makes him glide sideways in a door-opening
+     * pose. He walks first, on the ordinary walk cycle, and the sequence then
+     * plays where it belongs. Length comes from the distance at walking pace,
+     * so a car right next to him has almost no approach at all. */
+    int  enter_walk_len = 0, enter_walk_t = 0;
     int handbrake = 0;
     int veh_slide_ticks = 0;    /* how much of the last report the car slid */
     gta_veh veh;
@@ -1175,6 +1438,24 @@ int main(void)
     gta_map_describe(&map, stdout);
     fflush(stdout);
 
+    /* THE SOUND BANK - loaded, described, and then not used by anything.
+     *
+     * This is the data half of Phase 6 and it is deliberately landed on its
+     * own: reading GTA's .SDT/.RAW pair and proving the bytes survive the trip
+     * to the Amiga is a separate question from making Paula or AHI play them,
+     * and mixing the two would leave no way to tell which half was wrong. What
+     * plays it reads `opt_audio` - see gta_prefs.h.
+     *
+     * A missing bank is normal and silent, not an error: no archive ships game
+     * data, and `gtabake -sfx` is a step a player has not been asked to take
+     * until there is something to hear. */
+    if (gta_sfx_load(SFX_PATH, &sfx) == 0)
+        gta_sfx_describe(&sfx, stdout);
+    else
+        printf("sfx: no " SFX_PATH " - running silent (nothing plays yet "
+               "in any case)\n");
+    fflush(stdout);
+
     /* WHICH DISPLAY BACKEND, read from a one-line file rather than compiled in.
      *
      * The same binary has to run on the AGA machine and on the RTG one,
@@ -1184,6 +1465,35 @@ int main(void)
      * like autoinput.txt and autowalk.txt.
      *
      * Missing file means AGA, which is the target machine. */
+    /* THE PLAYER'S OWN SETTINGS FIRST, then the override files on top.
+     *
+     * gta.prefs is what the external editor writes (tools/gtaprefs.c) and it
+     * is the only one of the three a player is expected to have. backend.txt
+     * and opts.txt stay exactly as they were and still win, because they are
+     * the deliberate ones: the test rig writes them, every measurement in
+     * PROGRESS.md was taken with them, and a settings file quietly overriding
+     * a switch that was set for a measurement would invalidate the numbers.
+     *
+     * gtaprefs keeps backend.txt in step with what it saves, so the two
+     * cannot contradict each other in a player's drawer - see
+     * gta_prefs_save(). */
+    {
+        gta_prefs prefs;
+        int had = gta_prefs_load(GTA_DIR, &prefs);
+        opt_audio = prefs.audio;
+        if (prefs.gfx == GTA_GFX_AGA)      backend = AMIGAGFX_BACKEND_AGA;
+        else if (prefs.gfx == GTA_GFX_RTG) backend = AMIGAGFX_BACKEND_RTG;
+        else if (prefs.gfx == GTA_GFX_WB)  backend = AMIGAGFX_BACKEND_WB;
+        printf("gta: prefs %s - audio %s, gfx %s\n",
+               had ? "read" : "(none, defaults)",
+               gta_prefs_audio_name(prefs.audio),
+               gta_prefs_gfx_name(prefs.gfx));
+        if (opt_audio != GTA_AUDIO_OFF)
+            printf("gta: NO SOUND IS BUILT INTO THIS VERSION - the audio "
+                   "setting is recorded, not used\n");
+        fflush(stdout);
+    }
+
     {
         FILE *bf = fopen(GTA_DIR "backend.txt", "r");
         if (bf) {
@@ -1313,6 +1623,7 @@ int main(void)
     if (gta_nav_build(&nav, &map) == 0) {
         gta_traffic_set_nav(&traffic, &nav);
         gta_peds_set_nav(&peds, &nav);
+        gta_weapons_init(&weapons);
         printf("gta: navigation grid %ld KB\n", (long)(GTA_NAV_BYTES / 1024));
     } else {
         log_line("gta: no memory for the navigation grid - traffic will not "
@@ -1785,6 +2096,45 @@ int main(void)
                     adq[adq_n].op = 2; adq[adq_n].t = t;
                     adq[adq_n].thr = a; adq[adq_n].brk = b;
                     adq[adq_n].st = c; adq[adq_n].hb = d; adq_n++;
+                } else if (sscanf(ln, "film %d", &t) == 1) {
+                    /* A FILMSTRIP, not a snapshot. `dump` writes one frame to
+                     * one name, so two dumps in a row leave only the second -
+                     * which is useless for anything that happens OVER several
+                     * ticks, and getting into a car is exactly that. `film 12`
+                     * writes live00.raw..live11.raw, one a tick, and
+                     * tools/bin/raw2png.py turns them into pictures you can
+                     * look at side by side. */
+                    adq[adq_n].op = 4; adq[adq_n].t = t < 1 ? 1 : t; adq_n++;
+                } else if (sscanf(ln, "park %d %d %d %d %d",
+                                  &a, &b, &c, &d, &t) == 5) {
+                    /* ...and `park` with a fifth number: the car has a
+                     * DRIVER in it (it is a fleet car that will set off, so
+                     * `enter` straight after it). For the carjack. */
+                    adq[adq_n].op = 8; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq[adq_n].hb = d; adq_n++;
+                } else if (sscanf(ln, "park %d %d %d %d",
+                                  &a, &b, &c, &d) == 4) {
+                    /* A TEST FIXTURE: park model `a` at (dx,dy) world px
+                     * from the player, facing `d`, as an abandoned car in
+                     * the fleet. The vault needs a car on a known flank at
+                     * a known angle, and the fleet's own cars are wherever
+                     * the seed put them. */
+                    adq[adq_n].op = 5; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq[adq_n].hb = d; adq_n++;
+                } else if (sscanf(ln, "face %d", &a) == 1) {
+                    adq[adq_n].op = 6; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "fire %d", &t) == 1) {
+                    /* Press the fire key: held until the next `wait`. */
+                    adq[adq_n].op = 9; adq[adq_n].t = t < 1 ? 1 : t; adq_n++;
+                } else if (sscanf(ln, "weapon %d %d", &a, &b) == 2) {
+                    /* Select weapon a with b rounds. */
+                    adq[adq_n].op = 10; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b; adq_n++;
+                } else if (strncmp(ln, "jump", 4) == 0) {
+                    adq[adq_n].op = 7; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "dump", 4) == 0) {
                     adq[adq_n].op = 3; adq[adq_n].t = 1; adq_n++;
                 }
@@ -1996,25 +2346,38 @@ int main(void)
                         handbrake = held;
                         break;
                     }
-                    /* Dump whatever is on screen right now.
-                     *
-                     * There is no other way to get at the view a person is
-                     * actually looking at: host input synthesis is banned, so
-                     * an agent cannot drive the camera to the thing being
-                     * reported, and a rebuild puts the camera back at the
-                     * start. One keypress turns "there is a cut-out block over
-                     * here" into a file that can be measured. */
-                    if (!held) {
-                        dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
-                                   SCREEN_W, SCREEN_H, tiles.palette);
-                        printf("gta: camera at block (%ld,%ld)\n",
-                               view.cam_x >> 21, view.cam_y >> 21);
-                        fflush(stdout);
-                    }
+                    /* On foot SPACE is the original's jump: running at a
+                     * car, he goes over it or under it. With nothing ahead
+                     * it still dumps the frame - the one way to get at the
+                     * view a person is actually looking at, since host input
+                     * synthesis is banned. Decided in the tick, where the
+                     * fleet can be asked. */
+                    if (!held)
+                        jump_req = 1;
                     break;
                 case KEY_RETURN:
                     if (!held)
                         enter_req = 1;
+                    break;
+                case KEY_CTRL:
+                    /* The original's latch: set on press, cleared on
+                     * release; holding it auto-fires at the cooldown. */
+                    fire_held = held;
+                    break;
+                case KEY_X:
+                case KEY_Z:
+                    if (!held) {
+                        /* fist -> pistol -> MG -> rocket -> flame -> fist,
+                         * skipping empties; Z the other way round. */
+                        int w = weapon, k;
+                        for (k = 0; k < 5; k++) {
+                            w = code == KEY_X ? (w + 1) % 5 : (w + 4) % 5;
+                            if (w == 0 || ammo[w] > 0) break;
+                        }
+                        weapon = w;
+                        printf("gta: weapon %d (ammo %d)\n", weapon,
+                               ammo[weapon]);
+                    }
                     break;
                 default:
                     /* The cursor-key codes below are constants of the Amiga
@@ -2072,8 +2435,55 @@ int main(void)
                 /* The autodrive queue stands in for the keyboard. */
                 if (adq_i < adq_n) {
                     switch (adq[adq_i].op) {
-                    case 0: up = down = left = right = 0; handbrake = 0; break;
+                    case 0: up = down = left = right = 0; handbrake = 0;
+                            fire_held = 0; break;
                     case 1: enter_req = 1; break;
+                    case 9: fire_held = 1; break;
+                    case 10:
+                        if (adq[adq_i].thr >= 0 && adq[adq_i].thr < 5) {
+                            weapon = adq[adq_i].thr;
+                            ammo[weapon] = adq[adq_i].brk;
+                        }
+                        break;
+                    case 5:
+                        if (!gta_traffic_abandon(&traffic, adq[adq_i].thr,
+                                player.x + ((long)adq[adq_i].brk << 16),
+                                player.y + ((long)adq[adq_i].st << 16),
+                                adq[adq_i].hb & 255, player.layer, -1, 0))
+                            printf("gta: park - fleet full\n");
+                        else
+                            printf("gta: parked model %d at (%ld,%ld) facing %d\n",
+                                   adq[adq_i].thr,
+                                   (player.x >> 16) + adq[adq_i].brk,
+                                   (player.y >> 16) + adq[adq_i].st,
+                                   adq[adq_i].hb & 255);
+                        fflush(stdout);
+                        break;
+                    case 6: player.angle = adq[adq_i].thr & 255; break;
+                    case 7: jump_req = 1; break;
+                    case 8:
+                        if (!gta_traffic_abandon(&traffic, adq[adq_i].thr,
+                                player.x + ((long)adq[adq_i].brk << 16),
+                                player.y + ((long)adq[adq_i].st << 16),
+                                adq[adq_i].hb & 255, player.layer, -1, 0)) {
+                            printf("gta: park - fleet full\n");
+                        } else {
+                            /* abandon() takes the last slot when there is
+                             * one and EVICTS a far car when the fleet is
+                             * full, so find ours by its serial - it is the
+                             * newest. */
+                            int fi;
+                            for (fi = 0; fi < traffic.n; fi++)
+                                if (traffic.cars[fi].serial == traffic.next_serial)
+                                    traffic.cars[fi].abandoned = 0;
+                            printf("gta: parked model %d WITH A DRIVER at"
+                                   " (%ld,%ld) facing %d\n", adq[adq_i].thr,
+                                   (player.x >> 16) + adq[adq_i].brk,
+                                   (player.y >> 16) + adq[adq_i].st,
+                                   adq[adq_i].hb & 255);
+                        }
+                        fflush(stdout);
+                        break;
                     case 2:
                         up    = adq[adq_i].thr;
                         down  = adq[adq_i].brk;
@@ -2085,19 +2495,78 @@ int main(void)
                         dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
                                    SCREEN_W, SCREEN_H, tiles.palette);
                         break;
+                    case 4: {
+                        /* One numbered frame a tick - see `film` in the
+                         * parser. snprintf, never sprintf: on this libc
+                         * sprintf shifts its arguments and would quietly
+                         * write every frame to the same wrong name. */
+                        char lp[64];
+                        snprintf(lp, sizeof lp, GTA_DIR "live%02d.raw", live_n);
+                        dump_frame(lp, chunky, pitch,
+                                   SCREEN_W, SCREEN_H, tiles.palette);
+                        /* THE NUMBERS NEXT TO THE PICTURE. Two figures in a
+                         * frame and a car forty pixels off could not be told
+                         * apart from the film alone (PROGRESS.md 113); the
+                         * player's and the camera's world position in pixels,
+                         * one line a frame, settles which sprite is whom. */
+                        printf("gta: live%02d player (%ld,%ld) a%d %s%d cam (%ld,%ld)"
+                               " veh (%ld,%ld) in_car %d anim %d fire %d w%d"
+                               " bullets %d punch %d\n",
+                               live_n, player.x >> 16, player.y >> 16,
+                               player.angle,
+                               enter_anim == 1 ? "enter" :
+                               enter_anim == 2 ? "exit" : "frame",
+                               enter_anim ? enter_step : player.frame,
+                               view.cam_x >> 16, view.cam_y >> 16,
+                               veh.ox >> 16, veh.oy >> 16, in_car, enter_anim,
+                               fire_held, weapon, gta_weapons_alive(&weapons),
+                               punch_left);
+                        {
+                            /* And where the fleet thinks the parked car is,
+                             * since the film says it is not where it was
+                             * left. */
+                            int fi;
+                            for (fi = 0; fi < traffic.n; fi++) {
+                                const gta_car *fc = &traffic.cars[fi];
+                                if (!fc->abandoned) continue;
+                                printf("gta:   fleet[%d] abandoned model %d "
+                                       "at (%ld,%ld) layer %d face %d done %d"
+                                       " of %d\n", fi, fc->model,
+                                       fc->x >> 16, fc->y >> 16, fc->layer,
+                                       fc->face, fc->done, traffic.n);
+                            }
+                        }
+                        if (live_n < 99) live_n++;
+                        break;
+                    }
                     }
                     if (--adq_left <= 0) {
                         adq_i++;
                         adq_left = adq_i < adq_n ? adq[adq_i].t : 0;
                         if (adq_i >= adq_n) {
                             up = down = left = right = 0; handbrake = 0;
+                            fire_held = 0;
                             printf("gta: autodrive done\n");
                             fflush(stdout);
                         }
                     }
                 }
+                /* The door runs on its own clock and keeps running after the
+                 * player is seated, so it can finish swinging shut. */
+                if (door_tick >= 0 && ++door_tick > 50)
+                    door_tick = -1;
+
                 /* ENTERING AND LEAVING A CAR - handled inside the tick so a
                  * grab and the fleet's own compaction cannot interleave. */
+                /* A RETURN PRESSED DURING THE ANIMATION IS DROPPED, not
+                 * queued. The flag used to be cleared only when the guard
+                 * below fired, so a second press while getting in stayed
+                 * latched and went off on the first tick after the animation
+                 * ended - he climbed in and straight back out. The autodrive
+                 * script made that certain rather than merely likely, since
+                 * its `enter` order re-sets the flag on every tick it lasts. */
+                if (enter_req && (enter_anim || vault || slide))
+                    enter_req = 0;
                 if (enter_req && !enter_anim) {
                     enter_req = 0;
                     if (!in_car) {
@@ -2114,15 +2583,109 @@ int main(void)
                             long dx_, dy_;
 
                             car_door_point(ci_, cx_, cy_, f_, &dx_, &dy_);
-                            /* THE PLAYER GOES TO THE DOOR, not into the seat.
-                             * Teleporting straight into the middle of the car
-                             * was the "we teleport into the centre instantly"
-                             * report; he now stands at the handle and plays
-                             * the ten-step get-in animation from there. */
-                            player.x = dx_;
-                            player.y = dy_;
-                            player.angle = f_;
-                            player.anim = GTA_ANIM_ENTER_CAR;
+                            /* THE WRONG FLANK: HE GOES OVER THE CAR.
+                             *
+                             * The original never decides this at RETURN.
+                             * Its ped runs at the one door point; when the
+                             * car body is 6 units ahead the walker measures
+                             * the angle between the car's heading and the
+                             * ped's bearing, and inside 0x258..0x3a0 of
+                             * 0x400 - centred on the flank OPPOSITE the door,
+                             * 59 degrees either way - with a low car, a
+                             * running ped and landing room beyond, it sets
+                             * the heading perpendicular to the car and
+                             * state 0x73. Head-on it steers round instead.
+                             *
+                             * Here the same three facts are read off the
+                             * geometry once: which flank he is on, whether
+                             * his run at the door crosses the body, and at
+                             * what angle. If it does, the walk goes to the
+                             * point where it meets the far flank, and the
+                             * vault takes over there. */
+                            vault_pending = 0;
+                            if (ci_->vtype != GTA_VEH_BIKE
+                                && ci_->vert < GTA_VAULT_MAX_VERT) {
+                                long fx = gta_sin(f_), fy = -gta_cos(f_);
+                                long rx = gta_cos(f_), ry = gta_sin(f_);
+                                long pdx = (player.x - cx_) >> 16;
+                                long pdy = (player.y - cy_) >> 16;
+                                long ddx = (dx_ - cx_) >> 16;
+                                long ddy = (dy_ - cy_) >> 16;
+                                long along_p  = (pdx * fx + pdy * fy) >> 14;
+                                long across_p = (pdx * rx + pdy * ry) >> 14;
+                                long along_d  = (ddx * fx + ddy * fy) >> 14;
+                                long across_d = (ddx * rx + ddy * ry) >> 14;
+                                long aap = across_p < 0 ? -across_p : across_p;
+                                long alp = along_p < 0 ? -along_p : along_p;
+                                int hl = gta_car_world_len(ci_) / 2;
+                                int hw = gta_car_world_wid(ci_) / 2;
+                                /* opposite flanks, outside the body, and
+                                 * within 59 degrees of square-on: tan(59)
+                                 * is 5/3 */
+                                if (((across_p < 0) != (across_d < 0))
+                                    && aap > hw && alp * 3 <= aap * 5) {
+                                    long s = across_p < 0 ? -hw : hw;
+                                    long num = across_p - s;
+                                    long den = across_p - across_d;
+                                    long along_hit = along_p
+                                        + ((along_d - along_p) * num) / den;
+                                    if (along_hit <= hl && along_hit >= -hl) {
+                                        /* two pixels short of the flank */
+                                        long so = across_p < 0 ? s - 2 : s + 2;
+                                        vault_dx = dx_;
+                                        vault_dy = dy_;
+                                        dx_ = cx_ + (fx * along_hit + rx * so) * 4;
+                                        dy_ = cy_ + (fy * along_hit + ry * so) * 4;
+                                        vault_head = (across_d < 0 ? f_ - 64
+                                                                   : f_ + 64)
+                                                     & 255;
+                                        vault_pending = 1;
+                                        printf("gta: far side - will vault"
+                                               " heading %d, over %d px\n",
+                                               vault_head, 2 * hw + 4);
+                                    }
+                                }
+                            }
+                            /* HE WALKS THERE. The three points are recorded
+                             * and the animation interpolates between them;
+                             * nothing is teleported. Setting player.x here was
+                             * the second half of the "he appears in the car"
+                             * fault - the first half being that the car
+                             * stopped being drawn at the same instant. */
+                            enter_x0 = player.x;
+                            enter_y0 = player.y;
+                            enter_a0 = player.angle;
+                            enter_dx = dx_;
+                            enter_dy = dy_;
+                            {
+                                /* How long the walk takes, at the pace he
+                                 * actually moves: the port runs at 2.03 blocks
+                                 * a second, which is 65 world pixels a second
+                                 * and 1.3 a tick at 50 Hz - so three ticks
+                                 * every four pixels. Manhattan distance
+                                 * overestimates by up to 41%, which is a
+                                 * slightly unhurried walk and not a defect.
+                                 * Capped so a generous grab radius cannot
+                                 * produce a minute-long stroll. */
+                                long ax = dx_ - player.x, ay = dy_ - player.y;
+                                long px;
+                                if (ax < 0) ax = -ax;
+                                if (ay < 0) ay = -ay;
+                                px = (ax + ay) >> 16;
+                                enter_walk_len = (int)((px * 3) / 4);
+                                if (enter_walk_len > 60) enter_walk_len = 60;
+                                if (enter_walk_len < 0) enter_walk_len = 0;
+                                enter_walk_t = 0;
+                            }
+                            /* Already against the body: no walk, straight
+                             * over. */
+                            if (vault_pending && enter_walk_len == 0) {
+                                vault = 1; vault_pending = 0;
+                                vault_step = vault_tick = vault_hold = 0;
+                            }
+                            enter_bike = ci_->vtype == GTA_VEH_BIKE;
+                            player.anim = enter_bike ? GTA_ANIM_ENTER_BIKE
+                                                     : GTA_ANIM_ENTER_CAR;
                             player.frame = 0;
                             player.frame_tick = 0;
                             enter_anim = 1;
@@ -2134,63 +2697,281 @@ int main(void)
                             enter_cy = cy_;
                             enter_remap = rm_;
                             enter_damage = dmg_;
-                            /* AND THE DRIVER IS DRAGGED OUT. In the original
-                             * the occupant is pulled from the seat and left
-                             * stunned on the road - they are not deleted with
-                             * the car. An abandoned car has nobody in it, so
-                             * nobody comes out of it. */
-                            if (drv_) {
-                                gta_peds_drop(&peds, dx_, dy_, player.layer,
-                                              (f_ + 128) & 255, -1,
-                                              GTA_STUN_TICKS);
-                                printf("gta: dragged the driver out\n");
-                                fflush(stdout);
-                            }
+                            /* AND THE DRIVER WILL BE DRAGGED OUT - not now,
+                             * but when the door is open, the way the
+                             * original's jacker does it at state 0x1c
+                             * (LEFTOFF.md "THE CARJACK VICTIM"). An
+                             * abandoned car has nobody in it, so nobody
+                             * comes out of it. */
+                            enter_driver = drv_;
                         } else {
                             printf("gta: no car within reach\n");
                             fflush(stdout);
                         }
                     } else {
-                        /* OUT AT THE DOOR, and the car stays behind. */
+                        /* OUT AT THE DOOR - the original's own exit,
+                         * LEFTOFF.md, the exit. */
                         const gta_car_info *ci_ = &tiles.cars[veh.model];
-                        long dx_, dy_;
+                        long dx_, dy_, ex_, ey_, avx_, avy_, spd_;
                         int a_ = gta_veh_angle(&veh);
+                        int sgn_ = car_door_side(ci_);
+                        int blocked_ = 0;
 
+                        /* REFUSED ABOVE SPEED 4 - nothing happens and the
+                         * car drives on; the original prints nothing, this
+                         * says so once for the log's sake. */
+                        avx_ = veh.vx < 0 ? -veh.vx : veh.vx;
+                        avy_ = veh.vy < 0 ? -veh.vy : veh.vy;
+                        spd_ = avx_ > avy_ ? avx_ + avy_ / 2 : avy_ + avx_ / 2;
+                        if (spd_ >= GTA_VEH_EXIT_MAX_SPEED) {
+                            printf("gta: too fast to get out\n");
+                            fflush(stdout);
+                        } else {
                         car_door_point(ci_, veh.ox, veh.oy, a_, &dx_, &dy_);
-                        player.x = dx_;
-                        player.y = dy_;
-                        player.angle = a_;
-                        player.anim = GTA_ANIM_EXIT_CAR;
-                        player.frame = 0;
-                        player.frame_tick = 0;
-                        enter_anim = 2;
-                        enter_step = 0;
-                        enter_tick = 0;
+                        /* THE DOOR SIDE BLOCKED? The original probes the spot
+                         * 2 units outside the sill for a car, a building or
+                         * air. A car or a building here; "air" at the ped's
+                         * own layer is too easy to hit on a kerb to be
+                         * trusted as a wall. */
+                        car_door_pos(ci_, veh.ox, veh.oy, a_, 0, 2, &ex_, &ey_);
+                        if (fleet_car_at(&traffic, &tiles, ex_, ey_,
+                                         player.layer, 2, 0) >= 0)
+                            blocked_ = 1;
+                        else if (gta_nav_ground(gta_nav_at_m((&nav),
+                                     (int)(ex_ >> 21), (int)(ey_ >> 21),
+                                     player.layer)) == GTA_GROUND_BUILDING)
+                            blocked_ = 2;
                         in_car = 0;
                         handbrake = 0;
                         up = down = left = right = 0;
-                        /* THE CAR DOES NOT VANISH. It goes back into the
-                         * fleet as an abandoned one - drawn, solid, and
-                         * enterable again - which is what "when we get out
-                         * the car disappears" was about. */
-                        if (!gta_traffic_abandon(&traffic, veh.model,
-                                                 veh.ox, veh.oy, a_,
-                                                 player.layer, veh.remap,
-                                                 veh.damage))
-                            printf("gta: fleet full, car lost\n");
-                        printf("gta: getting out\n");
+                        if (blocked_) {
+                            /* EJECTED OVER THE ROOF: put on the car half way
+                             * along its front half, facing the flank the
+                             * door is NOT on, and into the vault - the
+                             * original's state 0x73 with speed 4. The car
+                             * is parked first so the vault's probe finds
+                             * it under him. */
+                            long fx = gta_sin(a_), fy = -gta_cos(a_);
+                            long hl = gta_car_world_len(ci_) / 2;
+                            if (!gta_traffic_abandon(&traffic, veh.model,
+                                                     veh.ox, veh.oy, a_,
+                                                     player.layer, veh.remap,
+                                                     veh.damage))
+                                printf("gta: fleet full, car lost\n");
+                            player.x = veh.ox + fx * hl * 2;
+                            player.y = veh.oy + fy * hl * 2;
+                            vault_head = (a_ - sgn_ * 64) & 255;
+                            player.angle = vault_head;
+                            vault = 2;
+                            vault_step = vault_tick = vault_hold = 0;
+                            printf("gta: door blocked by %s - over the roof,"
+                                   " heading %d\n",
+                                   blocked_ == 1 ? "a car" : "a building",
+                                   vault_head);
+                        } else {
+                            enter_x0 = veh.ox;
+                            enter_y0 = veh.oy;
+                            enter_a0 = a_;
+                            enter_dx = dx_;
+                            enter_dy = dy_;
+                            player.angle = a_;
+                            enter_bike = ci_->vtype == GTA_VEH_BIKE;
+                            player.anim = enter_bike ? GTA_ANIM_EXIT_BIKE
+                                                     : GTA_ANIM_EXIT_CAR;
+                            player.frame = 0;
+                            player.frame_tick = 0;
+                            enter_anim = 2;
+                            enter_step = 0;
+                            enter_tick = 0;
+                            /* THE CAR STAYS EXACTLY WHERE IT IS, drawn by
+                             * this code with its door swinging, and only
+                             * when he is standing beside it does it become
+                             * an abandoned fleet car. Handing it to the
+                             * fleet on this tick was why the exit happened
+                             * through a shut door (LEFTOFF, "STILL OPEN on
+                             * the door"). */
+                            printf("gta: getting out - car at (%ld,%ld) facing"
+                                   " %d, door at (%ld,%ld), player was at"
+                                   " (%ld,%ld)\n",
+                                   veh.ox >> 16, veh.oy >> 16, a_,
+                                   dx_ >> 16, dy_ >> 16,
+                                   player.x >> 16, player.y >> 16);
+                        }
                         fflush(stdout);
+                        }
                     }
                 }
                 /* THE ANIMATION ITSELF - one step every GTA_ENTER_TICKS, with
                  * the controls dead while it runs. Getting in ends with the
                  * player in the seat; getting out ends on his feet. */
                 if (enter_anim) {
-                    int steps = (enter_anim == 1) ? GTA_PED_ENTER_STEPS
-                                                  : GTA_PED_EXITCAR_FRAMES;
+                    int steps = enter_bike
+                              ? (enter_anim == 1 ? GTA_PED_ENTER_BIKE_FRAMES
+                                                 : GTA_PED_EXIT_BIKE_FRAMES)
+                              : (enter_anim == 1 ? GTA_PED_ENTER_STEPS
+                                                 : GTA_PED_EXITCAR_FRAMES);
                     int per   = (enter_anim == 1) ? GTA_ENTER_TICKS
                                                   : GTA_EXIT_TICKS;
+                    int total = steps * per;
+                    int t     = enter_step * per + enter_tick;
+
+                    if (enter_anim == 1 && vault == 1) {
+                        /* THE VAULT, ON THE WAY IN. Runs at his own pace
+                         * along the frozen heading, sprite 91 + state; at
+                         * every state boundary (states 0..3) the probe one
+                         * pixel ahead decides: still car - next state; road
+                         * - land. States 4 and 5 run out regardless. On
+                         * landing the walk target is still the door, as it
+                         * is in the original, so he walks the last few
+                         * pixels and the get-in sequence follows. */
+                        long fx = gta_sin(vault_head), fy = -gta_cos(vault_head);
+                        player.x += (fx * GTA_RUN_SPEED_FP) >> 14;
+                        player.y += (fy * GTA_RUN_SPEED_FP) >> 14;
+                        player.angle = vault_head;
+                        player.anim  = GTA_ANIM_VAULT;
+                        player.frame = vault_step;
+                        if (++vault_tick >= GTA_VAULT_TICKS) {
+                            const gta_car_info *vi = &tiles.cars[enter_model];
+                            int still = car_body_hit(enter_cx, enter_cy,
+                                            enter_face,
+                                            gta_car_world_len(vi) / 2,
+                                            gta_car_world_wid(vi) / 2,
+                                            player.x + (fx << 2),
+                                            player.y + (fy << 2), 0);
+                            vault_tick = 0;
+                            /* 91, 92, 93 advance while a car is ahead; 94
+                             * is HELD until it is not. Sprites 95 and 96
+                             * never play: the original's states 0x77/0x78
+                             * are written by nothing (PROGRESS.md 115). The
+                             * hold has a ceiling here that the original
+                             * lacks, so a probe that never clears cannot
+                             * pin him on a roof forever. */
+                            if (!still || ++vault_hold > GTA_VAULT_HOLD_MAX) {
+                                long ax, ay, px;
+                                vault = 0;
+                                enter_x0 = player.x;
+                                enter_y0 = player.y;
+                                enter_a0 = player.angle;
+                                enter_dx = vault_dx;
+                                enter_dy = vault_dy;
+                                ax = enter_dx - player.x; if (ax < 0) ax = -ax;
+                                ay = enter_dy - player.y; if (ay < 0) ay = -ay;
+                                px = (ax + ay) >> 16;
+                                enter_walk_len = (int)((px * 3) / 4);
+                                if (enter_walk_len > 60) enter_walk_len = 60;
+                                enter_walk_t = 0;
+                                printf("gta: landed after state %d at (%ld,%ld),"
+                                       " %ld px from the door\n", vault_step,
+                                       player.x >> 16, player.y >> 16, px);
+                                fflush(stdout);
+                            } else if (vault_step < 3) {
+                                vault_step++;
+                            }
+                        }
+                        up = down = left = right = 0;
+                    } else if (enter_anim == 1 && enter_walk_t < enter_walk_len) {
+                        /* PHASE 0 - HE WALKS TO THE DOOR, on the ordinary walk
+                         * cycle, turning to face the car as he goes. The step
+                         * counter does not advance here: the ten-step sequence
+                         * has not started yet. */
+                        player.anim  = GTA_ANIM_WALK;
+                        player.frame = (enter_walk_t / 3) % GTA_PED_WALK_FRAMES;
+                        player.x = lerp_fp(enter_x0, enter_dx,
+                                           enter_walk_t, enter_walk_len);
+                        player.y = lerp_fp(enter_y0, enter_dy,
+                                           enter_walk_t, enter_walk_len);
+                        player.angle = lerp_angle(enter_a0,
+                                                  vault_pending ? vault_head
+                                                                : enter_face,
+                                                  enter_walk_t, enter_walk_len);
+                        enter_walk_t++;
+                        /* At the flank: the vault takes over from the walk. */
+                        if (vault_pending && enter_walk_t >= enter_walk_len) {
+                            vault = 1; vault_pending = 0;
+                            vault_step = vault_tick = vault_hold = 0;
+                        }
+                        up = down = left = right = 0;
+                    } else {
+                    /* THE DOOR OPENS WHEN HE REACHES IT, not when he sets off
+                     * for it - so its clock starts here, at the first tick of
+                     * the sequence phase, and not back at the RETURN. */
+                    if (enter_anim == 1 && door_tick < 0 && !enter_bike &&
+                        enter_step == 0 && enter_tick == 0)
+                        door_tick = 0;
+                    /* THE DOOR IS OPEN: OUT COMES THE DRIVER. The original
+                     * creates the victim in the seat at the jacker's state
+                     * 0x1c, which follows the door-open wait, and walks him
+                     * through 0x93..0x98 against the car. Here that is the
+                     * tick the door clock reaches fully open (20 = four
+                     * records at five ticks); a bike has no door, so its
+                     * rider comes off at once. */
+                    if (enter_anim == 1 && enter_driver
+                        && (enter_bike || door_tick >= 20)) {
+                        enter_driver = 0;
+                        if (gta_peds_pull(&peds, enter_cx, enter_cy,
+                                          enter_face, enter_model,
+                                          player.layer, -1))
+                            printf("gta: dragged the driver out\n");
+                        else
+                            printf("gta: driver lost - ped pool full\n");
+                        fflush(stdout);
+                    }
+                    player.anim  = enter_bike
+                                 ? (enter_anim == 1 ? GTA_ANIM_ENTER_BIKE
+                                                    : GTA_ANIM_EXIT_BIKE)
+                                 : (enter_anim == 1 ? GTA_ANIM_ENTER_CAR
+                                                    : GTA_ANIM_EXIT_CAR);
                     player.frame = enter_step;
+
+                    /* PHASE 1 - THE SEQUENCE ITSELF, at the car.
+                     *
+                     * Getting in: he stands at the handle for the first eight
+                     * steps (26,26,26,25,25,29,30,31 - reaching, leaning, legs
+                     * over the sill) and drops into the seat over the last two
+                     * (32,33). Frame 33 is the sitting pose: the art agent
+                     * found it is four pixels away from frame 97,
+                     * `sitting_in_car`, which is what proves the sequence's
+                     * direction and its endpoint.
+                     *
+                     * Getting out: seat to handle over all eight of 16..23,
+                     * which is that same motion stored backwards.
+                     *
+                     * Carnage3D snaps to the door on entry and to the seat on
+                     * the last frame with nothing in between (PROGRESS.md
+                     * 110). It gets away with it because its car is drawn
+                     * throughout and its ped animation actually plays - ours
+                     * did neither. */
+                    if (enter_anim == 1) {
+                        int slide = (steps - 2) * per;
+                        if (t <= slide) {
+                            player.x = enter_dx;
+                            player.y = enter_dy;
+                        } else {
+                            player.x = lerp_fp(enter_dx, enter_cx,
+                                               t - slide, total - slide);
+                            player.y = lerp_fp(enter_dy, enter_cy,
+                                               t - slide, total - slide);
+                        }
+                        player.angle = enter_face;
+                    } else if (enter_bike) {
+                        player.x = lerp_fp(enter_x0, enter_dx, t, total);
+                        player.y = lerp_fp(enter_y0, enter_dy, t, total);
+                        player.angle = enter_a0;
+                    } else {
+                        /* GETTING OUT OF A CAR: the original SNAPS him to a
+                         * place relative to the car every state - the
+                         * exit tables - it never slides him. Inside the
+                         * body's edge for the first three states, so the
+                         * car drawn over him hides him until the door is
+                         * open and he swings out at state 4. */
+                        int s = enter_step < GTA_PED_EXITCAR_FRAMES
+                              ? enter_step : GTA_PED_EXITCAR_FRAMES - 1;
+                        car_door_pos(&tiles.cars[veh.model], veh.ox, veh.oy,
+                                     enter_a0, exit_along[s], exit_lat[s],
+                                     &player.x, &player.y);
+                        player.angle = enter_a0;
+                    }
+
                     if (++enter_tick >= per) {
                         enter_tick = 0;
                         enter_step++;
@@ -2207,7 +2988,28 @@ int main(void)
                                    enter_model, enter_cx >> 21,
                                    enter_cy >> 21);
                         } else {
-                            printf("gta: on foot\n");
+                            /* ON HIS FEET beside the shut door, facing 45
+                             * degrees off the car's heading towards the
+                             * door side (the original's rot + 0x80), or
+                             * square off a bike. And only NOW is the car an
+                             * abandoned fleet car - where it stopped, with
+                             * nobody in it, drawn, solid, enterable. */
+                            const gta_car_info *xi = &tiles.cars[veh.model];
+                            int sgn = car_door_side(xi);
+                            if (!enter_bike)
+                                car_door_pos(xi, veh.ox, veh.oy, enter_a0,
+                                             -2, 1, &player.x, &player.y);
+                            player.angle = (enter_a0
+                                            + sgn * (enter_bike ? 64 : 32))
+                                           & 255;
+                            if (!gta_traffic_abandon(&traffic, veh.model,
+                                                     veh.ox, veh.oy, enter_a0,
+                                                     player.layer, veh.remap,
+                                                     veh.damage))
+                                printf("gta: fleet full, car lost\n");
+                            printf("gta: on foot at (%ld,%ld) facing %d\n",
+                                   player.x >> 16, player.y >> 16,
+                                   player.angle);
                         }
                         player.anim = GTA_ANIM_STAND;
                         player.frame = 0;
@@ -2215,8 +3017,96 @@ int main(void)
                         fflush(stdout);
                     }
                     up = down = left = right = 0;
+                    }
                 }
-                if (in_car) {
+                /* SPACE ON FOOT - the original's other way into the same
+                 * states. Running at a car with the body within 3 px ahead:
+                 * a low one is vaulted along his own heading, a tall one is
+                 * slid under. Nothing ahead, and SPACE keeps its old job of
+                 * dumping the frame, which no unattended run can do. */
+                if (jump_req) {
+                    jump_req = 0;
+                    if (!in_car && !enter_anim && !vault && !slide) {
+                        int low = 0, hit = -1;
+                        if (player.anim == GTA_ANIM_RUN) {
+                            long fx = gta_sin(player.angle);
+                            long fy = -gta_cos(player.angle);
+                            hit = fleet_car_at(&traffic, &tiles,
+                                               player.x + fx * 12,
+                                               player.y + fy * 12,
+                                               player.layer, 1, &low);
+                        }
+                        if (hit >= 0 && low) {
+                            vault = 2; vault_step = vault_tick = vault_hold = 0;
+                            vault_head = player.angle;
+                            printf("gta: jump - vaulting fleet car %d\n", hit);
+                        } else if (hit >= 0) {
+                            slide = 1; slide_tick = 0;
+                            printf("gta: jump - sliding under fleet car %d\n",
+                                   hit);
+                        } else {
+                            dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
+                                       SCREEN_W, SCREEN_H, tiles.palette);
+                            printf("gta: camera at block (%ld,%ld)\n",
+                                   view.cam_x >> 21, view.cam_y >> 21);
+                        }
+                        fflush(stdout);
+                    }
+                }
+                if (vault == 2) {
+                    /* The free vault: same states, same probe against
+                     * whatever fleet car is under him, and it lands on his
+                     * feet with the controls back. */
+                    long fx = gta_sin(vault_head), fy = -gta_cos(vault_head);
+                    player.x += (fx * GTA_RUN_SPEED_FP) >> 14;
+                    player.y += (fy * GTA_RUN_SPEED_FP) >> 14;
+                    player.angle = vault_head;
+                    player.anim  = GTA_ANIM_VAULT;
+                    player.frame = vault_step;
+                    if (++vault_tick >= GTA_VAULT_TICKS) {
+                        int still = fleet_car_at(&traffic, &tiles,
+                                                 player.x + (fx << 2),
+                                                 player.y + (fy << 2),
+                                                 player.layer, 0, 0) >= 0;
+                        vault_tick = 0;
+                        if (!still || ++vault_hold > GTA_VAULT_HOLD_MAX) {
+                            vault = 0;
+                            player.anim = GTA_ANIM_STAND;
+                            player.frame = 0;
+                            printf("gta: landed after state %d\n", vault_step);
+                            fflush(stdout);
+                        } else if (vault_step < 3) {
+                            vault_step++;
+                        }
+                    }
+                    up = down = left = right = 0;
+                }
+                if (slide) {
+                    /* State 0x92: while a car is still over him, a pixel
+                     * along the heading every state; then he stands up. */
+                    player.anim  = GTA_ANIM_SLIDE_UNDER;
+                    player.frame = 0;
+                    if (++slide_tick >= GTA_VAULT_TICKS) {
+                        slide_tick = 0;
+                        if (fleet_car_at(&traffic, &tiles, player.x, player.y,
+                                         player.layer, 1, 0) >= 0) {
+                            player.x += gta_sin(player.angle) << 2;
+                            player.y -= gta_cos(player.angle) << 2;
+                        } else {
+                            slide = 0;
+                            player.anim = GTA_ANIM_STAND;
+                            printf("gta: out from under\n");
+                            fflush(stdout);
+                        }
+                    }
+                    up = down = left = right = 0;
+                }
+                /* ...AND WHILE HE IS GETTING OUT the car still has physics:
+                 * the original refuses the exit above speed 4 but lets a
+                 * slower car roll on with the door open and re-places the
+                 * ped against it every state. The controls are dead by
+                 * then, so this is drag, walls and the fleet, nothing more. */
+                if (in_car || enter_anim == 2) {
                     /* The car: up throttle, down brake/reverse, space the
                      * handbrake. Then the world - the nose must stay on
                      * ground a car can be on (road, pavement, the odd
@@ -2304,18 +3194,86 @@ int main(void)
                             fflush(stdout);
                         }
                     }
-                    player.x = veh.ox;
-                    player.y = veh.oy;
-                } else if (walk_mode) {
+                    if (in_car) {
+                        player.x = veh.ox;
+                        player.y = veh.oy;
+                    }
+                } else if (walk_mode && !enter_anim && !vault && !slide) {
                     /* GTA's own on-foot controls: forward and back on the
                      * up/down keys, left and right TURN rather than strafe,
                      * and the player RUNS by default - the original has no
                      * walk key at all. Shift is the exception, not the
-                     * accelerator. */
-                    gta_player_update(&player, &map,
-                                      (right ? 1 : 0) - (left ? 1 : 0),
-                                      (up ? 1 : 0) - (down ? 1 : 0),
-                                      fast);
+                     * accelerator.
+                     *
+                     * NOT WHILE HE IS GETTING IN OR OUT. With no forward
+                     * input this function resets p->anim to STAND and
+                     * p->frame to 0 - correct for standing still, fatal here.
+                     * It ran on every tick of the animation and threw away
+                     * the frame the animation block had just set one line
+                     * earlier, so gta_ped_enter_seq (26,26,26,25,25,29..33)
+                     * and the exit run 16..23 were computed and then
+                     * discarded. The player stood motionless at frame 98 for
+                     * the whole 0.8 seconds: dead code that looked exactly
+                     * like a missing feature. */
+                    if (punch_left > 0 && !up && !down) {
+                        /* THE STANDING PUNCH is a state of its own,
+                         * 0xa9..0xae, a frame every GTA_PUNCH_TICKS;
+                         * gta_player_update would reset it to STAND. He
+                         * may still turn. */
+                        player.anim = GTA_ANIM_PUNCH;
+                        player.frame = (GTA_PUNCH_TICKS * GTA_PED_PUNCH_FRAMES
+                                        - punch_left) / GTA_PUNCH_TICKS;
+                        if (right || left)
+                            player.angle = (player.angle
+                                + ((right ? 1 : 0) - (left ? 1 : 0)) * 5) & 255;
+                    } else {
+                        gta_player_update(&player, &map,
+                                          (right ? 1 : 0) - (left ? 1 : 0),
+                                          (up ? 1 : 0) - (down ? 1 : 0),
+                                          fast);
+                    }
+                }
+                /* THE FIRE LATCH - the original's, once a
+                 * tick: with fists a punch (not while one is in flight);
+                 * with the pistol a round every time the cooldown has run
+                 * out, the peds around panicked, the ammo counted down and
+                 * the weapon dropped to fists when it hits zero. Never
+                 * from a car, never mid-animation. */
+                if (fire_cool > 0)
+                    fire_cool--;
+                if (punch_left > 0) {
+                    punch_left--;
+                    if (punch_left == GTA_PUNCH_TICKS * (GTA_PED_PUNCH_FRAMES - 2)) {
+                        /* the blow lands on the third state */
+                        int v = gta_peds_punch(&peds, player.x, player.y,
+                                               player.angle, player.layer);
+                        if (v >= 0)
+                            printf("gta: punch - ped %d down\n", v);
+                        else if (v == -2)
+                            printf("gta: punch - missed (the 11th/12th of 13)\n");
+                    }
+                }
+                if (fire_held && walk_mode && !in_car && !enter_anim
+                    && !vault && !slide) {
+                    if (weapon == 0) {
+                        if (punch_left == 0)
+                            punch_left = GTA_PUNCH_TICKS * GTA_PED_PUNCH_FRAMES;
+                    } else if (fire_cool == 0 && ammo[weapon] > 0) {
+                        if (gta_weapons_fire_pistol(&weapons, player.x,
+                                                    player.y, player.layer,
+                                                    player.angle,
+                                                    player.anim == GTA_ANIM_RUN,
+                                                    -1)) {
+                            fire_cool = GTA_PISTOL_COOLDOWN;
+                            gta_peds_panic(&peds, player.x, player.y,
+                                           player.layer);
+                            if (--ammo[weapon] == 0) {
+                                weapon = ammo[1] > 0 ? 1 : 0;
+                                printf("gta: out of ammo - weapon %d\n",
+                                       weapon);
+                            }
+                        }
+                    }
                 }
                 /* The traffic runs on the SAME tick as the player and outside
                  * the walk_mode test, so the city keeps moving while the free
@@ -2327,7 +3285,9 @@ int main(void)
                  * this cars vanish and pop into existence in plain sight the
                  * moment the camera pulls back. */
                 if (opt_traffic) {
-                    if (in_car) {
+                    /* ...and while he is getting OUT the car is still his,
+                     * still solid, and not yet in the fleet. */
+                    if (in_car || enter_anim == 2) {
                         long sp = veh.vx < 0 ? -veh.vx : veh.vx;
                         long sq = veh.vy < 0 ? -veh.vy : veh.vy;
                         gta_traffic_set_player(&traffic, 1, veh.ox, veh.oy,
@@ -2343,12 +3303,29 @@ int main(void)
                                             (render_w() / 2) / zoom_display + 1);
                     gta_traffic_tick(&traffic, &map, view.cam_x, view.cam_y);
                 }
+                /* The spawner puts people on the edge of the view ahead of
+                 * the player: it needs the view in blocks and his heading
+                 * (the car's when he drives). */
+                gta_peds_set_view(&peds,
+                                  (render_w() / 2) / zoom_display + 1,
+                                  (SCREEN_H / 2) / zoom_display + 1,
+                                  in_car ? gta_veh_angle(&veh) : player.angle,
+                                  in_car ? (veh.vx || veh.vy)
+                                         : (player.anim == GTA_ANIM_WALK
+                                            || player.anim == GTA_ANIM_RUN));
                 gta_peds_tick(&peds, &map, view.cam_x, view.cam_y);
+                /* The bullets fly after the people have moved, in the
+                 * original's order: peds, cars, then the block. */
+                gta_weapons_tick(&weapons, &nav, &peds, &traffic, &tiles);
                 if (in_car) {
+                    long avx = veh.vx < 0 ? -veh.vx : veh.vx;
+                    long avy = veh.vy < 0 ? -veh.vy : veh.vy;
                     int ph = gta_peds_ram(&peds, veh.ox, veh.oy,
                                           gta_veh_angle(&veh),
                                           veh.len / 2, veh.wid / 2,
-                                          player.layer);
+                                          player.layer,
+                                          avx > avy ? avx + avy / 2
+                                                    : avy + avx / 2);
                     if (ph) {
                         printf("gta: ran over %d - %ld so far\n",
                                ph, peds.stat_runover);
@@ -2443,6 +3420,35 @@ int main(void)
                              traffic.stat_offroad_recovered,
                              traffic.stat_abandoned);
                     log_line(ln);
+                    /* AND THE PEOPLE: how many are alive, and where. A
+                     * brain whose peds all die unborn looks, on a film,
+                     * exactly like an empty city. */
+                    {
+                        int pi_, alive_ = 0, seen_ = 0;
+                        for (pi_ = 0; pi_ < GTA_MAX_PEDS; pi_++) {
+                            const gta_ped *pp = &peds.p[pi_];
+                            if (!pp->alive) continue;
+                            alive_++;
+                            if (pp->offscreen == 0) seen_++;
+                        }
+                        snprintf(ln, sizeof ln,
+                                 "gta: peds %d alive (%d in view), spawned"
+                                 " %ld, run over %ld, killed %ld",
+                                 alive_, seen_, peds.stat_spawned,
+                                 peds.stat_runover, peds.stat_killed);
+                        log_line(ln);
+                        if (weapons.stat_fired || peds.stat_punched) {
+                            snprintf(ln, sizeof ln,
+                                     "gta: weapons fired %ld: ped %ld car %ld"
+                                     " wall %ld spent %ld; punched %ld; ammo %d"
+                                     " weapon %d",
+                                     weapons.stat_fired, weapons.stat_ped,
+                                     weapons.stat_car, weapons.stat_wall,
+                                     weapons.stat_expired, peds.stat_punched,
+                                     ammo[1], weapon);
+                            log_line(ln);
+                        }
+                    }
                 }
 
                 /* AND WHETHER CARS LEAVE JUNCTIONS ON THE LINE THEY CAME IN
@@ -2548,28 +3554,111 @@ int main(void)
         /* The player is queued every frame, in both modes - in camera mode he
          * stays where he was left, which is what makes "walk there, then look
          * at it from above" possible. */
+        /* The splats are ground marks: under everybody. */
+        gta_weapons_draw(&weapons, &view, -1,
+                         gta_tiles_object_sprite(&tiles, GTA_OBJ_SPLAT));
         gta_peds_draw(&peds, &view);
-        if (in_car) {
-            const gta_car_info *pi = &tiles.cars[veh.model];
-            if (pi->sprite_index >= 0)
-                gta_render_add_sprite_r(&view, veh.ox, veh.oy, player.layer,
+        /* THE CAR BEING ENTERED IS STILL A CAR.
+         *
+         * This is the fault the whole change is about. `gta_traffic_grab_car`
+         * takes the car out of the fleet on the tick RETURN is pressed, and
+         * the player's own `veh` is not created until the animation ends forty
+         * ticks later - so for 0.8 seconds NOTHING drew it. The car blinked
+         * out, the player stood in the road, and then the car reappeared with
+         * him inside. out/before_enter_sheet.png is what that looked like.
+         *
+         * Everything needed to draw it was already being carried in
+         * enter_model / enter_cx / enter_cy / enter_face / enter_remap for the
+         * gta_veh_init at the end. It just was not being used.
+         *
+         * ORDER IS THE ANIMATION. Sprites are drawn in insertion order within
+         * a layer, so adding the player FIRST puts him behind the car - which
+         * is what should happen as he climbs in on frames 29..33, and what
+         * Carnage3D gets from its eSpriteDrawOrder_CarPassenger. A convertible
+         * would want the other order; we do not draw a seated player at all
+         * yet, so that distinction has nowhere to show up (see LEFTOFF). */
+        {
+            /* THE CAR HE IS GETTING OUT OF IS HIS CAR STILL - drawn from
+             * `veh`, with its door on the exit's own clock - until the exit
+             * ends and the fleet takes it. */
+            int car_shown  = in_car || enter_anim;
+            int use_veh    = in_car || enter_anim == 2;
+            int car_model  = use_veh ? veh.model : enter_model;
+            long car_x     = use_veh ? veh.ox : enter_cx;
+            long car_y     = use_veh ? veh.oy : enter_cy;
+            int  car_ang   = use_veh ? gta_veh_angle(&veh) : enter_face;
+            int  car_remap = use_veh ? veh.remap : enter_remap;
+            int  door_now  = door_delta(door_tick);
+            if (enter_anim == 2 && !enter_bike) {
+                int s = enter_step < GTA_PED_EXITCAR_FRAMES
+                      ? enter_step : GTA_PED_EXITCAR_FRAMES - 1;
+                door_now = exit_door[s] ? GTA_DELTA_DOOR1 + exit_door[s] - 1
+                                        : -1;
+            }
+
+            /* WHO IS ON TOP. A hard top hides its driver, so the man goes in
+             * first and the car covers him. A bike or a convertible has
+             * nothing to hide him under: the vehicle goes in first and the
+             * rider is drawn OVER it - climbing on, riding (frame 84 on a
+             * bike, 97 in an open car, turning with the vehicle), and
+             * climbing off. Before this the rider simply vanished on
+             * mounting, which is what the developer saw. */
+            const gta_car_info *pi = car_shown ? &tiles.cars[car_model] : 0;
+            /* ...and a man in mid-vault is over the roof whatever the car
+             * is. The original gets that from his z, set to the car's
+             * floor height for the duration; here it is draw order. */
+            int on_top = pi && (pi->vtype == GTA_VEH_BIKE
+                                || (pi->convertible & 1) || vault == 1);
+
+            if (!in_car && !on_top && vault != 2)
+                gta_render_add_sprite(&view, player.x, player.y, player.layer,
+                                      gta_player_grid(&player),
+                                      armed_sprite(&player, punch_left,
+                                                   ARMED_NOW),
+                                      gta_player_draw_angle(&player));
+            if (car_shown && pi->sprite_index >= 0)
+                gta_render_add_sprite_d(&view, car_x, car_y, player.layer,
                                       player.layer, pi->sprite_index,
-                                      (gta_veh_angle(&veh)
-                                       + GTA_SPRITE_ART_SOUTH) & 255,
-                                      veh.remap >= 0
-                                          && veh.remap < GTA_CAR_REMAPS
-                                          ? (int)pi->remap8[veh.remap] : 0);
-        } else
-        gta_render_add_sprite(&view, player.x, player.y, player.layer,
-                              gta_player_grid(&player),
-                              gta_player_sprite(&player),
-                              gta_player_draw_angle(&player));
+                                      (car_ang + GTA_SPRITE_ART_SOUTH) & 255,
+                                      car_remap >= 0
+                                          && car_remap < GTA_CAR_REMAPS
+                                          ? (int)pi->remap8[car_remap] : 0,
+                                      door_now);
+            if (on_top) {
+                if (in_car)
+                    gta_render_add_sprite(&view, car_x, car_y, player.layer,
+                                          player.layer,
+                                          player.ped_base
+                                          + (pi->vtype == GTA_VEH_BIKE
+                                             ? GTA_PED_SIT_ON_BIKE
+                                             : GTA_PED_SIT_IN_CAR),
+                                          (car_ang + GTA_SPRITE_ART_SOUTH)
+                                          & 255);
+                else
+                    gta_render_add_sprite(&view, player.x, player.y,
+                                          player.layer,
+                                          gta_player_grid(&player),
+                                          armed_sprite(&player, punch_left,
+                                                       ARMED_NOW),
+                                          gta_player_draw_angle(&player));
+            }
+        }
 
         /* Cars after the player, so that if the sprite list ever fills the
          * thing that gets dropped is a parked car and not the man the
          * keyboard is driving. */
         if (opt_traffic)
             gta_traffic_draw(&traffic, &view);
+        /* The free vault is over a FLEET car, so he goes in after the
+         * fleet. */
+        if (vault == 2)
+            gta_render_add_sprite(&view, player.x, player.y, player.layer,
+                                  gta_player_grid(&player),
+                                  armed_sprite(&player, punch_left, ARMED_NOW),
+                                  gta_player_draw_angle(&player));
+        /* The tracers, over everything on the street. */
+        gta_weapons_draw(&weapons, &view,
+                         gta_tiles_object_sprite(&tiles, GTA_OBJ_BULLET), -1);
 
         /* Redraw every pass, moving or not. Holding the frame when nothing has
          * changed would be free frames per second and a dishonest measurement;
@@ -2650,6 +3739,7 @@ int main(void)
 
     amigagfx_close();
     gta_render_free(&view);
+    gta_sfx_free(&sfx);
     gta_map_free(&map);
     gta_tiles_free(&tiles);
     log_line("gta: clean exit");

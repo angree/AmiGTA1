@@ -1343,6 +1343,24 @@ static int park_band(gta_traffic *tr, const gta_map *m,
                  * appears" and cannot be reproduced on purpose. */
                 car->turn_lock = 0;
                 car->crossing = 0;
+                /* AND THE PLAYER'S OWN MARKS, which the list above never
+                 * covered. When he gets out, gta_traffic_abandon() parks his
+                 * car in the LAST slot; the next compaction copies that slot
+                 * down and leaves the stale struct where tr->n now points -
+                 * and this spawner then reused it with `abandoned` still set.
+                 * The new car was born parked: never driven (drive_car()
+                 * returns at once for an abandoned car), never recycled (the
+                 * slot recycler refuses "the player's" cars), a dead vehicle
+                 * in the road for the rest of the session, and one more every
+                 * time it happened. The autodrive exit film caught it:
+                 * "fleet[19] abandoned model 1 at (1940,1264)" four ticks
+                 * after the compaction, for a car nobody had got out of
+                 * (PROGRESS.md 113). Damage and the knock state are the same
+                 * kind of leftover. */
+                car->abandoned = 0;
+                car->damage = 0;
+                car->knock = 0;
+                car->recover = 0;
                 car->allow_turn = 1;
                 car->lane_bx = cx;
                 car->lane_by = cy;

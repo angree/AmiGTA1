@@ -226,6 +226,67 @@ static long read_one_car(FILE *f, gta_car_info *out)
  * and this project has already been bitten once by reusing a .G24 record
  * layout on a .GRY file (the sprite record, which desynchronised after 38
  * entries). */
+/* THE OBJECT TABLE. 20 bytes an entry plus num_into u16s; consumed to the
+ * byte, two passes like the cars. Carnage3D's ReadObjects (MIT) is the
+ * layout's source. */
+static int read_objects(FILE *f, gta_style *st)
+{
+    long section_start = ftell(f);
+    long remaining;
+    int pass, n;
+
+    if (section_start < 0) return -1;
+    if (st->hdr.object_info_size == 0) return 0;
+
+    for (pass = 0; pass < 2; pass++) {
+        if (fseek(f, section_start, SEEK_SET) != 0) return -1;
+        remaining = (long)st->hdr.object_info_size;
+        n = 0;
+        while (remaining >= 20) {
+            struct gta_object_info o;
+            short s16;
+            unsigned short u16;
+            unsigned char u8;
+            if (pass == 1 && n >= st->object_count) return -1;
+            if (read_s32le(f, &o.w)     != 0) return -1;
+            if (read_s32le(f, &o.h)     != 0) return -1;
+            if (read_s32le(f, &o.depth) != 0) return -1;
+            if (read_u16le(f, &u16)     != 0) return -1;
+            o.sprite_num = (int)u16;
+            if (read_s16le(f, &s16)     != 0) return -1;
+            o.weight = s16;
+            if (read_s16le(f, &s16)     != 0) return -1;
+            o.aux = s16;
+            if (read_u8(f, &u8)         != 0) return -1;
+            o.status = u8;
+            if (read_u8(f, &u8)         != 0) return -1;
+            o.num_into = u8;
+            o.sprite_index = -1;
+            remaining -= 20;
+            if (o.num_into > 0) {
+                if (fseek(f, (long)o.num_into * 2, SEEK_CUR) != 0) return -1;
+                remaining -= (long)o.num_into * 2;
+            }
+            if (pass == 1) st->objects[n] = o;
+            n++;
+        }
+        if (remaining != 0) {
+            fprintf(stderr, "gta_style: the object table has %ld bytes left "
+                            "over after %d entries - the layout is wrong\n",
+                    remaining, n);
+            return -1;
+        }
+        if (pass == 0) {
+            st->object_count = n;
+            if (n == 0) return 0;
+            st->objects = (struct gta_object_info *)
+                malloc((size_t)n * sizeof(struct gta_object_info));
+            if (!st->objects) return -1;
+        }
+    }
+    return 0;
+}
+
 static int read_cars(FILE *f, gta_style *st)
 {
     long section_start = ftell(f);
@@ -289,7 +350,7 @@ static int read_sprite_info(FILE *f, gta_style *st)
 {
     long section_start = ftell(f);
     long remaining;
-    int pass, n;
+    int pass, n, nd;
 
     if (section_start < 0) return -1;
     if (st->hdr.sprite_info_size == 0) return 0;
@@ -298,6 +359,7 @@ static int read_sprite_info(FILE *f, gta_style *st)
         if (fseek(f, section_start, SEEK_SET) != 0) return -1;
         remaining = (long)st->hdr.sprite_info_size;
         n = 0;
+        nd = 0;
 
         while (remaining >= 10) {
             unsigned char b[8];
@@ -328,15 +390,28 @@ static int read_sprite_info(FILE *f, gta_style *st)
                 st->sprites[n].page_x = b[4];
                 st->sprites[n].page_y = b[5];
                 st->sprites[n].page = page;
+                st->sprites[n].delta_first = b[2] ? nd : -1;
             }
 
+            /* THE DELTAS ARE KEPT NOW, not walked past - six bytes each,
+             * {u16 size, s32 offset into sprite_graphics}. The offsets run
+             * contiguously across a sprite's records, which is what proves
+             * the layout; see PROGRESS.md 111 and tools/bin/deltaprobe.py. */
             for (d = 0; d < (int)b[2]; d++) {
+                unsigned short dsize;
+                unsigned long doff;
                 if (remaining < 6) {
                     fprintf(stderr, "gta_style: sprite %d claims %d deltas but "
                                     "the section ends early\n", n, (int)b[2]);
                     return -1;
                 }
-                if (fseek(f, 6, SEEK_CUR) != 0) return -1;
+                if (read_u16le(f, &dsize) != 0) return -1;
+                if (read_u32le(f, &doff) != 0) return -1;
+                if (pass == 1) {
+                    st->deltas[nd].size = dsize;
+                    st->deltas[nd].offset = doff;
+                }
+                nd++;
                 remaining -= 6;
             }
             n++;
@@ -349,6 +424,16 @@ static int read_sprite_info(FILE *f, gta_style *st)
             if (!st->sprites) {
                 fprintf(stderr, "gta_style: out of memory for %d sprites\n", n);
                 return -1;
+            }
+            st->delta_count = nd;
+            if (nd > 0) {
+                st->deltas = (struct gta_sprite_delta *)
+                    malloc((size_t)nd * sizeof(struct gta_sprite_delta));
+                if (!st->deltas) {
+                    fprintf(stderr,
+                            "gta_style: out of memory for %d deltas\n", nd);
+                    return -1;
+                }
             }
         }
     }
@@ -537,7 +622,7 @@ int gta_style_load(const char *path, gta_style *st)
         if (fseek(f, (long)st->hdr.unknown_a, SEEK_CUR) != 0) goto fail;
     }
     if (fseek(f, (long)st->hdr.unknown_b, SEEK_CUR) != 0) goto fail;
-    if (fseek(f, (long)st->hdr.object_info_size, SEEK_CUR) != 0) goto fail;
+    if (read_objects(f, st) != 0) goto fail;
 
     if (read_cars(f, st) != 0) goto fail;
 
@@ -590,6 +675,16 @@ int gta_style_load(const char *path, gta_style *st)
                                      + st->cars[i].sprite_num;
         }
     }
+    /* And every object's, within the OBJECT category. */
+    {
+        int i, n = gta_style_sprite_count(st, GTA_SPR_OBJECT);
+        for (i = 0; i < st->object_count; i++) {
+            struct gta_object_info *o = &st->objects[i];
+            if (o->sprite_num < 0 || o->sprite_num >= n) continue;
+            o->sprite_index = gta_style_sprite_base(st, GTA_SPR_OBJECT)
+                            + o->sprite_num;
+        }
+    }
 
     fclose(f);
     return 0;
@@ -602,17 +697,26 @@ fail:
 
 void gta_style_free(gta_style *st)
 {
+    /* The null check came AFTER two dereferences of st->remaps, which made
+     * this function crash on exactly the argument it was written to tolerate.
+     * Fixed 2026-09-02 while the deltas were being added below. */
+    if (!st) return;
     free(st->remaps);
     st->remaps = NULL;
     st->remap_count = 0;
-    if (!st) return;
     free(st->blocks);
     free(st->sprite_graphics);
     free(st->sprites);
+    free(st->deltas);
     free(st->cars);
+    free(st->objects);
+    st->objects = NULL;
+    st->object_count = 0;
     st->blocks = NULL;
     st->sprite_graphics = NULL;
     st->sprites = NULL;
+    st->deltas = NULL;
+    st->delta_count = 0;
     st->cars = NULL;
     st->blocks_len = 0;
     st->sprite_graphics_len = 0;
@@ -729,4 +833,15 @@ void gta_style_describe(const gta_style *st, FILE *out)
     fprintf(out, "sprite_numbers     %lu\n", st->hdr.sprite_numbers_size);
     fprintf(out, "cars               %d records in %lu bytes\n",
             st->car_count, st->hdr.car_size);
+    /* Printed so the C reader can be cross-checked against
+     * tools/bin/deltaprobe.py, which walks the same section independently.
+     * Two implementations agreeing on 32 and 383 is worth more than either
+     * one of them looking right. */
+    {
+        int i, with = 0;
+        for (i = 0; i < st->sprite_count; i++)
+            if (st->sprites[i].delta_count) with++;
+        fprintf(out, "sprite deltas      %d records on %d of %d sprites\n",
+                st->delta_count, with, st->sprite_count);
+    }
 }

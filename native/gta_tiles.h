@@ -76,7 +76,36 @@
  * car of one model was identical - the remap field existed on the traffic's
  * cars and had nowhere to be applied. See gta_style.h for which ranges belong
  * to cars and which to people. */
-#define GTA_TIL_VERSION  5UL
+/* VERSION 6 (2026-09-02): the sprite deltas.
+ *
+ * The small overlays GTA uses for open doors, damage panels and brake lights.
+ * Without them a car can only ever be drawn shut and undamaged - the door of
+ * the car you are getting into stays closed through the whole get-in
+ * animation, which is what PROGRESS.md 110 left open.
+ *
+ * The .GRY carries them as {u16 size, s32 offset} records pointing into
+ * sprite_graphics; the format and the decode are proved in PROGRESS.md 111
+ * and re-runnable with tools/bin/deltaprobe.py. Here the streams are COPIED
+ * OUT, so the baked file is self-contained the way every other section is. */
+/* VERSION 7 (2026-09-02): the object table.
+ *
+ * The .GRY's object_info section - one entry per object TYPE of the game,
+ * and the entry's sprite is what the game draws for that type. Until now the
+ * loader fseek'd past it, and nothing in the port could say which sprite is
+ * the pistol's bullet (type 0x4a), the splat (0xd), the crate (0x54) or a
+ * fire (0x2e): the weapons need it first, the map objects next. The section
+ * is LAST in the file, after the deltas:
+ *
+ *     u32 n_objects
+ *     record[n_objects]   GTA_TIL_OBJREC bytes each, big-endian:
+ *         u16 sprite      absolute sprite index, 0xffff = none
+ *         u16 w, h, depth the original's units (64 to a block), clamped
+ *         u16 weight, aux
+ *         u8  status, num_into
+ *         u16 pad
+ *
+ * `gtadump objinfo <style.gry>` prints the table straight from the .GRY. */
+#define GTA_TIL_VERSION  7UL
 #define GTA_TIL_HDR      32
 #define GTA_TIL_PALETTE  768
 #define GTA_TIL_DATA_OFF (GTA_TIL_HDR + GTA_TIL_PALETTE)
@@ -144,6 +173,7 @@
  * bases and those are a .GRY concept. The Amiga should not have to know that
  * a bus counts its sprites separately from a car. */
 #define GTA_TIL_CARREC 138
+#define GTA_TIL_OBJREC 16
 
 /* REMAPS (format version 5), after the cars:
  *
@@ -152,10 +182,54 @@
  */
 #define GTA_TIL_REMAP_STRIDE 256
 
+/* DELTAS (format version 6), after the remaps:
+ *
+ *     u32 n_deltas                 total records (383 for style001)
+ *     u32 delta_bytes              total stream bytes below
+ *     index[n_sprites]:  u16 first, u16 count      per-sprite, INDEXED
+ *     record[n_deltas]:  u32 offset, u32 size      offset into the streams
+ *     streams[delta_bytes]
+ *
+ * The per-sprite index is 4 bytes x 1009 = 4 KB and is mostly zeros, because
+ * only 32 sprites have any deltas at all. That is paid on purpose: the
+ * alternative is a search at draw time, and the whole point of the baked file
+ * is that the Amiga looks things up rather than walking for them.
+ *
+ * A record of size 0 is an empty slot in the original and stays one here.
+ *
+ * The stream is runs of `u16 dest_offset, u8 len, len bytes of palette index`.
+ * THE CURSOR STEPS IN UNITS OF 256 - the .GRY's sprite PAGE width - and not
+ * the sprite's own width, so a run that moves down a line adds 256. Decoding
+ * it against the sprite width is syntactically fine and smears the overlay
+ * diagonally. See gta_tiles_delta_apply(). */
+#define GTA_TIL_DELTA_PAGE 256
+
+/* WHICH DELTA RECORDS ARE THE DOORS.
+ *
+ * Hardcoded, the same way Carnage3D hardcodes them (GameDefs.h:56-66), and
+ * for the same reason: the car table's own per-door `delta` field is NOT a
+ * record index. It reads 7 on every door of every car in style001 - both
+ * doors of the two-door models included - so it cannot be selecting between
+ * two different sets of records.
+ *
+ * 6..9 is what the art actually shows. `gtadump spritedelta ... 31` draws car
+ * sprite 31's eleven overlays and records 6, 7, 8, 9 are a door swinging
+ * progressively wider; the rest are damage panels. See PROGRESS.md 111. */
+#define GTA_DELTA_DOOR1        6
+#define GTA_DELTA_DOOR2       11
+#define GTA_DELTA_DOOR_FRAMES  4
+
 typedef struct {
     unsigned short w, h;
     unsigned long  off;         /* byte offset into gta_tiles.sprite_pixels */
 } gta_tile_sprite;
+
+typedef struct {
+    short          sprite;      /* absolute sprite index, -1 = none */
+    unsigned short w, h, depth; /* the original's units, 64 to a block */
+    unsigned short weight, aux;
+    unsigned char  status, num_into;
+} gta_tile_object;
 
 typedef struct {
     int dim;                    /* GTA_TILE_DIM; checked, not trusted */
@@ -196,10 +270,30 @@ typedef struct {
     unsigned long    sprite_bytes;
     int sprite_numbers[GTA_TIL_SPRITE_TYPES];
 
+    /* SPRITE DELTAS (format version 6). NULL when the file has none, which
+     * is what a version-5 .til read by a newer binary would give - except
+     * that the version check refuses it outright, so this is only ever NULL
+     * for a style file that genuinely had no deltas. */
+    int n_deltas;
+    unsigned short *delta_first;    /* n_sprites entries */
+    unsigned short *delta_num;      /* n_sprites entries */
+    unsigned long  *delta_off;      /* n_deltas, into delta_data */
+    unsigned long  *delta_size;     /* n_deltas */
+    unsigned char  *delta_data;
+    unsigned long   delta_bytes;
+
     /* The car table (format version 3). See the note below. */
     gta_car_info *cars;
     int n_cars;
+
+    /* The object table (format version 7): index = the game's object type. */
+    gta_tile_object *objects;
+    int n_objects;
 } gta_tiles;
+
+/* The sprite of object type `n`, or -1 when the table has no such entry. */
+#define gta_tiles_object_sprite(t, n) \
+    (((n) >= 0 && (n) < (t)->n_objects) ? (int)(t)->objects[n].sprite : -1)
 
 /* First index of a sprite category and how many it holds; the categories are
  * concatenated in the order of gta_sprite_type (gta_style.h). Kept here as
@@ -221,6 +315,23 @@ void gta_tiles_free(gta_tiles *t);
 #define gta_tiles_lid(t, i, rot)  ((t)->lid + \
         (((long)(i) * GTA_LID_ROTATIONS + (rot)) * GTA_TILE_AREA))
 #define gta_tiles_aux(t, i)       ((t)->aux    + (long)(i) * GTA_TILE_AREA)
+
+/* ---- sprite deltas ------------------------------------------------------
+ *
+ * How many overlays sprite `s` has, and the decoder for one of them.
+ *
+ * `gta_tiles_delta_apply` copies the base sprite into `dst` and then lays
+ * delta `d` over it. `dst` must hold w*h bytes - the caller's scratch buffer,
+ * because the base sprite in the tile set is shared and must never be edited
+ * in place. Returns the number of runs applied, or 0 for an empty slot, a bad
+ * index or a truncated stream: a delta that will not decode is a car with a
+ * shut door, never a crash.
+ *
+ * A size-0 delta is an empty slot in the original data and copies the base
+ * through unchanged, which is exactly what the caller wants for "closed". */
+int gta_tiles_delta_count(const gta_tiles *t, int sprite);
+int gta_tiles_delta_apply(const gta_tiles *t, int sprite, int d,
+                          unsigned char *dst);
 
 void gta_tiles_describe(const gta_tiles *t, FILE *out);
 

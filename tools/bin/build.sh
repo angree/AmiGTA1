@@ -81,9 +81,15 @@ compile gta_car.c
 compile gta_nav.c
 compile gta_vehphys.c
 compile gta_peds.c
+compile gta_weapon.c
 compile gta_route.c
 compile gta_traffic.c
 compile gta_map.c
+# The settings file, shared with the external editor below. No Amiga
+# headers in it, so it also builds on the host and for the PowerPC tree.
+compile gta_prefs.c
+# The sound bank reader. Nothing plays yet - see native/gta_sfx.h.
+compile gta_sfx.c
 
 # The platform layer, carried over from openttd_amiga_68k via Amiga_OpenXCOM.
 compile amiga_gfx.c
@@ -127,6 +133,19 @@ variant gta-rtg240 -DGTA_SCREEN_W=320 -DGTA_SCREEN_H=240 \
 variant gta-rtg480 -DGTA_SCREEN_W=640 -DGTA_SCREEN_H=480 -DGTA_SCALE2X \
         -DGTA_DEFAULT_BACKEND=AMIGAGFX_BACKEND_RTG
 
+# THE SETTINGS EDITOR.
+#
+# A separate program on purpose: it edits the settings that decide whether the
+# game can open a display at all, so it cannot live behind a menu drawn by that
+# display. See the header of tools/gtaprefs.c.
+#
+# It is the only thing in this repository that links gadtools.library. That is
+# also why it is built here rather than folded into the game: an Intuition GUI
+# has no business inside a 68020 game loop's binary.
+echo "--- settings editor ---"
+m68k-amigaos-gcc $CFLAGS -o "$OUT/gtaprefs"     "$ROOT/tools/gtaprefs.c" "$NATIVE/gta_prefs.c"
+echo "  LD  build/gtaprefs"
+
 # THE TILE BAKER, FOR THE AMIGA.
 #
 # The player supplies their own GTA data and converts it themselves - we ship
@@ -137,8 +156,8 @@ echo "--- tile baker ---"
 m68k-amigaos-gcc $CFLAGS -o "$OUT/gtabake" \
     "$ROOT/tools/gtabake.c" \
     "$NATIVE/gta_style.c" "$NATIVE/gta_tiles.c" \
-    "$NATIVE/gta_car.c" "$NATIVE/gta_trig.c" -lm
+    "$NATIVE/gta_car.c" "$NATIVE/gta_trig.c" "$NATIVE/gta_sfx.c" -lm
 echo "  LD  build/gtabake"
 
-ls -la "$OUT/gta-aga" "$OUT/gta-rtg240" "$OUT/gta-rtg480" "$OUT/gtabake"
+ls -la "$OUT/gta-aga" "$OUT/gta-rtg240" "$OUT/gta-rtg480" "$OUT/gtabake" "$OUT/gtaprefs"
 echo "--- NOT stripped, on purpose (see the header of this script) ---"

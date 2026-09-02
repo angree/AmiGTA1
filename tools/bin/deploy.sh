@@ -62,7 +62,7 @@ echo "deployed: autoinput.txt"
 cp "$ROOT/winuae/work-template/autowalk.txt" "$WORK/autowalk.txt"
 echo "deployed: autowalk.txt"
 
-for b in gta-aga gta-rtg240 gta-rtg480 gta-rtg; do
+for b in gta-aga gta-rtg240 gta-rtg480 gta-rtg gtaprefs gtabake; do
     if [ -f "$ROOT/build/$b" ]; then
         cp "$ROOT/build/$b" "$WORK/$b"
         echo "deployed: $b"
@@ -109,6 +109,17 @@ if [ -n "$PY" ]; then
             echo "deployed: $n.info (stack 1000000)"
         fi
     done
+    # The two tools are not the game and do not need the game's stack.
+    # gtabake recurses through the sprite reader, gtaprefs opens one window;
+    # 100000 covers both with room to spare. Giving them 1 MB would suggest
+    # the number means something here, and the one place it does mean
+    # something is the game - see the header of mkicon.py.
+    for n in gtaprefs gtabake; do
+        if [ -f "$WORK/$n" ]; then
+            "$PY" "$ROOT/tools/bin/mkicon.py" "$WORK/$n.info" 100000 >/dev/null
+            echo "deployed: $n.info (stack 100000)"
+        fi
+    done
 else
     echo "WARNING: no working python - Workbench icons not generated"
 fi
@@ -130,6 +141,27 @@ if [ -f "$TIL" ]; then
     mkdir -p "$WORK/GTADATA"
     cp "$TIL" "$WORK/GTADATA/style001.til"
     echo "deployed: GTADATA/style001.til"
+fi
+
+# THE SOUND BANK, baked the same way and for the same reason.
+#
+# Baked from the DEVELOPER'S OWN copy under dos/ - which is read, never
+# written, and never leaves this machine. level001 is Liberty City; level000 is
+# the front end and has 16 sounds. Nothing plays it yet; deploying it is what
+# proves a megabyte of samples survives the trip and loads on the Amiga.
+SND="$ROOT/build/data/level001.snd"
+SFXSRC="$ROOT/dos/Grand_Theft_Auto/gtadata/audio/level001"
+if [ ! -f "$SND" ] || [ "$SFXSRC.raw" -nt "$SND" ]; then
+    if [ -x "$ROOT/build/host/gtabake" ] && [ -f "$SFXSRC.sdt" ]; then
+        mkdir -p "$ROOT/build/data"
+        "$ROOT/build/host/gtabake" -sfx "$SFXSRC" "$SND" >/dev/null
+        echo "baked:    build/data/level001.snd"
+    fi
+fi
+if [ -f "$SND" ]; then
+    mkdir -p "$WORK/GTADATA"
+    cp "$SND" "$WORK/GTADATA/level001.snd"
+    echo "deployed: GTADATA/level001.snd"
 fi
 
 if [ "$1" = "--data" ]; then

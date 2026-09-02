@@ -313,6 +313,39 @@ static int cmd_map(const char *mapPath, const char *stylePath,
  * A record layout that is wrong by one field parses without complaint and
  * produces a table that is obviously nonsense the moment a human sees it -
  * which is exactly why it gets printed. */
+/* THE OBJECT TABLE - which sprite is the bullet, the splat, the crate. The
+ * proof behind gta_tiles.h version 7 and the weapons' sprite numbers. */
+static int cmd_objinfo(const char *stylePath)
+{
+    gta_style st;
+    int i;
+
+    if (gta_style_load(stylePath, &st) != 0)
+        return 1;
+
+    printf("=== %s ===\n", stylePath);
+    printf("object_info: %lu bytes, %d entries; object sprites %d from %d\n",
+           st.hdr.object_info_size, st.object_count,
+           gta_style_sprite_count(&st, GTA_SPR_OBJECT),
+           gta_style_sprite_base(&st, GTA_SPR_OBJECT));
+    printf("%4s %6s %6s %6s %6s %6s %5s %6s %4s  %s\n",
+           "type", "w", "h", "depth", "sprnum", "sprite", "wxh", "weight",
+           "aux", "status/into");
+    for (i = 0; i < st.object_count; i++) {
+        const struct gta_object_info *o = &st.objects[i];
+        int sw = 0, sh = 0;
+        if (o->sprite_index >= 0 && o->sprite_index < st.sprite_count) {
+            sw = st.sprites[o->sprite_index].w;
+            sh = st.sprites[o->sprite_index].h;
+        }
+        printf("0x%02x %6ld %6ld %6ld %6d %6d %2dx%-2d %6d %4d  %d/%d\n",
+               i, o->w, o->h, o->depth, o->sprite_num, o->sprite_index,
+               sw, sh, o->weight, o->aux, o->status, o->num_into);
+    }
+    gta_style_free(&st);
+    return 0;
+}
+
 static int cmd_carinfo(const char *stylePath, int verbose)
 {
     gta_style st;
@@ -3419,6 +3452,67 @@ static int cmd_walk(const char *mapPath, const char *tilesPath,
  * the trip is to look at the pictures it points to. A wrong offset shows as a
  * sprite sliced in half, which is unmistakable and which a byte-count check
  * would not catch. */
+static int cmd_spritedelta(const char *tilPath, int sprite, const char *out)
+{
+    gta_tiles t;
+    int nd, cols, rows, cell, w, h, i;
+    unsigned char *sheet, *scratch;
+
+    if (gta_tiles_load(tilPath, &t) != 0)
+        return 1;
+    if (sprite < 0 || sprite >= t.n_sprites) {
+        fprintf(stderr, "gtadump: sprite %d is not in 0..%d\n",
+                sprite, t.n_sprites - 1);
+        gta_tiles_free(&t);
+        return 1;
+    }
+    nd = gta_tiles_delta_count(&t, sprite);
+    printf("sprite %d: %dx%d, %d deltas\n", sprite,
+           t.sprites[sprite].w, t.sprites[sprite].h, nd);
+
+    cell = (t.sprites[sprite].w > t.sprites[sprite].h
+            ? t.sprites[sprite].w : t.sprites[sprite].h) + 2;
+    cols = nd + 1;                      /* the base, then every delta */
+    if (cols > 8) cols = 8;
+    rows = (nd + 1 + cols - 1) / cols;
+    w = cols * cell;
+    h = rows * cell;
+
+    sheet = (unsigned char *)malloc((size_t)w * (size_t)h);
+    scratch = (unsigned char *)malloc((size_t)t.sprites[sprite].w
+                                      * t.sprites[sprite].h);
+    if (!sheet || !scratch) {
+        free(sheet); free(scratch); gta_tiles_free(&t); return 1;
+    }
+    /* Index 0 is transparent, so the sheet is cleared to something else -
+     * otherwise transparency and black are the same picture, which is the
+     * mistake this project already made once with the tiles. */
+    memset(sheet, 255, (size_t)w * (size_t)h);
+
+    for (i = 0; i <= nd; i++) {
+        int cx = (i % cols) * cell + 1;
+        int cy = (i / cols) * cell + 1;
+        int x, y, runs;
+        /* i == 0 is the base: delta -1 decodes to a plain copy. */
+        runs = gta_tiles_delta_apply(&t, sprite, i - 1, scratch);
+        if (i > 0)
+            printf("  delta %2d -> %d runs\n", i - 1, runs);
+        for (y = 0; y < t.sprites[sprite].h; y++)
+            for (x = 0; x < t.sprites[sprite].w; x++) {
+                unsigned char px = scratch[(long)y * t.sprites[sprite].w + x];
+                if (px) sheet[(long)(cy + y) * w + cx + x] = px;
+            }
+    }
+
+    if (write_bmp8(out, sheet, w, h, t.palette) == 0)
+        printf("  wrote %s (%dx%d, base + %d deltas)\n",
+               out, w, h, nd);
+    free(sheet);
+    free(scratch);
+    gta_tiles_free(&t);
+    return 0;
+}
+
 static int cmd_tilesprites(const char *tilPath, const char *out, int type)
 {
     gta_tiles t;
@@ -4658,7 +4752,8 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                     gta_traffic_tick(&tr, &mp, v.x, v.y);
                     gta_peds_tick(&pd, &mp, v.x, v.y);
                     gta_peds_ram(&pd, v.x, v.y, gta_veh_angle(&v),
-                                 v.len / 2, v.wid / 2, 2);
+                                 v.len / 2, v.wid / 2, 2,
+                                 sp_ > sq_ ? sp_ + sq_ / 2 : sq_ + sp_ / 2);
                     {
                         int pi_;
                         for (pi_ = 0; pi_ < GTA_MAX_PEDS; pi_++)
@@ -4865,6 +4960,8 @@ int main(int argc, char **argv)
 
     if (argc >= 3 && strcmp(argv[1], "carinfo") == 0)
         return cmd_carinfo(argv[2], argc >= 4 && strcmp(argv[3], "-v") == 0);
+    if (argc >= 3 && strcmp(argv[1], "objinfo") == 0)
+        return cmd_objinfo(argv[2]);
 
     if (argc >= 10 && strcmp(argv[1], "mode") == 0)
         return cmd_mode(argv[2], argv[3], atoi(argv[4]), atoi(argv[5]), argv[6],
@@ -4886,6 +4983,16 @@ int main(int argc, char **argv)
         return cmd_tilesprites(argv[2], argv[3],
                                argc >= 5 ? atoi(argv[4]) : -1);
 
+    /* spritedelta <til> <sprite> <out.bmp>
+     *
+     * The base sprite and every overlay it has, decoded OUT OF THE BAKED FILE
+     * by the same code the game will use. The point is to compare it against
+     * tools/bin/deltaprobe.py, which decodes the same thing out of the .GRY
+     * by a completely separate path in Python: two decoders agreeing is what
+     * makes this readable-and-correct rather than merely readable. */
+    if (argc >= 5 && strcmp(argv[1], "spritedelta") == 0)
+        return cmd_spritedelta(argv[2], atoi(argv[3]), argv[4]);
+
     if (argc >= 9 && strcmp(argv[1], "map") == 0)
         return cmd_map(argv[2], argv[3], atoi(argv[4]), atoi(argv[5]),
                        atoi(argv[6]), atoi(argv[7]), argv[8]);
@@ -4905,6 +5012,10 @@ int main(int argc, char **argv)
             "  gtadump carinfo <style.gry> [-v]\n"
             "      The car table: dimensions, sprite, mass, handling and\n"
             "      doors for every vehicle. -v prints every field.\n"
+            "\n"
+            "  gtadump objinfo <style.gry>\n"
+            "      The object table: which sprite each object TYPE draws\n"
+            "      (0x4a the bullet, 0xd the splat, 0x54 the crate...).\n"
             "\n"
             "  gtadump spriteinfo <style.gry>\n"
             "      The sprite_numbers table: which sprites are pedestrians,\n"

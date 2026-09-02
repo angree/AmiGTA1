@@ -71,7 +71,10 @@
  * the original holds 26 for three beats, 25 for two, then walks 29..33 - so it
  * is spelled out as a sequence in gta_player.c. */
 #define GTA_PED_EXITCAR_FIRST   16
-#define GTA_PED_EXITCAR_FRAMES   8
+/* NINE, not eight: the original's exit is states 0x11..0x19 = sprites 16..24,
+ * the last one the at-door pose held while the door swings shut
+ * (LEFTOFF.md, the exit). */
+#define GTA_PED_EXITCAR_FRAMES   9
 #define GTA_PED_SIT_IN_CAR      97
 #define GTA_PED_ENTER_BIKE_FIRST 80
 #define GTA_PED_ENTER_BIKE_FRAMES 4
@@ -90,8 +93,55 @@ typedef enum {
     GTA_ANIM_WALK,
     GTA_ANIM_RUN,
     GTA_ANIM_ENTER_CAR,
-    GTA_ANIM_EXIT_CAR
+    GTA_ANIM_EXIT_CAR,
+    /* A BIKE HAS NO DOOR AND NO ROOF. Mounting is its own four-frame run
+     * (80..83), dismounting another (85..88), and the rider is DRAWN while he
+     * rides - frame 84 - where a car's driver is hidden under the roof.
+     * The developer's report after the car animation landed: "nadal ludzika
+     * nie ma np. na motorze jak wsiadzie" (LEFTOFF, 2026-09-02). */
+    GTA_ANIM_ENTER_BIKE,
+    GTA_ANIM_EXIT_BIKE,
+    /* THE VAULT - the original's states 0x73..0x78, sprites 91..96: leap
+     * onto a low car, across its roof and off the other side. One sequence,
+     * three ways in (SPACE while running at a car, the far-side car entry,
+     * a blocked-door exit). And its tall-vehicle twin, state 0x92: slide
+     * under, sprite 41. LEFTOFF.md, the vault. */
+    GTA_ANIM_VAULT,
+    GTA_ANIM_SLIDE_UNDER,
+    /* THE PUNCH thrown standing - the original's states 0xa9..0xae, sprites
+     * 50..55. Thrown running it is not a state but a sprite offset on the
+     * run frames (GTA_PED_RUNPUNCH_OFFSET); LEFTOFF.md, the
+     * weapons. */
+    GTA_ANIM_PUNCH
 } gta_player_anim;
+
+#define GTA_PED_PUNCH_FIRST    50
+#define GTA_PED_PUNCH_FRAMES    6
+#define GTA_PUNCH_TICKS         4       /* a state = 2 game frames */
+/* The shooting look while the fire latch is held: standing 89; walking or
+ * running, the cycle's frame + 99 (99..106, 107..114). The running punch:
+ * the run frame + 0xad (181..188). All read off the original's art. */
+#define GTA_PED_SHOOT_STAND    89
+#define GTA_PED_PISTOL_OFFSET  99
+#define GTA_PED_RUNPUNCH_OFFSET 173
+
+#define GTA_PED_VAULT_FIRST   91
+#define GTA_PED_VAULT_FRAMES   6
+#define GTA_PED_SLIDE_UNDER   41
+/* A vault state lasts 2 of the original's game frames = 4 ticks here, the
+ * same clock as the get-in steps. */
+#define GTA_VAULT_TICKS        4
+/* States, not ticks: how many probe boundaries he may spend on the roof
+ * before he is put down regardless. 15 states = 60 ticks = 78 px of car at
+ * running pace, longer than any vehicle in the table. */
+#define GTA_VAULT_HOLD_MAX    15
+/* A vehicle lower than this (gta_car_info.vert: 10 on a saloon, 24 on a
+ * bus) is vaulted; anything else is slid under. The original's `car+0x30 <
+ * 0x14`. */
+#define GTA_VAULT_MAX_VERT    20
+/* The running pace, 16.16 world px a tick; gta_player.c's RUN_SPEED. The
+ * vault runs at this because the original keeps the ped's own speed. */
+#define GTA_RUN_SPEED_FP  85197L
 
 /* GETTING IN IS NOT A RUN OF FRAMES.
  *

@@ -84,10 +84,26 @@ typedef struct {
     struct gta_sprite *sprites;
     int sprite_count;
 
+    /* Every sprite's deltas end to end; struct gta_sprite.delta_first indexes
+     * this and delta_count says how many. NULL when the file has none. */
+    struct gta_sprite_delta *deltas;
+    int delta_count;
+
     int sprite_numbers[21];         /* GTA_SPR_TYPE_COUNT; see below */
 
     struct gta_car_info *cars;      /* the car table; see below */
     int car_count;
+
+    /* THE OBJECT TABLE - the .GRY's object_info section, read since
+     * 2026-09-02 (it used to be fseek'd past). One entry per object TYPE of
+     * the game - 0x4a the bullet, 0xd the splat, 0x54 the crate, 0x2e a
+     * fire, 0x18 a roadblock barrier - and its sprite is what the game draws
+     * for that type. Layout from Carnage3D's StyleData::ReadObjects (MIT):
+     * i32 width, height, depth (the original's units), u16 sprite number
+     * WITHIN the object sprite category, u16 weight, u16 aux, u8 status,
+     * u8 num_into, then num_into u16s that are skipped. */
+    struct gta_object_info *objects;
+    int object_count;
 
     /* THE PALETTE REMAP TABLES - what the header called `unknown_a`.
      *
@@ -132,16 +148,40 @@ typedef struct {
  * block data - but unlike blocks a sprite is an arbitrary w x h rectangle at
  * (page_x, page_y) inside page `page`, not a fixed 64x64 cell.
  *
- * Deltas are the small overlays GTA uses for car damage and opening doors. We
- * record how many there are but do not apply them yet; the count is needed
- * regardless, because the records are variable-length and cannot be indexed
- * without walking them. */
+ * DELTAS are the small overlays GTA uses for car damage and opening doors,
+ * and they are KEPT now rather than walked past (2026-09-02, PROGRESS.md 111).
+ * Each is six bytes - a length and an offset into sprite_graphics - and the
+ * offsets are contiguous, which is the check that they are being read right.
+ * 383 records across 32 of the 1009 sprites: 2.3 KB in all.
+ *
+ * The stream they point at is runs of `u16 dest_offset, u8 len, len bytes of
+ * palette index`, with the cursor stepping in units of 256 - the sprite PAGE
+ * width - and NOT the sprite's own width. Getting that wrong decodes without
+ * error and smears the overlay diagonally. A size-0 delta is an empty slot.
+ *
+ * Nothing applies them yet; `tools/bin/deltaprobe.py` decodes them on the host
+ * and writes out/delta_car_31.png, where four of car sprite 31's eleven
+ * deltas are visibly a door swinging open. */
+struct gta_sprite_delta {
+    unsigned short size;            /* bytes of RLE stream */
+    unsigned long  offset;          /* into sprite_graphics */
+};
+
+struct gta_object_info {
+    long w, h, depth;               /* the original's units, 64 to a block */
+    int  sprite_num;                /* within the object category */
+    int  sprite_index;              /* absolute, resolved after sprite_numbers; -1 */
+    int  weight, aux;
+    int  status, num_into;
+};
+
 struct gta_sprite {
     unsigned char  w, h;
     unsigned char  delta_count;
     unsigned short size;            /* bytes per frame, should be w*h */
     unsigned char  page_x, page_y;
     unsigned short page;
+    int            delta_first;     /* index into gta_style.deltas, or -1 */
 };
 
 /* The sprite_numbers section: 21 little-endian u16 counts, one per category,

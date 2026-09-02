@@ -164,8 +164,11 @@ void gta_render_free(gta_view *v)
 {
     free(v->lc_slot);
     free(v->lc_arena);
+    free(v->spr_scratch);
     v->lc_slot = NULL;
     v->lc_arena = NULL;
+    v->spr_scratch = NULL;
+    v->spr_scratch_cap = 0;
     v->lc_used = 0;
 }
 
@@ -1162,12 +1165,22 @@ int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
         return 0;
     sp = &v->sprites[v->n_sprites++];
     sp->remap = remap;
+    sp->delta = -1;
     sp->wx = wx;
     sp->wy = wy;
     sp->layer = layer;
     sp->grid  = grid;
     sp->index = index;
     sp->angle = angle & 255;
+    return 1;
+}
+
+int gta_render_add_sprite_d(gta_view *v, long wx, long wy, int layer, int grid,
+                            int index, int angle, int remap, int delta)
+{
+    if (!gta_render_add_sprite_r(v, wx, wy, layer, grid, index, angle, remap))
+        return 0;
+    v->sprites[v->n_sprites - 1].delta = delta;
     return 1;
 }
 
@@ -1232,6 +1245,30 @@ void gta_render_sprite(gta_view *v, const gta_sprite_req *sp)
     sh = (int)rec->h;
     if (sw <= 0 || sh <= 0) return;
     src = t->sprite_pixels + rec->off;
+
+    /* A DELTA MEANS THE SPRITE IS ASSEMBLED FIRST - an open door, a damage
+     * panel. The base art in the tile set is shared by every car of the model
+     * and must never be edited in place, so the overlay goes over a copy.
+     *
+     * The buffer grows on demand and is never shrunk: one sprite in a frame
+     * has ever needed it (the car being entered), and a game where no door
+     * opens never allocates it at all. If the allocation fails the sprite is
+     * drawn plain, which is a shut door rather than a missing car. */
+    if (sp->delta >= 0 && t->delta_data) {
+        unsigned long need = (unsigned long)sw * sh;
+        if (v->spr_scratch_cap < need) {
+            unsigned char *nb = (unsigned char *)malloc((size_t)need);
+            if (nb) {
+                free(v->spr_scratch);
+                v->spr_scratch = nb;
+                v->spr_scratch_cap = need;
+            }
+        }
+        if (v->spr_scratch && v->spr_scratch_cap >= need) {
+            gta_tiles_delta_apply(t, sp->index, sp->delta, v->spr_scratch);
+            src = v->spr_scratch;
+        }
+    }
     /* The remap table for this sprite, resolved once per sprite rather than
      * once per pixel. Table 0 is the identity in every style file, so "no
      * remap" and "remap 0" mean the same thing and neither costs a lookup. */
