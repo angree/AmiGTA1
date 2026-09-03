@@ -40,24 +40,38 @@
 #include "gta_vehphys.h"
 #include "gta_peds.h"
 #include "gta_weapon.h"
+#include "gta_score.h"
 #include "gta_prefs.h"
 #include "gta_sfx.h"
 
-/* THE SCREEN, AND WHY IT IS A COMPILE-TIME CHOICE NOW.
+/* THE SCREEN, AND WHY IT IS A RUNTIME CHOICE AGAIN.
  *
- * 320x200 is what an AGA screen gives and what every measurement in
- * the notes was taken at. RTG can do better, and a tester should get the
- * screen they were handed a binary for without having to write a text file
- * into the game drawer - so the three shipped builds differ here and
- * nowhere else.
+ * 320x200 is what an AGA screen gives and what every measurement in the notes
+ * was taken at. RTG can do better, and a player should get the screen their
+ * machine can show.
  *
- *   gta-aga        320x200, AGA          the reference, unchanged
- *   gta-rtg240     320x240, RTG          the same picture, more of the city
- *   gta-rtg480     640x480, RTG          320x240 doubled; see GTA_SCALE2X
+ * Up to v0.0.3 that meant THREE BINARIES - gta-aga, gta-rtg240, gta-rtg480 -
+ * differing in three -D flags on this one file and in nothing else. That was
+ * three copies of the same game in the archive and a choice the player had to
+ * make by picking an icon, with no way to tell from the names which one their
+ * machine wanted. Since gtaprefs exists and already chooses the display path,
+ * it chooses the size too, and there is one binary:
  *
- * `backend.txt` beside the binary still overrides the backend at runtime,
- * so a single
- * binary can still be pointed at either screen for an A/B measurement. */
+ *   Auto      320x200, or 320x240 when the gfx setting says RTG
+ *   320x200   the reference; every timing in the notes
+ *   320x240   the same picture, more of the city on screen
+ *   640x480   rendered at 320x240 and doubled on the way out - a 68020
+ *             cannot rasterise 640x480 at a playable rate
+ *
+ * The defines below are what the game opens with when there is no gta.prefs
+ * at all, and they are still overridable at build time for a one-off A/B
+ * measurement. `backend.txt` still overrides the backend the same way.
+ *
+ * WHAT THE RENDERER DRAWS IS NOT ALWAYS WHAT THE SCREEN SHOWS. With the
+ * doubling on, the renderer works into g_render_buf at half the screen in
+ * each axis. Everything upstream - renderer, HUD, frame dumps, every timing
+ * in the notes - works in SCREEN_W/SCREEN_H, which are the RENDERED size, so
+ * none of it has to know. */
 #ifndef GTA_SCREEN_W
 #define GTA_SCREEN_W 320
 #endif
@@ -68,22 +82,42 @@
 #define GTA_DEFAULT_BACKEND AMIGAGFX_BACKEND_AGA
 #endif
 
-/* WHAT THE RENDERER DRAWS, which is not always what the screen shows.
+/* THE RENDERED SIZE. Decided once at start-up from the settings and never
+ * changed afterwards; every SCREEN_W / SCREEN_H below is one of these.
  *
- * With GTA_SCALE2X the screen is twice the rendered picture in each axis and
- * the present step doubles it. Everything upstream - renderer, HUD, frame
- * dumps, every timing in the notes - still works in RENDER_W/RENDER_H, so
- * none of it has to know. */
-#ifdef GTA_SCALE2X
-#define RENDER_W (GTA_SCREEN_W / 2)
-#define RENDER_H (GTA_SCREEN_H / 2)
-#else
-#define RENDER_W GTA_SCREEN_W
-#define RENDER_H GTA_SCREEN_H
-#endif
+ * 640x480 comes in two shapes and they are NOT the same picture:
+ *
+ *   native   the renderer really rasterises 640x480. One stored art pixel
+ *            to one screen pixel, twice as much of the city on screen, four
+ *            times the rasterising.
+ *   doubled  the renderer draws 320x240 and scale2x_rows() doubles it. The
+ *            same picture as 320x240, four times the area, almost free.
+ *
+ * The doubled one was the only one v0.0.3 had, and drawing lores into a hires
+ * screen and calling it 640x480 is a fair thing to object to - which is what
+ * happened. Both are offered now and the setting says which is which. */
+#define RENDER_MAX_W 640
+#define RENDER_MAX_H 480
 
-#define SCREEN_W RENDER_W
-#define SCREEN_H RENDER_H
+#ifdef GTA_SCALE2X
+static int g_render_w = GTA_SCREEN_W / 2;
+static int g_render_h = GTA_SCREEN_H / 2;
+#else
+static int g_render_w = GTA_SCREEN_W;
+static int g_render_h = GTA_SCREEN_H;
+#endif
+#define SCREEN_W g_render_w
+#define SCREEN_H g_render_h
+
+/* The DISPLAY: what amigagfx_open() is asked for. Equal to the rendered size
+ * unless g_scale2x, when it is twice it in each axis. */
+static int g_screen_w = GTA_SCREEN_W;
+static int g_screen_h = GTA_SCREEN_H;
+#ifdef GTA_SCALE2X
+static int g_scale2x = 1;
+#else
+static int g_scale2x = 0;
+#endif
 
 /* EVERY PATH THIS PROGRAM OPENS IS RELATIVE TO ITS OWN DRAWER.
  *
@@ -344,6 +378,18 @@ static int opt_width   = 0;
 /* Starting camera height in quarter levels (32 = C8 shipped, 64 = C16, the
  * pre-24.08 look) - measurement only; F7/F8 still move it live. 0 = default. */
 static int opt_camh    = 0;
+/* THE SCREEN HEIGHT, for an unattended A/B between the three sizes that used
+ * to be three separate binaries. 200, 240 or 480 (which means 640x480 with
+ * the picture doubled); 0 leaves whatever gta.prefs asked for.
+ *
+ * It is here and not only in gta.prefs because the rig must be able to switch
+ * screen size the way it switches everything else - by writing one line into
+ * opts.txt - without driving an Intuition GUI from inside the emulator. */
+static int opt_screen  = 0;
+/* With `screen 480`, whether the picture is DOUBLED (render 320x240, scale2x
+ * on the way out) or RASTERISED at 640x480. Two different pictures and two
+ * very different costs - see the note on RENDER_MAX_W. */
+static int opt_screen2x = 0;
 /* THE STARTUP SELF-TEST IS OFF FOR PLAYERS AND ON FOR THE TEST RIG.
  *
  * It closes and reopens the screen twice, immediately after the first frame,
@@ -417,13 +463,22 @@ static gta_nav nav;
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.0.3"
+#define GTA_VERSION "v0.0.4"
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
 
-#ifdef GTA_SCALE2X
-/* The renderer's own buffer. The screen's chunky bitmap is twice this in each
- * axis and is only ever written by scale2x_present() below. */
-static unsigned char g_render_buf[RENDER_W * RENDER_H];
+/* The renderer's own buffer, used ONLY when the picture is doubled: the
+ * screen's chunky bitmap is then twice this in each axis and is written by
+ * nothing but scale2x_rows() below. Native 640x480 does not come through
+ * here at all - it renders straight into the screen, like every other size.
+ *
+ * 320x240 is therefore the largest thing that can land in it, and it is
+ * allocated whether or not the doubling is on: the choice is made at run time
+ * now, and 76 KB of BSS is cheaper than the malloc-and-check it would
+ * otherwise need. BSS, not initialised data, so it costs nothing in the
+ * executable. */
+#define DOUBLED_MAX_W 320
+#define DOUBLED_MAX_H 240
+static unsigned char g_render_buf[DOUBLED_MAX_W * DOUBLED_MAX_H];
 
 /* Double `h` rows of `w` pixels from src into dst, which is `dpitch` wide.
  *
@@ -448,7 +503,6 @@ static void scale2x_rows(const unsigned char *src, int spitch,
         memcpy(d + dpitch, d, (size_t)(w * 2));
     }
 }
-#endif
 
 static int g_show_bar = 1;
 static int g_backend_used = GTA_DEFAULT_BACKEND;
@@ -497,7 +551,7 @@ static int open_display(gta_view *v, int show_bar)
 {
     unsigned char *chunky;
 
-    if (amigagfx_open(GTA_SCREEN_W, GTA_SCREEN_H, show_bar,
+    if (amigagfx_open(g_screen_w, g_screen_h, show_bar,
                       g_backend_used) != 0)
         return 0;
 
@@ -513,11 +567,11 @@ static int open_display(gta_view *v, int show_bar)
         return 0;
     g_chunky = chunky;
     g_pitch  = amigagfx_pitch();
-#ifdef GTA_SCALE2X
-    /* The renderer never touches the screen directly in this build. */
-    g_chunky = g_render_buf;
-    g_pitch  = RENDER_W;
-#endif
+    if (g_scale2x) {
+        /* The renderer never touches the screen when the picture is doubled. */
+        g_chunky = g_render_buf;
+        g_pitch  = SCREEN_W;
+    }
     if (v)
         gta_render_target(v, g_chunky, SCREEN_W, SCREEN_H, g_pitch);
     /* A brand new planar screen holds nothing at all, so the bars have to be
@@ -552,7 +606,9 @@ static int toggle_bar(gta_view *v)
     return 0;
 }
 
-static unsigned char low_buffer[(SCREEN_W / 2) * (SCREEN_H / 2)];
+/* Half-resolution (F2). Sized for the tallest render, like g_render_buf and
+ * for the same reason: the height is not known until the settings are read. */
+static unsigned char low_buffer[(RENDER_MAX_W / 2) * (RENDER_MAX_H / 2)];
 
 #define LOW_W (SCREEN_W / 2)
 #define LOW_H (SCREEN_H / 2)
@@ -634,16 +690,30 @@ static int game_speed = 100;   /* percent of real time, F9/F10, 10..100 */
  * They are still cleared in the chunky buffer every frame, because the
  * renderer's own clear covers only its target rectangle and a zoom or a mode
  * change can leave anything behind. */
-#define FAST_W   256
-#define FAST_X   ((SCREEN_W - FAST_W) / 2)        /* 32 - centred AND on it   */
-
-static const struct {
+/* FOUR FIFTHS OF THE WIDTH, ROUNDED DOWN TO THE 32-PIXEL GRID, and centred on
+ * it. 320 gives 256 at x=32; 640 gives 512 at x=64. Both are multiples of 32
+ * in both the width and the offset, which is the whole point - anything else
+ * gets snapped outwards by amigagfx_blit() and converts the black bars too.
+ *
+ * NOT a constant any more, because the rendered width is a setting now. It is
+ * filled in by view_modes_init() before anything reads it. */
+static struct {
     int w, x;
     const char *name;
 } view_modes[] = {
-    { SCREEN_W, 0,        "full 320"                 },
-    { FAST_W,   FAST_X,   "5:4 256 (c2p-aligned)"    }
+    { 320, 0,  "full width"            },
+    { 256, 32, "5:4 (c2p-aligned)"     }
 };
+
+static void view_modes_init(void)
+{
+    int fast = (SCREEN_W * 4 / 5) & ~31;
+    if (fast < 32) fast = 32;
+    view_modes[0].w = SCREEN_W;
+    view_modes[0].x = 0;
+    view_modes[1].w = fast;
+    view_modes[1].x = ((SCREEN_W - fast) / 2) & ~31;
+}
 
 /* Named indices and a count taken from the table itself. Anything that picks a
  * mode uses these; nothing counts entries by hand. */
@@ -706,6 +776,13 @@ static void mode_apply(gta_view *v)
  * roughly 0.2% - two orders of magnitude below the 3 fps run-to-run spread of
  * the benchmark it sits next to. Leaving it on during the benchmarks is what
  * makes the number on screen and the number in the log the same measurement. */
+static gta_score   score;
+/* WHAT THE CORNER SHOWS. The weapon and its ammunition live in the main
+ * loop, where the keyboard is; the readout is drawn from a function that
+ * runs in five other places as well (the tour, the benchmark), so the two
+ * numbers are mirrored here rather than passed down through all of them. */
+static int hud_weapon;
+static int hud_ammo;
 static int hud_frames;
 static long hud_fps10;
 static unsigned long hud_t0;
@@ -749,6 +826,51 @@ static void hud_draw(const gta_view *v, unsigned char *chunky, int pitch)
     p = gta_hud_int(p, v->cam_h);
     *p = 0;
     gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, present_x() + 2, 10, line);
+}
+
+/* THE SCORE AND THE GUN, in the top right corner.
+ *
+ * The original puts the score there - nine digits, right-aligned, rolling
+ * like an odometer - with the multiplier and the lives under it and the
+ * wanted level's flashing cop heads across the top middle. This is the same
+ * corner and the same right alignment, in the port's own 3x5 font: the score
+ * on the first line, the weapon in hand and its ammunition on the second.
+ * The roll, the multiplier and the heads arrive with the wanted level.
+ *
+ * RIGHT-ALIGNED, which is why gta_hud_width() exists: a left-aligned score
+ * slides sideways every time it gains a digit, and the eye reads that as the
+ * whole readout moving. */
+static const char *const weapon_name[5] = {
+    "FIST", "PISTOL", "MG", "ROCKET", "FLAME"
+};
+
+static void hud_score(unsigned char *chunky, int pitch)
+{
+    char line[24];
+    char *p;
+    int right = present_x() + render_w() - 2;
+
+    p = gta_hud_int(line, score.score);
+    *p = 0;
+    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                 right - gta_hud_width(line), 2, line);
+
+    {
+        const char *n = weapon_name[hud_weapon >= 0 && hud_weapon < 5
+                                    ? hud_weapon : 0];
+        const char *q;
+        p = line;
+        for (q = n; *q; q++) *p++ = *q;
+        /* Fists have no ammunition, and a zero next to them reads as an
+         * empty gun. */
+        if (hud_weapon != 0) {
+            *p++ = ' ';
+            p = gta_hud_int(p, hud_ammo);
+        }
+        *p = 0;
+    }
+    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                 right - gta_hud_width(line), 10, line);
 }
 
 /* The player's own line, under the frame rate. Only the walking mode draws it.
@@ -798,6 +920,7 @@ static void present_frame(gta_view *v, const gta_player *pl, int with_player)
         }
     }
     hud_draw(v, g_chunky, g_pitch);
+    hud_score(g_chunky, g_pitch);
     if (with_player)
         hud_player(pl, g_chunky, g_pitch);
 
@@ -809,22 +932,20 @@ static void present_frame(gta_view *v, const gta_player *pl, int with_player)
     {
         unsigned long tb = amiga_uclock_us();
 
-#ifdef GTA_SCALE2X
-        /* Double the whole picture into the screen, then blit all of it. The
-         * narrow-blit optimisation does not apply here: the doubling has
-         * already touched every byte, so there is nothing left to save. */
-        scale2x_rows(g_render_buf, RENDER_W, amigagfx_chunky(),
-                     amigagfx_pitch(), RENDER_W, RENDER_H);
-        amigagfx_blit(0, 0, RENDER_W * 2, RENDER_H * 2);
-        bars_dirty = 0;
-#else
-        if (bars_dirty) {
+        if (g_scale2x) {
+            /* Double the whole picture into the screen, then blit all of it.
+             * The narrow-blit optimisation does not apply here: the doubling
+             * has already touched every byte, so there is nothing to save. */
+            scale2x_rows(g_render_buf, SCREEN_W, amigagfx_chunky(),
+                         amigagfx_pitch(), SCREEN_W, SCREEN_H);
+            amigagfx_blit(0, 0, SCREEN_W * 2, SCREEN_H * 2);
+            bars_dirty = 0;
+        } else if (bars_dirty) {
             amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
             bars_dirty = 0;
         } else {
             amigagfx_blit(present_x(), 0, present_w(), SCREEN_H);
         }
-#endif
         /* Accumulated for the benchmark, always, because the c2p cost has to
          * be measured WHERE IT HAPPENS. A separate back-to-back blit loop was
          * tried first and reported more than twice the in-frame figure - the
@@ -1379,9 +1500,20 @@ int main(void)
      * load is the start loadout until crates exist - the original starts
      * with fists and a crate nearby. `punch_left` counts the ticks of a
      * punch in flight (six states of GTA_PUNCH_TICKS). */
+    /* Ticks the player's car was stopped short of another car by the
+     * bisection rather than being pushed out of it afterwards. */
+    long veh_contact_stops = 0;
     int  fire_held = 0, fire_cool = 0;
-    int  weapon = 1;
-    int  ammo[5] = { 0, GTA_PISTOL_AMMO, 0, 0, 0 };
+    int  weapon = GTA_WEAPON_PISTOL;
+    /* THE START LOADOUT IS ALL FIVE, WITH A CRATE'S WORTH OF EACH, and that
+     * is temporary: the original starts you with fists and leaves the guns
+     * in crates around the city. Until the crates exist there would be no
+     * way to reach the other four at all. `ammo_sub` is the five rounds a
+     * machine gun or a flamethrower gets out of one unit. */
+    int  ammo[GTA_WEAPON_COUNT] = { 0, GTA_AMMO_PISTOL, GTA_AMMO_MG,
+                                    GTA_AMMO_ROCKET, GTA_AMMO_FLAME };
+    int  ammo_sub[GTA_WEAPON_COUNT] = { 0, 0, GTA_AMMO_PER_UNIT, 0,
+                                        GTA_AMMO_PER_UNIT };
     int  punch_left = 0;
     long enter_cx = 0, enter_cy = 0;
     /* THE THREE POINTS THE ANIMATION MOVES BETWEEN.
@@ -1484,10 +1616,23 @@ int main(void)
         if (prefs.gfx == GTA_GFX_AGA)      backend = AMIGAGFX_BACKEND_AGA;
         else if (prefs.gfx == GTA_GFX_RTG) backend = AMIGAGFX_BACKEND_RTG;
         else if (prefs.gfx == GTA_GFX_WB)  backend = AMIGAGFX_BACKEND_WB;
-        printf("gta: prefs %s - audio %s, gfx %s\n",
+        /* THE SCREEN SIZE, which used to be three separate binaries.
+         *
+         * Decided here, once, before anything has been opened or sized:
+         * open_display() asks for g_screen_w/h, and every buffer downstream
+         * is already dimensioned for the largest case. */
+        gta_prefs_screen_size(prefs.screen, prefs.gfx,
+                              &g_screen_w, &g_screen_h, &g_scale2x);
+        g_render_w = g_scale2x ? g_screen_w / 2 : g_screen_w;
+        g_render_h = g_scale2x ? g_screen_h / 2 : g_screen_h;
+        printf("gta: prefs %s - audio %s, gfx %s, screen %s\n",
                had ? "read" : "(none, defaults)",
                gta_prefs_audio_name(prefs.audio),
-               gta_prefs_gfx_name(prefs.gfx));
+               gta_prefs_gfx_name(prefs.gfx),
+               gta_prefs_screen_name(prefs.screen));
+        printf("gta: display %dx%d, rendering %dx%d%s\n",
+               g_screen_w, g_screen_h, SCREEN_W, SCREEN_H,
+               g_scale2x ? " and doubling it" : "");
         if (opt_audio != GTA_AUDIO_OFF)
             printf("gta: NO SOUND IS BUILT INTO THIS VERSION - the audio "
                    "setting is recorded, not used\n");
@@ -1526,12 +1671,28 @@ int main(void)
                 else if (strcmp(word, "benchframes") == 0) opt_benchf = (int)val;
                 else if (strcmp(word, "width") == 0)   opt_width   = (int)val;
                 else if (strcmp(word, "camh") == 0)    opt_camh    = (int)val;
+                else if (strcmp(word, "screen") == 0)  opt_screen  = (int)val;
+                else if (strcmp(word, "screen2x") == 0) opt_screen2x = (int)val;
                 else if (strcmp(word, "selftest") == 0) opt_selftest = (int)val;
             }
             fclose(of);
         }
         if (opt_catchup < 1) opt_catchup = 1;
         if (opt_benchf < 1) opt_benchf = 1;
+        /* The rig's screen-size override, applied on top of gta.prefs for
+         * exactly the reason every other opts.txt switch wins: a measurement
+         * was set up with it, and a settings file quietly changing the screen
+         * under a measurement would invalidate the numbers. */
+        if (opt_screen == 200 || opt_screen == 240 || opt_screen == 480) {
+            g_screen_w = (opt_screen == 480) ? 640 : 320;
+            g_screen_h = opt_screen;
+            g_scale2x  = opt_screen2x ? 1 : 0;
+            g_render_w = g_scale2x ? g_screen_w / 2 : g_screen_w;
+            g_render_h = g_scale2x ? g_screen_h / 2 : g_screen_h;
+            printf("gta: opts screen %d%s - display %dx%d, rendering %dx%d\n",
+                   opt_screen, opt_screen2x ? " doubled" : "",
+                   g_screen_w, g_screen_h, SCREEN_W, SCREEN_H);
+        }
         printf("gta: opts - overlay %d, traffic %d, fleet %d, catchup %d, "
                "benchframes %d%s\n",
                opt_overlay, opt_traffic, opt_fleet, opt_catchup, opt_benchf,
@@ -1543,6 +1704,12 @@ int main(void)
     /* The palette has to be known before the screen opens, because
      * open_display() re-applies it on every reopen and a toggle must not come
      * back with the wrong colours. */
+    /* The narrow-view table is derived from the rendered width, so it can only
+     * be built once gta.prefs and opts.txt have both had their say. Before
+     * this call view_modes[] still holds the 320-wide defaults, and nothing
+     * reads it until the first frame. */
+    view_modes_init();
+
     g_palette = tiles.palette;
     g_backend_used = backend;
     /* Before the screen opens: after it, the pens are already baked into it. */
@@ -1623,7 +1790,8 @@ int main(void)
     if (gta_nav_build(&nav, &map) == 0) {
         gta_traffic_set_nav(&traffic, &nav);
         gta_peds_set_nav(&peds, &nav);
-        gta_weapons_init(&weapons);
+        gta_weapons_init(&weapons, &tiles);
+        gta_score_init(&score);
         printf("gta: navigation grid %ld KB\n", (long)(GTA_NAV_BYTES / 1024));
     } else {
         log_line("gta: no memory for the navigation grid - traffic will not "
@@ -1720,14 +1888,15 @@ int main(void)
             ta = amiga_uclock_us();
             gta_render_frame(&view);
             hud_draw(&view, chunky, pitch);
+            hud_score(chunky, pitch);
             tb = amiga_uclock_us();
-#ifdef GTA_SCALE2X
-            scale2x_rows(g_render_buf, RENDER_W, amigagfx_chunky(),
-                         amigagfx_pitch(), RENDER_W, RENDER_H);
-            amigagfx_blit(0, 0, RENDER_W * 2, RENDER_H * 2);
-#else
-            amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
-#endif
+            if (g_scale2x) {
+                scale2x_rows(g_render_buf, SCREEN_W, amigagfx_chunky(),
+                             amigagfx_pitch(), SCREEN_W, SCREEN_H);
+                amigagfx_blit(0, 0, SCREEN_W * 2, SCREEN_H * 2);
+            } else {
+                amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
+            }
             render_us += tb - ta;
             blit_us += amiga_uclock_us() - tb;
         }
@@ -1807,6 +1976,7 @@ int main(void)
             gta_render_move(&view, SCROLL_SLOW, 0);
             gta_render_frame(&view);
             hud_draw(&view, chunky, pitch);
+            hud_score(chunky, pitch);
         }
         tb = amiga_uclock_us();
         view.debug_no_blits = 0;
@@ -1830,11 +2000,13 @@ int main(void)
     gta_render_look_at_block(&view, WATER_BX, WATER_BY);
     gta_render_frame(&view);
     hud_draw(&view, chunky, pitch);
+    hud_score(chunky, pitch);
     t0 = amiga_uclock_us();
     for (frames = 0; frames < opt_benchf; frames++) {
         gta_render_move(&view, SCROLL_SLOW, 0);
         gta_render_frame(&view);
         hud_draw(&view, chunky, pitch);
+        hud_score(chunky, pitch);
         amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
     }
     t1 = amiga_uclock_us();
@@ -1848,11 +2020,13 @@ int main(void)
     gta_render_set_zoom(&view, 16);
     gta_render_frame(&view);
     hud_draw(&view, chunky, pitch);
+    hud_score(chunky, pitch);
     t0 = amiga_uclock_us();
     for (frames = 0; frames < opt_benchf; frames++) {
         gta_render_move(&view, SCROLL_SLOW, 0);
         gta_render_frame(&view);
         hud_draw(&view, chunky, pitch);
+        hud_score(chunky, pitch);
         amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
     }
     t1 = amiga_uclock_us();
@@ -1877,6 +2051,7 @@ int main(void)
         gta_render_zoom(&view, (frames & 1) ? -1 : 1);
         gta_render_frame(&view);
         hud_draw(&view, chunky, pitch);
+        hud_score(chunky, pitch);
         amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
     }
     t1 = amiga_uclock_us();
@@ -1895,13 +2070,18 @@ int main(void)
      * Uncapped on purpose - the frame cap belongs to the interactive loop and
      * would turn every one of these into "60". */
     {
+        /* THE SIZE IS NOT IN THE NAME ANY MORE. It was - "full 320x200",
+         * "half 160x100" - and the moment the screen became a setting those
+         * strings started lying: a 640x480 run reported its numbers as
+         * 320x200. The size is printed once, by the display line at start-up,
+         * and every fps figure in a log belongs to whatever that line says. */
         static const struct { int flat, scale, camh; const char *name; } modes[6] = {
-            { 0, 1, GTA_CAM_H,       "gta: mode 2.5D    full 320x200" },
-            { 0, 2, GTA_CAM_H,       "gta: mode 2.5D    half 160x100" },
-            { 0, 1, GTA_CAM_H_LIGHT, "gta: mode 2.5D-lt full 320x200" },
-            { 0, 2, GTA_CAM_H_LIGHT, "gta: mode 2.5D-lt half 160x100" },
-            { 1, 1, GTA_CAM_H,       "gta: mode flat-2D full 320x200" },
-            { 1, 2, GTA_CAM_H,       "gta: mode flat-2D half 160x100" }
+            { 0, 1, GTA_CAM_H,       "gta: mode 2.5D    full" },
+            { 0, 2, GTA_CAM_H,       "gta: mode 2.5D    half" },
+            { 0, 1, GTA_CAM_H_LIGHT, "gta: mode 2.5D-lt full" },
+            { 0, 2, GTA_CAM_H_LIGHT, "gta: mode 2.5D-lt half" },
+            { 1, 1, GTA_CAM_H,       "gta: mode flat-2D full" },
+            { 1, 2, GTA_CAM_H,       "gta: mode flat-2D half" }
         };
         int m;
 
@@ -2133,6 +2313,22 @@ int main(void)
                     /* Select weapon a with b rounds. */
                     adq[adq_n].op = 10; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq[adq_n].brk = b; adq_n++;
+                } else if (sscanf(ln, "ped %d %d %d", &a, &b, &c) == 3) {
+                    /* A TEST FIXTURE, the twin of `park`: put somebody at
+                     * (dx,dy) world px from the player, facing `c`. A jet of
+                     * flame eight pixels wide fired at a city that spawns its
+                     * people at random hits nobody for a hundred ticks at a
+                     * time, which proves nothing either way. */
+                    adq[adq_n].op = 11; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq_n++;
+                } else if (sscanf(ln, "damage %d", &a) == 1) {
+                    /* A TEST FIXTURE: put `a` points of damage on the car the
+                     * player is in. Wrecking one honestly takes a dozen
+                     * crashes at speed, and a script cannot drive like that;
+                     * leaning on a wall costs nothing on purpose. */
+                    adq[adq_n].op = 12; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
                 } else if (strncmp(ln, "jump", 4) == 0) {
                     adq[adq_n].op = 7; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "dump", 4) == 0) {
@@ -2439,6 +2635,45 @@ int main(void)
                             fire_held = 0; break;
                     case 1: enter_req = 1; break;
                     case 9: fire_held = 1; break;
+                    case 12:
+                        if (in_car) {
+                            veh.damage += adq[adq_i].thr;
+                            printf("gta: your car is on %d points\n",
+                                   veh.damage);
+                        } else {
+                            printf("gta: damage - not in a car\n");
+                        }
+                        fflush(stdout);
+                        break;
+                    case 11:
+                        /* The pool is twelve and the city keeps it full, so
+                         * the fixture makes room: the man farthest from the
+                         * camera goes, and the new one takes his slot. */
+                        {
+                            int fi, worst = -1;
+                            long worstd = -1;
+                            for (fi = 0; fi < GTA_MAX_PEDS; fi++) {
+                                long dx, dy, d;
+                                if (!peds.p[fi].alive) { worst = -1; break; }
+                                dx = (peds.p[fi].x - player.x) >> 16;
+                                dy = (peds.p[fi].y - player.y) >> 16;
+                                d = dx * dx + dy * dy;
+                                if (d > worstd) { worstd = d; worst = fi; }
+                            }
+                            if (worst >= 0)
+                                peds.p[worst].alive = 0;
+                        }
+                        if (gta_peds_drop(&peds,
+                                player.x + ((long)adq[adq_i].thr << 16),
+                                player.y + ((long)adq[adq_i].brk << 16),
+                                player.layer, adq[adq_i].st & 255, -1, 0))
+                            printf("gta: dropped a ped at (%ld,%ld)\n",
+                                   (player.x >> 16) + adq[adq_i].thr,
+                                   (player.y >> 16) + adq[adq_i].brk);
+                        else
+                            printf("gta: ped drop - pool full\n");
+                        fflush(stdout);
+                        break;
                     case 10:
                         if (adq[adq_i].thr >= 0 && adq[adq_i].thr < 5) {
                             weapon = adq[adq_i].thr;
@@ -2910,10 +3145,15 @@ int main(void)
                         enter_driver = 0;
                         if (gta_peds_pull(&peds, enter_cx, enter_cy,
                                           enter_face, enter_model,
-                                          player.layer, -1))
-                            printf("gta: dragged the driver out\n");
-                        else
+                                          player.layer, -1)) {
+                            /* Taking a car OFF SOMEBODY scores; a parked one is
+                             * worth nothing, in the original as here. */
+                            long a = gta_score_event(&score, GTA_SCORE_TYPE_CAR, 0);
+                            printf("gta: dragged the driver out - %ld points"
+                                   " (score %ld)\n", a, score.score);
+                        } else {
                             printf("gta: driver lost - ped pool full\n");
+                        }
                         fflush(stdout);
                     }
                     player.anim  = enter_bike
@@ -3154,6 +3394,45 @@ int main(void)
                             fflush(stdout);
                         }
                     }
+                    /* AND HE DOES NOT END THE TICK INSIDE ANOTHER CAR.
+                     *
+                     * This is the original's own answer, and it is the only
+                     * one that does not show: it never lets an overlap
+                     * happen, so it never needs a shove to undo one. Its
+                     * physics step bisects eight times between the transform
+                     * it has committed and the one it proposes - position AND
+                     * angle - and keeps the last one that was clear.
+                     *
+                     * Without it the correction has to remove the whole
+                     * overlap afterwards, and at 20 px a tick that is
+                     * sixteen pixels in one frame on the car the player is
+                     * steering: "nadal za mocno mnie odrzuca ... teleportuje
+                     * mnie o 10 pikseli w 1 klatce". Measured with
+                     * `gtadump hitcar ... 20 200 0 0 64`, WORST PUSH ON THE
+                     * PLAYER.
+                     *
+                     * Eight steps of a 256th each: the last free point is
+                     * within half a pixel of the contact, which is closer
+                     * than the eye can see at 32 px to a block. */
+                    if (opt_traffic) {
+                        const gta_car_info *bi_ = &tiles.cars[veh.model];
+                        int bhl_ = gta_car_world_len(bi_) / 2;
+                        int bhw_ = gta_car_world_wid(bi_) / 2;
+                        long nx_ = veh.ox, ny_ = veh.oy, na_ = veh.ang16;
+                        if (gta_traffic_sweep_box(&traffic, wox0_, woy0_,
+                                                  wang0_, &nx_, &ny_, &na_,
+                                                  bhl_, bhw_, player.layer)) {
+                            /* The body centre is what was swept; the centre
+                             * of mass follows it by the same amount. */
+                            veh.x += nx_ - veh.ox;
+                            veh.y += ny_ - veh.oy;
+                            veh.ox = nx_;
+                            veh.oy = ny_;
+                            veh.ang16 = na_;
+                            veh_contact_stops++;
+                        }
+                    }
+
                     /* THE RAM - item 3c. The fleet takes its share inside
                      * gta_traffic_ram (speed cut, shove, damage); the
                      * player's share comes back as a velocity delta and a
@@ -3188,6 +3467,13 @@ int main(void)
                         }
                         if (nhit) {
                             veh.damage += nhit;
+                            /* The panel that took it: the resolution vector
+                             * points out of the other body, so the contact is
+                             * the other way. */
+                            veh.dmg_bits |= 1UL << gta_car_panel_delta(
+                                &tiles.cars[veh.model], veh.ox, veh.oy,
+                                gta_veh_angle(&veh),
+                                veh.ox - rpx * 8, veh.oy - rpy * 8);
                             printf("gta: ram x%d - player dv (%ld,%ld) "
                                    "damage %d\n", nhit,
                                    rvx >> 16, rvy >> 16, veh.damage);
@@ -3259,16 +3545,29 @@ int main(void)
                         if (punch_left == 0)
                             punch_left = GTA_PUNCH_TICKS * GTA_PED_PUNCH_FRAMES;
                     } else if (fire_cool == 0 && ammo[weapon] > 0) {
-                        if (gta_weapons_fire_pistol(&weapons, player.x,
-                                                    player.y, player.layer,
-                                                    player.angle,
-                                                    player.anim == GTA_ANIM_RUN,
-                                                    -1)) {
-                            fire_cool = GTA_PISTOL_COOLDOWN;
+                        if (gta_weapons_fire(&weapons, weapon, player.x,
+                                             player.y, player.layer,
+                                             player.angle,
+                                             player.anim == GTA_ANIM_RUN,
+                                             -1)) {
+                            fire_cool = gta_weapons_cooldown(weapon);
                             gta_peds_panic(&peds, player.x, player.y,
                                            player.layer);
-                            if (--ammo[weapon] == 0) {
-                                weapon = ammo[1] > 0 ? 1 : 0;
+                            /* The machine gun and the flamethrower get
+                             * five shots out of one unit; the pistol and the
+                             * rocket launcher spend one each. */
+                            if (ammo_sub[weapon] > 0) {
+                                if (--ammo_sub[weapon] == 0) {
+                                    ammo_sub[weapon] = GTA_AMMO_PER_UNIT;
+                                    ammo[weapon]--;
+                                }
+                            } else {
+                                ammo[weapon]--;
+                            }
+                            if (ammo[weapon] <= 0) {
+                                ammo[weapon] = 0;
+                                weapon = ammo[GTA_WEAPON_PISTOL] > 0
+                                       ? GTA_WEAPON_PISTOL : GTA_WEAPON_FIST;
                                 printf("gta: out of ammo - weapon %d\n",
                                        weapon);
                             }
@@ -3313,10 +3612,46 @@ int main(void)
                                   in_car ? (veh.vx || veh.vy)
                                          : (player.anim == GTA_ANIM_WALK
                                             || player.anim == GTA_ANIM_RUN));
+                /* THE CAR HE IS SITTING IN, WRITTEN OFF. It burns for the
+                 * same fuse the fleet's wrecks get and then comes apart in
+                 * five bursts; he is put out on the road first, since there
+                 * is no player health yet to take from him. */
+                if (in_car && veh.damage >= GTA_CAR_WRECKED) {
+                    if (veh.fuse == 0) {
+                        veh.fuse = GTA_CAR_FUSE;
+                        veh.dmg_bits |= GTA_DELTA_DMG_MASK;
+                        printf("gta: your car is a write-off - get out\n");
+                        fflush(stdout);
+                    } else if (--veh.fuse == 0) {
+                        const gta_car_info *wi = &tiles.cars[veh.model];
+                        long wx = veh.ox, wy = veh.oy;
+                        int wface = gta_veh_angle(&veh);
+                        /* Out on the road beside it, on his feet. */
+                        player.x = wx + (long)gta_cos(wface) * 48;
+                        player.y = wy + (long)gta_sin(wface) * 48;
+                        player.angle = (wface + 64) & 255;
+                        player.anim = GTA_ANIM_STAND;
+                        player.frame = 0;
+                        in_car = 0;
+                        enter_anim = 0;
+                        enter_driver = 0;
+                        door_tick = -1;
+                        gta_traffic_set_player(&traffic, 0, 0, 0, 0, 0, 0, 0, 0);
+                        gta_weapons_wreck_car(&weapons, wi, wx, wy, wface,
+                                              player.layer, &peds, &traffic,
+                                              &score, 1);
+                        printf("gta: your car blew up at (%ld,%ld)\n",
+                               wx >> 16, wy >> 16);
+                        fflush(stdout);
+                    }
+                }
+                gta_score_tick(&score);
+                hud_weapon = weapon;
+                hud_ammo = ammo[weapon >= 0 && weapon < 5 ? weapon : 0];
                 gta_peds_tick(&peds, &map, view.cam_x, view.cam_y);
                 /* The bullets fly after the people have moved, in the
                  * original's order: peds, cars, then the block. */
-                gta_weapons_tick(&weapons, &nav, &peds, &traffic, &tiles);
+                gta_weapons_tick(&weapons, &nav, &peds, &traffic, &tiles, &score);
                 if (in_car) {
                     long avx = veh.vx < 0 ? -veh.vx : veh.vx;
                     long avy = veh.vy < 0 ? -veh.vy : veh.vy;
@@ -3327,8 +3662,15 @@ int main(void)
                                           avx > avy ? avx + avy / 2
                                                     : avy + avx / 2);
                     if (ph) {
-                        printf("gta: ran over %d - %ld so far\n",
-                               ph, peds.stat_runover);
+                        int k;
+                        long award = 0;
+                        for (k = 0; k < ph; k++)
+                            award = gta_score_event(&score,
+                                        GTA_SCORE_TYPE_CIVILIAN,
+                                        GTA_SCORE_REASON_RUNOVER);
+                        printf("gta: ran over %d - %ld so far, %ld points"
+                               " (score %ld)\n", ph, peds.stat_runover,
+                               award, score.score);
                         fflush(stdout);
                     }
                 }
@@ -3431,21 +3773,60 @@ int main(void)
                             alive_++;
                             if (pp->offscreen == 0) seen_++;
                         }
-                        snprintf(ln, sizeof ln,
-                                 "gta: peds %d alive (%d in view), spawned"
-                                 " %ld, run over %ld, killed %ld",
-                                 alive_, seen_, peds.stat_spawned,
-                                 peds.stat_runover, peds.stat_killed);
+                        /* AND WHETHER THEY ARE PILING UP. The developer
+                         * saw people stacking on one side of the street -
+                         * the fault the anti-crowd rule exists to prevent -
+                         * and "it looks crowded" cannot be argued with. A
+                         * pair within four pixels is two men standing in the
+                         * same doorway; the worst pile is how many are in
+                         * the biggest of those knots. */
+                        {
+                            int a_, b_, pairs_ = 0, worst_ = 0;
+                            long wx_ = 0, wy_ = 0;
+                            for (a_ = 0; a_ < GTA_MAX_PEDS; a_++) {
+                                int near_ = 0;
+                                if (!peds.p[a_].alive || peds.p[a_].corpse)
+                                    continue;
+                                for (b_ = 0; b_ < GTA_MAX_PEDS; b_++) {
+                                    long dx_, dy_;
+                                    if (b_ == a_ || !peds.p[b_].alive
+                                        || peds.p[b_].corpse)
+                                        continue;
+                                    dx_ = (peds.p[a_].x - peds.p[b_].x) >> 16;
+                                    dy_ = (peds.p[a_].y - peds.p[b_].y) >> 16;
+                                    if (dx_ > -4 && dx_ < 4
+                                        && dy_ > -4 && dy_ < 4) {
+                                        near_++;
+                                        if (b_ > a_) pairs_++;
+                                    }
+                                }
+                                if (near_ > worst_) {
+                                    worst_ = near_;
+                                    wx_ = peds.p[a_].x >> 16;
+                                    wy_ = peds.p[a_].y >> 16;
+                                }
+                            }
+                            snprintf(ln, sizeof ln,
+                                     "gta: peds %d alive (%d in view), spawned"
+                                     " %ld, run over %ld, killed %ld; %d pairs"
+                                     " within 4px, worst %d at (%ld,%ld)",
+                                     alive_, seen_, peds.stat_spawned,
+                                     peds.stat_runover, peds.stat_killed,
+                                     pairs_, worst_ + (worst_ ? 1 : 0),
+                                     wx_, wy_);
+                        }
                         log_line(ln);
                         if (weapons.stat_fired || peds.stat_punched) {
                             snprintf(ln, sizeof ln,
                                      "gta: weapons fired %ld: ped %ld car %ld"
-                                     " wall %ld spent %ld; punched %ld; ammo %d"
-                                     " weapon %d",
+                                     " wall %ld spent %ld, %ld bursts;"
+                                     " punched %ld; weapon %d ammo %d;"
+                                     " score %ld",
                                      weapons.stat_fired, weapons.stat_ped,
                                      weapons.stat_car, weapons.stat_wall,
-                                     weapons.stat_expired, peds.stat_punched,
-                                     ammo[1], weapon);
+                                     weapons.stat_expired, weapons.stat_expl,
+                                     peds.stat_punched, weapon, ammo[weapon],
+                                     score.score);
                             log_line(ln);
                         }
                     }
@@ -3488,6 +3869,29 @@ int main(void)
                              "at (%d,%d)",
                              traffic.stat_boxlock, traffic.stat_boxlock_worst,
                              traffic.stat_boxlock_x, traffic.stat_boxlock_y);
+                    log_line(cl);
+
+                    /* AND THE TWO IMPOSSIBLE THINGS - a car turning further
+                     * than any car can in one tick, or moving further. Both
+                     * are the developer's own reports, as numbers. */
+                    snprintf(cl, sizeof cl,
+                             "gta: impossible - %ld turns (worst %ld of 256,"
+                             " state %ld), %ld jumps (worst %ld px, state %ld)",
+                             traffic.stat_face_jump, traffic.stat_face_jump_max,
+                             traffic.stat_face_jump_ctx,
+                             traffic.stat_pos_jump, traffic.stat_pos_jump_max,
+                             traffic.stat_pos_jump_ctx);
+                    log_line(cl);
+
+                    /* AND TRAFFIC HITTING TRAFFIC, which until today never
+                     * happened at all: cars drove through each other unless
+                     * they were closing hard, and drove through anything
+                     * parked whatever the speed. */
+                    snprintf(cl, sizeof cl,
+                             "gta: fleet hits %ld, knocked loose %ld, settled"
+                             " %ld, corners dropped %ld",
+                             traffic.stat_fleet_hits, traffic.stat_knocked,
+                             traffic.stat_knock_ended, traffic.stat_arc_dropped);
                     log_line(cl);
 
                     /* AND THE RADIUS THE CORNERS ACTUALLY GET, because
@@ -3555,8 +3959,7 @@ int main(void)
          * stays where he was left, which is what makes "walk there, then look
          * at it from above" possible. */
         /* The splats are ground marks: under everybody. */
-        gta_weapons_draw(&weapons, &view, -1,
-                         gta_tiles_object_sprite(&tiles, GTA_OBJ_SPLAT));
+        gta_weapons_draw_ground(&weapons, &view);
         gta_peds_draw(&peds, &view);
         /* THE CAR BEING ENTERED IS STILL A CAR.
          *
@@ -3617,13 +4020,22 @@ int main(void)
                                                    ARMED_NOW),
                                       gta_player_draw_angle(&player));
             if (car_shown && pi->sprite_index >= 0)
-                gta_render_add_sprite_d(&view, car_x, car_y, player.layer,
+                gta_render_add_sprite_dm(&view, car_x, car_y, player.layer,
                                       player.layer, pi->sprite_index,
                                       (car_ang + GTA_SPRITE_ART_SOUTH) & 255,
                                       car_remap >= 0
                                           && car_remap < GTA_CAR_REMAPS
                                           ? (int)pi->remap8[car_remap] : 0,
-                                      door_now);
+                                      door_now,
+                                      use_veh ? veh.dmg_bits : 0);
+            /* ...and if it is a write-off, it burns while its fuse runs. */
+            if (car_shown && use_veh && veh.fuse > 0) {
+                int fs_ = gta_tiles_object_sprite(&tiles, GTA_OBJ_FIRE);
+                if (fs_ >= 0)
+                    gta_render_add_sprite(&view, car_x, car_y, player.layer,
+                                          player.layer,
+                                          fs_ + ((veh.fuse / 3) % 7), 0);
+            }
             if (on_top) {
                 if (in_car)
                     gta_render_add_sprite(&view, car_x, car_y, player.layer,
@@ -3657,8 +4069,7 @@ int main(void)
                                   armed_sprite(&player, punch_left, ARMED_NOW),
                                   gta_player_draw_angle(&player));
         /* The tracers, over everything on the street. */
-        gta_weapons_draw(&weapons, &view,
-                         gta_tiles_object_sprite(&tiles, GTA_OBJ_BULLET), -1);
+        gta_weapons_draw_air(&weapons, &view);
 
         /* Redraw every pass, moving or not. Holding the frame when nothing has
          * changed would be free frames per second and a dishonest measurement;

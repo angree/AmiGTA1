@@ -50,7 +50,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.0.3
+TEXT = """AmiGTA v0.0.4
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -68,36 +68,34 @@ This is the same arrangement OpenXcom and OpenTTD use.
 WHAT IS IN THIS ARCHIVE
 ===========================================================================
 
-  gta-aga       320x200, AGA.
-                The reference build. Every speed figure in the project's
-                notes was measured with this one.
+  AmiGTA        The game. ONE binary for every machine.
 
-  gta-rtg240    320x240, RTG (CyberGraphX or Picasso96).
-                The same picture with more of the city on screen.
+                v0.0.3 shipped three - gta-aga, gta-rtg240 and gta-rtg480 -
+                which were the same program built at three screen sizes.
+                The screen is a setting now, so there is nothing to choose
+                by icon: start AmiGTA, and if it does not look right run
+                gtaprefs. See SETTINGS below.
 
-  gta-rtg480    640x480, RTG.
-                Renders 320x240 and doubles it when it puts it on screen.
-                A 68020 cannot rasterise 640x480 at a playable rate; this
-                way the picture is sharp and chunky rather than slow.
-
-  gtaprefs      Settings. Pick the sound and display path here rather
-                than by editing files by hand. Double-click it, or run it
-                from a shell. New in v0.0.3 - see SETTINGS below.
+  gtaprefs      Settings. Sound, display path and screen size, chosen here
+                rather than by editing files by hand or by picking one of
+                three programs. Double-click it, or run it from a shell.
 
   gtabake       The converter. Runs ON THE AMIGA. It reads the game's own
                 style001.gry and writes the tile set the engine loads, and
                 with -sfx it converts the sound bank too - see WHAT IS NOT
-                IN v0.0.3 for why you do not need that yet.
+                IN v0.0.4 for why you do not need that yet.
 
-  run           Startup script. Its last line chooses which build runs.
+  run           Startup script. Sets the stack and starts the game.
+
+All three have their own Workbench icon.
 
 ===========================================================================
 WHAT YOU NEED
 ===========================================================================
 
   * 68020 or better. No FPU is required and none is used.
-  * AGA for gta-aga; a CyberGraphX or Picasso96 8-bit screen for the two
-    RTG builds.
+  * AGA, or a CyberGraphX / Picasso96 8-bit screen, or - slower, and
+    where neither of those works - a window on the Workbench.
   * About 8 MB of fast RAM to play. The one-off conversion below wants
     about 6 MB free while it runs.
   * Your own copy of GTA (1997) for the PC.
@@ -117,8 +115,8 @@ the game's GTADATA directory:
     nyc.cmp          about 460 KB  - the Liberty City map
 
 STEP 1 - unpack this archive anywhere you like - DH1:Games/AmiGTA,
-    Work:AmiGTA, a CF card, it does not matter. You get the three
-    binaries, gtabake, run, and an empty GTADATA drawer with a note in it.
+    Work:AmiGTA, a CF card, it does not matter. You get the game, the two
+    tools, run, and an empty GTADATA drawer with a note in it.
 
 STEP 2 - copy style001.gry and nyc.cmp from the PC into the GTADATA
     drawer that is already there, IN BINARY MODE.
@@ -142,9 +140,7 @@ STEP 3 - convert the art. From a shell, in the drawer you unpacked to:
 
 STEP 4 - you should now have:
 
-        AmiGTA/gta-aga
-        AmiGTA/gta-rtg240
-        AmiGTA/gta-rtg480
+        AmiGTA/AmiGTA
         AmiGTA/gtaprefs
         AmiGTA/gtabake
         AmiGTA/run
@@ -163,8 +159,8 @@ drawer and start it:
         cd DH1:Games/AmiGTA
         execute run
 
-Or double-click one of the three icons in Workbench - they carry the same
-1 MB stack the script sets.
+Or double-click the AmiGTA icon in Workbench - it carries the same 1 MB
+stack the script sets.
 
 Up to v0.0.1 every path was hard-coded to Work: and this section told you to
 assign Work: to the game drawer. That was a bug with a workaround printed
@@ -176,9 +172,7 @@ optional: libnix gives a CLI process 4 KB by default and the map and sprite
 loaders go well past it. Starting a binary by hand needs the same:
 
         stack 1000000
-        gta-aga
-
-To change which build the script starts, edit its last line.
+        AmiGTA
 
 ===========================================================================
 CONTROLS
@@ -194,11 +188,27 @@ CONTROLS
     Space           jump: running at a low car he goes over it, at a
                     bus he slides under it.
     Ctrl            fire. Held down it keeps firing, as in the original.
-                    With fists it is a punch; the man you hit goes down
-                    and gets up again. With the pistol a bullet carries
-                    four blocks and stops at the first person, car or
-                    wall it meets. People nearby run from the shot.
-    X / Z           next / previous weapon.
+                    People nearby run from the shot.
+    X / Z           next / previous weapon. You start with all five:
+
+                      Fists         a punch; the man goes down and
+                                    gets up again.
+                      Pistol        one round every fifth of a second,
+                                    four blocks of range.
+                      Machine gun   the same round, five times as fast.
+                      Rocket        explodes on the first thing it
+                                    meets and takes out everything
+                                    within a block.
+                      Flamethrower  a jet about a block long; whoever
+                                    it touches burns, runs, and dies.
+
+                    You start with three times what the original's
+                    crates hold: 60 pistol rounds, 60 for the machine
+                    gun, 15 rockets and 30 tanks of fuel.
+
+                    The five are handed to you at the start only
+                    because the crates that hold them are not built
+                    yet - in the original you begin with your fists.
 
   In a car
     Up / Down       throttle / reverse
@@ -224,7 +234,7 @@ SETTINGS
 ===========================================================================
 
 Run gtaprefs - double-click it, or type its name in the game's drawer.
-It opens a small window on Workbench with two choices:
+It opens a small window on Workbench with three choices:
 
   Sound       Auto, Off, Paula or AHI.
               Paula is the Amiga chipset, played straight through
@@ -233,26 +243,51 @@ It opens a small window on Workbench with two choices:
               mixes in software. Auto picks Paula where a real chipset
               exists and AHI where one does not.
 
-              NOTHING PLAYS YET. v0.0.3 has no sound at all; the setting
+              NOTHING PLAYS YET. v0.0.4 has no sound at all; the setting
               is read and reported in gta.log and nothing more. It is here
               because the choice has to be settled before the sound layer
               is written, not after.
 
   Graphics    Auto, AGA, RTG or Window.
-              Auto uses whatever the build you start was made for. Window
-              runs the game inside a window on Workbench: it is the
-              slowest of the three and it works on machines where the
-              other two do not - MorphOS in particular.
+              Auto opens an AGA screen. Window runs the game inside a
+              window on Workbench: it is the slowest of the three and it
+              works on machines where the other two do not - MorphOS in
+              particular.
+
+  Screen      Auto, 320x200, 320x240, 640x480 or 640x480 doubled.
+              This is what v0.0.3 needed three separate programs for.
+
+              320x200 is the reference and what every speed figure in the
+              project's notes was measured at. 320x240 shows more of the
+              city and wants an RTG screen. Auto means 320x200, or
+              320x240 if you chose RTG above.
+
+              THE TWO 640x480 MODES ARE DIFFERENT PICTURES:
+
+              640x480 is really drawn at 640x480. Every tile, car and
+              person goes down at the art's own size - one stored pixel
+              to one screen pixel, nothing stretched - so twice as much
+              of Liberty City is on screen and all of it is sharp. It
+              costs about four times the drawing, so it is for a fast
+              accelerator with a graphics card, not a plain 020.
+
+              640x480 doubled renders 320x240 and doubles every pixel on
+              the way to the screen. It is the same picture as 320x240
+              with fatter pixels - no more detail - and it fills a
+              640x480 screen for almost nothing. This is the one a slow
+              machine wants, and up to v0.0.3 it was the only one there
+              was.
 
 The window also tells you what it found on YOUR machine - AGA, RTG and
 AHI, each yes or no.
 
-It needs no mouse. A cycles the sound, G the graphics, S saves, Esc
-cancels. And there is a command line for a machine with no pointer at all:
+It needs no mouse. A cycles the sound, G the graphics, R the screen size,
+S saves, Esc cancels. And there is a command line for a machine with no
+pointer at all:
 
     gtaprefs SHOW              print the settings and what was detected
     gtaprefs GFX=WB            set it and save, without opening a window
-    gtaprefs AUDIO=AHI GFX=RTG
+    gtaprefs AUDIO=AHI GFX=RTG SCREEN=640x480
     gtaprefs ?                 the full list
 
 Settings are written to gta.prefs beside the game, which is plain text you
@@ -260,12 +295,17 @@ can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
 
 ===========================================================================
-WHAT IS NOT IN v0.0.3
+WHAT IS NOT IN v0.0.4
 ===========================================================================
 
-  * Fists and the pistol only - no machine gun, rocket launcher or
-    flamethrower, and no crates to pick them up from.
-  * No missions, no police, no wanted level.
+  * No crates to pick weapons up from - you start with all five.
+  * Cars take damage from crashes and from anything you shoot them
+    with, wear the dents, and at a hundred points they burn for a
+    moment and explode - taking whatever is parked next to them with
+    them. Your own car does the same, and puts you out on the road
+    first.
+  * No missions, no police, no wanted level. The score counts, the
+    wanted level does not exist yet.
   * Tyre marks, blood and oil are not drawn.
   * Only Liberty City. The startup path is fixed to nyc.cmp.
   * Sound is not wired up yet. The DATA side is done - gtabake can
@@ -301,9 +341,16 @@ IF IT DOES NOT START
       gtabake holds the whole style file and the output at once. Close
       other programs; it needs roughly 6 MB free.
 
-  The RTG builds open nothing
+  Nothing opens with Graphics set to RTG
       There is no CyberGraphX or Picasso96 screen available. Run gtaprefs
-      and set Graphics to AGA, or to Window if AGA is no good either.
+      and set Graphics to AGA, or to Window if AGA is no good either. If
+      you also chose one of the 640x480 sizes, set Screen back to
+      320x200: those want a graphics card.
+
+  640x480 runs, but it crawls
+      That is the native one - it really draws 640x480, which is four
+      times the work. Pick "640x480 doubled" instead: same screen size,
+      the picture of 320x240, and almost no extra cost.
 
   The city is drawn in the wrong colours, or as noise
       The game asked for an 8-bit screen, did not get one, and fell back

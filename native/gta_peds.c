@@ -80,6 +80,7 @@ void gta_peds_init(gta_peds *ps, const gta_tiles *t, unsigned long seed)
     ps->fidget = 0;
     ps->spawned_since_retire = 0;
     ps->punch_wheel = 0;
+    ps->fire_sprite = gta_tiles_object_sprite(t, 0x2e);
     ps->stat_spawned = ps->stat_runover = ps->stat_killed = 0;
     ps->stat_shot = ps->stat_punched = 0;
 }
@@ -128,6 +129,7 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->shot = p->shot_step = p->shot_tick = p->shot_dir = 0;
     p->fall = 0;
     p->panic = 0;
+    p->burn = p->burn_frame = p->burn_tick = 0;
 }
 
 static int free_slot(gta_peds *ps)
@@ -355,30 +357,118 @@ static int corner(gta_peds *ps, gta_ped *p)
 }
 
 /* OUR SEPARATION: somebody within 5 px ahead - slow to a shuffle and
- * sidestep away; within 3 px - hold this tick. */
-static int separation(gta_peds *ps, gta_ped *p, int *hold)
+ * sidestep away; within 3 px - push apart. */
+/* THE CROWD RULE, and the one thing it must never do: STOP ANYBODY.
+ *
+ * It used to. A ped with somebody three pixels ahead held still for a tick,
+ * and when two of them faced each other they held for each other's sake for
+ * ever - a knot of three stood in the same doorway for a whole minute of
+ * play (the developer's screenshot, and `gta: peds ... pairs within 4px`
+ * counted it). The men who then walked into them stopped too, so the knot
+ * grew. That is precisely the pile-up this deviation from the original
+ * exists to avoid, arrived at from the other direction.
+ *
+ * So nobody waits for anybody: somebody close ahead only slows you to a
+ * shuffle and turns you a little. Keeping bodies out of each other is a
+ * separate job and it is done after everybody has moved, by relax() below.
+ * Returns non-zero when the way ahead is crowded. */
+static int separation(gta_peds *ps, gta_ped *p)
 {
     int i, crowded = 0;
+    int self = (int)(p - ps->p);
     long fx = gta_sin(p->angle), fy = -gta_cos(p->angle);
-    *hold = 0;
+
     for (i = 0; i < GTA_MAX_PEDS; i++) {
         const gta_ped *o = &ps->p[i];
         long dx, dy, along, side;
-        if (o == p || !o->alive || o->corpse || o->down || o->layer != p->layer)
+        if (i == self || !o->alive || o->corpse || o->pull >= 0
+            || o->layer != p->layer)
             continue;
         dx = (o->x - p->x) >> 16; dy = (o->y - p->y) >> 16;
         if (dx > 6 || dx < -6 || dy > 6 || dy < -6)
             continue;
+
+        /* AHEAD: slow down and lean away from him. */
         along = (dx * fx + dy * fy) >> 14;
         side  = (dx * fy - dy * fx) >> 14;      /* + = to the right */
         if (along < 0 || along > 5)
             continue;
         crowded = 1;
-        if (along <= 3 && side > -2 && side < 2)
-            *hold = 1;
         p->angle = (p->angle + (side >= 0 ? -6 : 6)) & 255;
     }
     return crowded;
+}
+
+/* NOBODY STANDS INSIDE ANYBODY. One pass over every pair once the walking is
+ * done: an overlap moves both of them apart, a deep one harder than a
+ * shallow one, and two men on exactly the same pixel are split by their slot
+ * number because no direction is "away" from a man you are standing in.
+ *
+ * A push is refused rather than shoving somebody through a wall - and then
+ * tried one axis at a time, which is what lets a pair squeezed against a
+ * building slide apart ALONG it instead of staying merged.
+ *
+ * Twelve peds is 66 pairs, and only the ones within six pixels do any work.
+ */
+#define PED_APART_PX  5         /* nearer than this and they are pushed */
+
+static int ped_walkable(const gta_peds *ps, long x, long y, int z)
+{
+    int g = ground_at(ps, x, y, z);
+    return g >= GTA_GROUND_ROAD && g <= GTA_GROUND_FIELD;
+}
+
+static void ped_shove(gta_peds *ps, gta_ped *p, long px, long py)
+{
+    if (ped_walkable(ps, p->x + px, p->y + py, p->layer)) {
+        p->x += px; p->y += py;
+    } else if (ped_walkable(ps, p->x + px, p->y, p->layer)) {
+        p->x += px;
+    } else if (ped_walkable(ps, p->x, p->y + py, p->layer)) {
+        p->y += py;
+    }
+}
+
+static void relax(gta_peds *ps)
+{
+    int a, b;
+
+    for (a = 0; a < GTA_MAX_PEDS; a++) {
+        gta_ped *pa = &ps->p[a];
+        if (!pa->alive || pa->corpse || pa->pull >= 0)
+            continue;
+        for (b = a + 1; b < GTA_MAX_PEDS; b++) {
+            gta_ped *pb = &ps->p[b];
+            long dx, dy, d2, step, px, py;
+            if (!pb->alive || pb->corpse || pb->pull >= 0
+                || pb->layer != pa->layer)
+                continue;
+            dx = (pb->x - pa->x) >> 16;
+            dy = (pb->y - pa->y) >> 16;
+            if (dx > PED_APART_PX || dx < -PED_APART_PX
+                || dy > PED_APART_PX || dy < -PED_APART_PX)
+                continue;
+            d2 = dx * dx + dy * dy;
+            if (d2 >= (long)PED_APART_PX * PED_APART_PX)
+                continue;
+            /* Deep overlaps get a whole pixel each, shallow ones a half:
+             * enough to beat a running man's stride either way. */
+            step = (d2 <= 4) ? (1L << 16) : (1L << 15);
+            if (dx == 0 && dy == 0) {
+                /* standing in each other: the slot number decides */
+                px = step; py = 0;
+            } else if (dx > 0 || (dx == 0 && dy > 0)) {
+                px = (dx > 0) ? step : 0;
+                py = (dy > 0) ? step : (dy < 0 ? -step : 0);
+            } else {
+                px = (dx < 0) ? -step : 0;
+                py = (dy > 0) ? step : (dy < 0 ? -step : 0);
+            }
+            /* pb away from pa, pa away from pb */
+            ped_shove(ps, pb,  px,  py);
+            ped_shove(ps, pa, -px, -py);
+        }
+    }
 }
 
 void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
@@ -450,6 +540,25 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
         if (p->corpse)
             continue;
 
+        /* BURNING. A point of health a tick, and he runs the whole time -
+         * the original gives an AI ped speed 4 and leaves it there. The
+         * fire's own frames turn over three times slower than the tick. */
+        if (p->burn > 0) {
+            if (++p->burn_tick >= GTA_FIRE_FRAME_TICKS) {
+                p->burn_tick = 0;
+                p->burn_frame = (p->burn_frame + 1) % GTA_FIRE_FRAMES;
+            }
+            if (--p->burn == 0) {
+                p->corpse = 1;
+                p->speed = 0;
+                p->tx = p->ty = 0;
+                ps->stat_killed++;
+                continue;
+            }
+            if (!p->down && !p->fall && p->pull < 0)
+                p->speed = 4;
+        }
+
         if (p->shot) {
             /* SHOT: four states of two frames, the body carried along the
              * bullet's line for the first three (the original's 6 units a
@@ -510,7 +619,6 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
             long nx, ny, ax, ay;
             int here = ground_at(ps, p->x, p->y, p->layer);
             int corner_ahead;
-            int hold = 0;
 
             /* ON A ROAD: the flee mode, straight away from where he
              * stepped on, at a run. Ours: it ends when he is back on
@@ -614,13 +722,15 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 }
             }
 
-            /* OUR SEPARATION, before the step. */
-            if (p->speed > 0 && separation(ps, p, &hold) && p->speed > 1
+            /* OUR SEPARATION, before the step - for the man standing
+             * still as well, so a knot round somebody who has stopped for a
+             * rest comes apart the same way. */
+            if (separation(ps, p) && p->speed > 1
                 && p->mode == GTA_PED_MODE_IDLE)
                 p->speed = 1;
 
             /* THE STEP, and what refuses it. */
-            if (p->speed > 0 && !hold) {
+            if (p->speed > 0) {
                 int there, blocked = 0;
                 /* Q14 sin x (16.16 px a tick >> 8) >> 6 = 16.16. The
                  * shift binds looser than the +, hence the brackets: the
@@ -685,6 +795,9 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
         if (!spawn_one(ps, cbx, cby) && !ps->spawned_since_retire)
             spawn_one(ps, cbx, cby);
     }
+
+    /* ...and nobody is left standing inside anybody else. */
+    relax(ps);
 }
 
 int gta_peds_ram(gta_peds *ps, long px, long py, int pface, int phl, int phw,
@@ -774,6 +887,10 @@ void gta_peds_draw(gta_peds *ps, gta_view *v)
                               ps->ped_base + f,
                               (p->angle + GTA_SPRITE_ART_SOUTH) & 255,
                               p->remap);
+        /* ...and the fire on top of him, if he is alight. */
+        if (p->burn > 0 && ps->fire_sprite >= 0)
+            gta_render_add_sprite(v, p->x, p->y, p->layer, p->layer,
+                                  ps->fire_sprite + p->burn_frame, 0);
     }
 }
 
@@ -905,4 +1022,47 @@ void gta_peds_panic(gta_peds *ps, long x, long y, int layer)
         else
             p->angle = (int)(rng_next(ps) & 255);
     }
+}
+
+void gta_peds_burn(gta_peds *ps, int i, long fx, long fy)
+{
+    gta_ped *p;
+    if (i < 0 || i >= GTA_MAX_PEDS)
+        return;
+    p = &ps->p[i];
+    if (!p->alive || p->corpse || p->shot || p->pull >= 0 || p->burn > 0)
+        return;
+    p->burn = GTA_BURN_TICKS;
+    p->burn_frame = 0;
+    p->burn_tick = 0;
+    /* He runs, away from whatever set him alight - the original's mode 1
+     * with the fire as the threat. */
+    p->mode = GTA_PED_MODE_FLEE;
+    p->gx = fx; p->gy = fy;
+    p->flee_aim = 0;
+    p->panic = GTA_PANIC_TICKS;
+    p->tx = p->ty = 0;
+    p->speed = 4;
+    p->down = 0;
+    p->fall = 0;
+    if ((p->x >> 16) != (fx >> 16) || (p->y >> 16) != (fy >> 16))
+        p->angle = angle_to(fx, fy, p->x, p->y);
+}
+
+void gta_peds_kill(gta_peds *ps, int i)
+{
+    gta_ped *p;
+    if (i < 0 || i >= GTA_MAX_PEDS)
+        return;
+    p = &ps->p[i];
+    if (!p->alive || p->corpse)
+        return;
+    p->corpse = 1;
+    p->burn = 0;
+    p->speed = 0;
+    p->down = 0;
+    p->fall = 0;
+    p->shot = 0;
+    p->tx = p->ty = 0;
+    ps->stat_killed++;
 }

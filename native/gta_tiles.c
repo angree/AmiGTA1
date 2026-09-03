@@ -249,6 +249,66 @@ int gta_tiles_delta_count(const gta_tiles *t, int sprite)
     return (int)t->delta_num[sprite];
 }
 
+/* One overlay onto a buffer that ALREADY holds the base sprite. Split out of
+ * gta_tiles_delta_apply() so a mask can lay several over one copy. */
+static int delta_over(const gta_tiles *t, int sprite, int d,
+                      unsigned char *dst)
+{
+    const unsigned char *str;
+    unsigned long off, size;
+    unsigned long pos = 0, cursor = 0;
+    int w, h, runs = 0, rec;
+
+    if (!t->delta_data || !t->delta_num) return 0;
+    if (d < 0 || d >= (int)t->delta_num[sprite]) return 0;
+    w = t->sprites[sprite].w;
+    h = t->sprites[sprite].h;
+    rec = (int)t->delta_first[sprite] + d;
+    if (rec < 0 || rec >= t->n_deltas) return 0;
+    off  = t->delta_off[rec];
+    size = t->delta_size[rec];
+    if (size == 0) return 0;
+    if (off > t->delta_bytes || size > t->delta_bytes - off) return 0;
+    str = t->delta_data + off;
+
+    while (pos + 3 <= size) {
+        unsigned long dest = (unsigned long)str[pos] | ((unsigned long)str[pos + 1] << 8);
+        unsigned int len = str[pos + 2];
+        unsigned long x, y, k;
+        pos += 3;
+        if (pos + len > size) break;
+        cursor += dest;
+        y = cursor / GTA_TIL_DELTA_PAGE;
+        x = cursor % GTA_TIL_DELTA_PAGE;
+        for (k = 0; k < len; k++) {
+            if (x + k < (unsigned long)w && y < (unsigned long)h)
+                dst[y * (unsigned long)w + x + k] = str[pos + k];
+        }
+        cursor += len;
+        pos += len;
+        runs++;
+    }
+    return runs;
+}
+
+int gta_tiles_delta_apply_mask(const gta_tiles *t, int sprite,
+                               unsigned long mask, unsigned char *dst)
+{
+    const unsigned char *base;
+    int w, h, d, runs = 0;
+
+    if (!t || !dst || sprite < 0 || sprite >= t->n_sprites) return 0;
+    w = t->sprites[sprite].w;
+    h = t->sprites[sprite].h;
+    base = t->sprite_pixels + t->sprites[sprite].off;
+    memcpy(dst, base, (size_t)w * h);
+    if (!mask) return 0;
+    for (d = 0; d < 32; d++)
+        if (mask & (1UL << d))
+            runs += delta_over(t, sprite, d, dst);
+    return runs;
+}
+
 int gta_tiles_delta_apply(const gta_tiles *t, int sprite, int d,
                           unsigned char *dst)
 {

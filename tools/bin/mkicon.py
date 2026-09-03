@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""mkicon.py <out.info> [stack]
+"""mkicon.py <out.info> [stack] [--kind game|prefs|bake]
 
-Write an AmigaOS Workbench icon (.info) for the game.
+Write an AmigaOS Workbench icon (.info) for the game or for one of its two
+tools.
+
+THREE PICTURES, NOT ONE. Every program in the drawer used to get the same car
+icon, so the drawer showed three identical cars and the only way to tell the
+settings editor from the game was to read the name under it. An icon that
+does not identify its program is decoration; these three are drawn as
+different shapes on purpose:
+
+    game    a car on a road       - the game
+    prefs   a panel with sliders  - the settings editor
+    bake    a grid of tiles       - the tile converter
 
 WHY THIS IS GENERATED RATHER THAN CHECKED IN
 --------------------------------------------
@@ -38,6 +49,7 @@ booleans as far as the file format is concerned (non-zero means "data for this
 follows"), which is why they are written as 1 rather than as addresses.
 
     wsl python3 tools/bin/mkicon.py winuae/work-template/AmiGTA.info 1000000
+    wsl python3 tools/bin/mkicon.py out/gtaprefs.info 100000 --kind prefs
     wsl python3 tools/bin/mkicon.py --verify <file.info> <out.png>
 """
 import struct
@@ -58,16 +70,34 @@ W, H = 46, 40
 DEPTH = 2
 
 
-def draw() -> list:
-    """A top-down car on a stretch of road - the game in one picture, and the
-    only thing that reads at 46x40 in four colours. Drawn with primitives
-    rather than as pixel art because the shapes are all rectangles anyway."""
-    px = [[BLACK] * W for _ in range(H)]
+def blank(bg=BLACK) -> list:
+    return [[bg] * W for _ in range(H)]
 
+
+def rect_on(px):
+    """A rect() bound to one canvas. All three pictures are rectangles, so
+    this is the whole drawing library."""
     def rect(x0, y0, x1, y1, c):
         for y in range(max(0, y0), min(H, y1 + 1)):
             for x in range(max(0, x0), min(W, x1 + 1)):
                 px[y][x] = c
+    return rect
+
+
+def frame(rect, c=WHITE):
+    """An edge, so the icon reads against any Workbench backdrop."""
+    rect(0, 0, W - 1, 0, c)
+    rect(0, H - 1, W - 1, H - 1, c)
+    rect(0, 0, 0, H - 1, c)
+    rect(W - 1, 0, W - 1, H - 1, c)
+
+
+def draw_game() -> list:
+    """A top-down car on a stretch of road - the game in one picture, and the
+    only thing that reads at 46x40 in four colours. Drawn with primitives
+    rather than as pixel art because the shapes are all rectangles anyway."""
+    px = blank()
+    rect = rect_on(px)
 
     # The road surface is the black background. Lane markings down both sides,
     # dashed, in grey - white would compete with the car.
@@ -103,12 +133,60 @@ def draw() -> list:
     rect(17, 5, 19, 6, GREY)
     rect(26, 5, 28, 6, GREY)
 
-    # A white frame, so the icon has an edge against any Workbench backdrop.
-    rect(0, 0, W - 1, 0, WHITE)
-    rect(0, H - 1, W - 1, H - 1, WHITE)
-    rect(0, 0, 0, H - 1, WHITE)
-    rect(W - 1, 0, W - 1, H - 1, WHITE)
+    frame(rect)
     return px
+
+
+def draw_prefs() -> list:
+    """The settings editor: a panel with three sliders on it.
+
+    It has to be recognisable as NOT the game at icon size, so it shares no
+    shape with the car - horizontal bars where the car is a vertical block,
+    and a grey panel where the game is black road. Three rows because the
+    editor has four settings and three fit legibly; the knobs sit at
+    different positions so the rows do not read as one striped block."""
+    px = blank(BLACK)
+    rect = rect_on(px)
+
+    # The panel: a grey plate with a white edge, like a requester.
+    rect(4, 4, W - 5, H - 5, GREY)
+    rect(4, 4, W - 5, 4, WHITE)
+    rect(4, H - 5, W - 5, H - 5, WHITE)
+    rect(4, 4, 4, H - 5, WHITE)
+    rect(W - 5, 4, W - 5, H - 5, WHITE)
+
+    # A title bar across the top of the plate, so it reads as a window.
+    rect(5, 5, W - 6, 9, BLUE)
+
+    # Three slider rows: a black track with a white knob on it.
+    for i, knob in enumerate((10, 22, 30)):
+        y = 14 + i * 8
+        rect(8, y, W - 9, y + 2, BLACK)
+        rect(knob, y - 2, knob + 4, y + 4, WHITE)
+    return px
+
+
+def draw_bake() -> list:
+    """The tile converter: a grid of city tiles.
+
+    The one thing this program makes is style001.til - a sheet of tiles - so
+    that is what the icon is. Four colours in a chequer, which no other icon
+    here uses, and no round or diagonal shape anywhere so it survives being
+    drawn 46 pixels wide."""
+    px = blank(BLACK)
+    rect = rect_on(px)
+
+    cols = (WHITE, BLUE, GREY, BLUE)
+    for gy in range(4):
+        for gx in range(4):
+            x = 5 + gx * 9
+            y = 3 + gy * 9
+            rect(x, y, x + 7, y + 7, cols[(gx + gy) % 4])
+    frame(rect)
+    return px
+
+
+DRAWINGS = {"game": draw_game, "prefs": draw_prefs, "bake": draw_bake}
 
 
 def planar(px: list) -> bytes:
@@ -188,10 +266,21 @@ def main() -> int:
         return 2
     if sys.argv[1] == "--verify":
         return verify(sys.argv[2], sys.argv[3])
-    out = sys.argv[1]
-    stack = int(sys.argv[2]) if len(sys.argv) > 2 else GTA_STACK
 
-    px = draw()
+    args = sys.argv[1:]
+    kind = "game"
+    if "--kind" in args:
+        i = args.index("--kind")
+        kind = args[i + 1]
+        del args[i:i + 2]
+    if kind not in DRAWINGS:
+        print(f"mkicon: no such icon '{kind}' - "
+              f"one of {', '.join(sorted(DRAWINGS))}")
+        return 2
+    out = args[0]
+    stack = int(args[1]) if len(args) > 1 else GTA_STACK
+
+    px = DRAWINGS[kind]()
     data = planar(px)
 
     # struct Gadget, 44 bytes. Width/Height must match the Image or Workbench
@@ -246,7 +335,7 @@ def main() -> int:
         f.write(image)
         f.write(data)
 
-    print(f"{out}: {W}x{H}x{DEPTH}, stack {stack}, "
+    print(f"{out}: {kind} icon, {W}x{H}x{DEPTH}, stack {stack}, "
           f"{78 + 20 + len(data)} bytes")
     return 0
 

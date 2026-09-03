@@ -8,9 +8,9 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.0.3.zip    the three binaries, the settings editor, the tile
-#                        converter, icons, run
-#   AmiGTA-v0.0.3.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.0.4.zip    the game, the settings editor, the tile converter,
+#                        icons, run
+#   AmiGTA-v0.0.4.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -40,12 +40,11 @@ WORK=/mnt/c/temp/amiga_gta/work
 #
 #   Windows: C:\temp\amiga_gta\dist\
 DIST=/mnt/c/temp/amiga_gta/dist
-# BUMPED TO 0.0.3 WHEN gtaprefs WAS ADDED, and that is bookkeeping rather
-# than a release: nothing is published until somebody runs this script and
-# uploads what it makes. The number moved because the archive now contains a
-# program that v0.0.2 did not, and an archive labelled with a version whose
-# contents it does not have is a support problem nobody can debug remotely.
-VER=v0.0.3
+# 0.0.4: weapons, car damage, the collision rewrite - and ONE GAME BINARY
+# instead of three. gta-aga / gta-rtg240 / gta-rtg480 were the same program
+# built with different screen sizes; the size is a setting in gtaprefs now, so
+# the archive carries `AmiGTA` and nothing else has to be chosen by icon.
+VER=v0.0.4
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory
@@ -61,7 +60,7 @@ mkdir -p "$STAGE" 2>/dev/null || true
 # go and fetch a second archive at that point would be the same fault as
 # telling them to create backend.txt in a text editor, which is what it
 # replaces.
-for b in gta-aga gta-rtg240 gta-rtg480 gtaprefs; do
+for b in AmiGTA gtaprefs; do
     [ -f "$ROOT/build/$b" ] || { echo "package: missing build/$b - run build.sh"; exit 1; }
     cp "$ROOT/build/$b" "$STAGE/$b"
     [ -f "$WORK/$b.info" ] && cp "$WORK/$b.info" "$STAGE/$b.info"
@@ -95,6 +94,13 @@ python3 "$ROOT/tools/bin/readme_gen.py" "$STAGE/README.txt"
 # the game ever leaves this one.
 if [ -f "$ROOT/build/gtabake" ]; then
     cp "$ROOT/build/gtabake" "$STAGE/gtabake"
+    # Its own icon, like the other two - deploy.sh generated it. Without this
+    # the converter was the one program in the drawer with no icon at all, so
+    # a Workbench-only player could not start the one step the archive
+    # actually requires of them.
+    if [ -f "$WORK/gtabake.info" ]; then
+        cp "$WORK/gtabake.info" "$STAGE/gtabake.info"
+    fi
 else
     echo "package: no build/gtabake - run build.sh"
     exit 1

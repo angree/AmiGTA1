@@ -147,4 +147,11 @@ typedef struct gta_car_info {
 void gta_car_pack(const gta_car_info *c, unsigned char *rec);
 void gta_car_unpack(gta_car_info *c, const unsigned char *rec);
 
+/* WHICH PANEL A HIT LANDED ON. The impact point in world pixels against a car
+ * at (cx,cy) facing `face` gives one of the six body panels - front, middle
+ * or back, left or right - as a delta index (gta_tiles.h, GTA_DELTA_DMG_*).
+ * The original dents the panel that was struck rather than the whole car. */
+int gta_car_panel_delta(const gta_car_info *ci, long cx, long cy, int face,
+                        long hx, long hy);
+
 #endif /* GTA_CAR_H */

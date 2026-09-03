@@ -27,17 +27,20 @@ int main(void)
     check("load(missing) returns 0", gta_prefs_load("", &a), 0);
     check("default audio", a.audio, GTA_AUDIO_AUTO);
     check("default gfx",   a.gfx,   GTA_GFX_AUTO);
+    check("default screen", a.screen, GTA_SCR_AUTO);
 
     /* 2. round trip through the file the writer actually produces, comments
      *    and all - this is the case that was broken */
     a.audio = GTA_AUDIO_AHI;
     a.gfx   = GTA_GFX_WB;
+    a.screen = GTA_SCR_640480X2;
     a.music_vol = 30;
     a.sfx_vol   = 64;
     check("save", gta_prefs_save("", &a), 1);
     check("load returns 1", gta_prefs_load("", &b), 1);
     check("audio survives", b.audio, GTA_AUDIO_AHI);
     check("gfx survives",   b.gfx,   GTA_GFX_WB);
+    check("screen survives", b.screen, GTA_SCR_640480X2);
     check("musicvol survives", b.music_vol, 30);
     check("sfxvol survives",   b.sfx_vol,   64);
 
@@ -87,6 +90,35 @@ int main(void)
     check("word junk",  gta_prefs_audio_from_word("banana"), -1);
     check("word wb",    gta_prefs_gfx_from_word("WB"),      GTA_GFX_WB);
     check("word prefix rejected", gta_prefs_gfx_from_word("a"), -1);
+    check("word 320x240", gta_prefs_screen_from_word("320x240"), GTA_SCR_320240);
+    check("word screen junk", gta_prefs_screen_from_word("800x600"), -1);
+
+    /* 7. THE SIZE THE GAME ACTUALLY OPENS AT. This is what used to be three
+     *    separate binaries, so it is the one thing that has to come out right
+     *    for a player who never touches the editor. */
+    {
+        int w, h, x2;
+        gta_prefs_screen_size(GTA_SCR_AUTO, GTA_GFX_AGA, &w, &h, &x2);
+        check("auto+aga w", w, 320);
+        check("auto+aga h", h, 200);
+        check("auto+aga no doubling", x2, 0);
+        gta_prefs_screen_size(GTA_SCR_AUTO, GTA_GFX_RTG, &w, &h, &x2);
+        check("auto+rtg h", h, 240);
+        gta_prefs_screen_size(GTA_SCR_AUTO, GTA_GFX_WB, &w, &h, &x2);
+        check("auto+window h", h, 200);
+        gta_prefs_screen_size(GTA_SCR_640480, GTA_GFX_AGA, &w, &h, &x2);
+        check("640x480 w", w, 640);
+        check("640x480 h", h, 480);
+        /* NATIVE 640x480 rasterises 640x480. The doubling is the OTHER mode,
+         * and mixing the two up is exactly what shipped lores into a hires
+         * screen in v0.0.3. */
+        check("640x480 native does NOT double", x2, 0);
+        gta_prefs_screen_size(GTA_SCR_640480X2, GTA_GFX_AGA, &w, &h, &x2);
+        check("640x480x2 w", w, 640);
+        check("640x480x2 doubles", x2, 1);
+        gta_prefs_screen_size(GTA_SCR_320240, GTA_GFX_AGA, &w, &h, &x2);
+        check("explicit 320x240 beats gfx", h, 240);
+    }
 
     remove("gta.prefs");
     remove("backend.txt");

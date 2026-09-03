@@ -24,14 +24,25 @@
  * GTA_AUDIO_* / GTA_GFX_* values and the cycle gadget's label array. */
 static const char *const audio_words[] = { "auto", "off", "paula", "ahi" };
 static const char *const gfx_words[]   = { "auto", "aga",  "rtg",   "wb"  };
+/* One word each, so `sscanf("%31s %31s")` reads them like every other value
+ * and a player can type them into the file by hand. */
+static const char *const screen_words[] = {
+    "auto", "320x200", "320x240", "640x480", "640x480x2"
+};
 
 /* Shown to a human: capitalised, and "wb" spelled out as what it actually
  * does, because "WB" means nothing to somebody who was told to type it. */
 static const char *const audio_names[] = { "Auto", "Off", "Paula", "AHI" };
 static const char *const gfx_names[]   = { "Auto", "AGA", "RTG", "Window" };
+/* The doubling is named in the gadget, because a player who picks 640x480 and
+ * is told nothing would report the sharp-but-not-detailed picture as a bug. */
+static const char *const screen_names[] = {
+    "Auto", "320x200", "320x240", "640x480", "640x480 doubled"
+};
 
-#define NAUDIO ((int)(sizeof audio_words / sizeof audio_words[0]))
-#define NGFX   ((int)(sizeof gfx_words   / sizeof gfx_words[0]))
+#define NAUDIO  ((int)(sizeof audio_words  / sizeof audio_words[0]))
+#define NGFX    ((int)(sizeof gfx_words    / sizeof gfx_words[0]))
+#define NSCREEN ((int)(sizeof screen_words / sizeof screen_words[0]))
 
 /* tolower() without <ctype.h>: the ctype tables are one more thing that has to
  * behave identically on three toolchains, for a job that is four lines. */
@@ -78,11 +89,44 @@ const char *gta_prefs_gfx_name(int gfx)
     return (gfx >= 0 && gfx < NGFX) ? gfx_names[gfx] : "?";
 }
 
+int gta_prefs_screen_from_word(const char *word)
+{
+    return lookup(screen_words, NSCREEN, word);
+}
+
+const char *gta_prefs_screen_name(int screen)
+{
+    return (screen >= 0 && screen < NSCREEN) ? screen_names[screen] : "?";
+}
+
+void gta_prefs_screen_size(int screen, int gfx, int *w, int *h, int *scale2x)
+{
+    int sw = 320, sh = 200, x2 = 0;
+
+    switch (screen) {
+    case GTA_SCR_320200: break;
+    case GTA_SCR_320240: sh = 240; break;
+    case GTA_SCR_640480:   sw = 640; sh = 480; break;
+    case GTA_SCR_640480X2: sw = 640; sh = 480; x2 = 1; break;
+    default:
+        /* AUTO. RTG is the only display where the taller screen is free -
+         * an AGA 320x240 is a different, non-standard mode, and a window on
+         * the Workbench has to fit a 640x256 PAL one. */
+        if (gfx == GTA_GFX_RTG) sh = 240;
+        break;
+    }
+
+    if (w)       *w = sw;
+    if (h)       *h = sh;
+    if (scale2x) *scale2x = x2;
+}
+
 void gta_prefs_defaults(gta_prefs *p)
 {
     if (p == NULL) return;
     p->audio     = GTA_AUDIO_AUTO;
     p->gfx       = GTA_GFX_AUTO;
+    p->screen    = GTA_SCR_AUTO;
     p->music_vol = 48;   /* music sits under the effects, as in the original */
     p->sfx_vol   = 64;   /* Paula's maximum */
 }
@@ -149,6 +193,9 @@ int gta_prefs_load(const char *dir, gta_prefs *p)
         } else if (word_eq(key, "gfx")) {
             v = gta_prefs_gfx_from_word(val);
             if (v >= 0) p->gfx = v;
+        } else if (word_eq(key, "screen")) {
+            v = gta_prefs_screen_from_word(val);
+            if (v >= 0) p->screen = v;
         } else if (word_eq(key, "musicvol")) {
             p->music_vol = (int)strtol(val, NULL, 10);
         } else if (word_eq(key, "sfxvol")) {
@@ -174,6 +221,7 @@ int gta_prefs_save(const char *dir, const gta_prefs *p)
     clamp_vol(&q.sfx_vol);
     if (q.audio < 0 || q.audio >= NAUDIO) q.audio = GTA_AUDIO_AUTO;
     if (q.gfx   < 0 || q.gfx   >= NGFX)   q.gfx   = GTA_GFX_AUTO;
+    if (q.screen < 0 || q.screen >= NSCREEN) q.screen = GTA_SCR_AUTO;
 
     build_path(path, (int)sizeof path, dir, PREFS_NAME);
     f = fopen(path, "w");
@@ -182,9 +230,11 @@ int gta_prefs_save(const char *dir, const gta_prefs *p)
     fprintf(f, "# AmiGTA settings - written by gtaprefs.\n");
     fprintf(f, "# Editing this by hand is fine; the words are the ones the\n");
     fprintf(f, "# editor shows. audio: auto off paula ahi.  gfx: auto aga\n");
-    fprintf(f, "# rtg wb.  Volumes are 0 to 64.\n");
+    fprintf(f, "# rtg wb.  screen: auto 320x200 320x240 640x480.\n");
+    fprintf(f, "# Volumes are 0 to 64.\n");
     fprintf(f, "audio %s\n", audio_words[q.audio]);
     fprintf(f, "gfx %s\n",   gfx_words[q.gfx]);
+    fprintf(f, "screen %s\n", screen_words[q.screen]);
     fprintf(f, "musicvol %d\n", q.music_vol);
     fprintf(f, "sfxvol %d\n",   q.sfx_vol);
     fclose(f);

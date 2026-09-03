@@ -7,36 +7,48 @@ hardware — 68020 and up, AGA or RTG. Not PiStorm, not Vampire, not Emu68.
 It contains no game code and no game data. You supply your own copy of GTA and
 the port converts it on your own machine.
 
-Current release: **v0.0.3** — you can walk around Liberty City, steal a car,
-drive it, and throw a punch or fire a pistol. See [what is and is not in it](#what-v003-actually-is).
+Current release: **v0.0.4** — you can walk around Liberty City, steal a car,
+drive it, and use any of five weapons on what you find. Cars dent, burn and
+explode. See [what is and is not in it](#what-v004-actually-is).
 
 ---
 
 ## Download
 
-Grab the archive from [Releases](../../releases). It has three binaries, a
-settings editor, a data converter, a startup script and a README. It has **no
-game data** — step-by-step setup instructions are in the README inside the
-archive.
+Grab the archive from [Releases](../../releases). It has the game, a settings
+editor, a data converter, a startup script and a README. It has **no game
+data** — step-by-step setup instructions are in the README inside the archive.
 
-| build | screen | backend |
-|---|---|---|
-| `gta-aga` | 320x200 | AGA. The reference build; every speed figure is measured with this one. |
-| `gta-rtg240` | 320x240 | CyberGraphX / Picasso96. More of the city on screen. |
-| `gta-rtg480` | 640x480 | RTG. Renders 320x240 and doubles it — a 68020 cannot rasterise 640x480 at a playable rate, so this way the picture is sharp rather than slow. |
+**One binary, since v0.0.4.** v0.0.3 shipped three — `gta-aga`, `gta-rtg240`
+and `gta-rtg480` — which were the same program built at three screen sizes, so
+the player had to pick their display by picking an icon. The screen is a
+setting now:
+
+| screen | what it is |
+|---|---|
+| 320x200 | AGA. The reference; every speed figure is measured at this size. |
+| 320x240 | CyberGraphX / Picasso96. More of the city on screen. |
+| 640x480 | RTG, **really rasterised at 640x480** — every tile, car and person at the art's own size, nothing stretched, twice as much city on screen. About four times the drawing. |
+| 640x480 doubled | RTG. Renders 320x240 and doubles every pixel: the picture of 320x240 on a 640x480 screen, for almost nothing. What a plain 020 wants. |
+
+Measured on the RTG calibration machine (68020 core, throttle standing in for a
+faster CPU, JIT off): **38.4 fps doubled, 14.7 fps native**. That is the whole
+trade, and it is why both are offered instead of one being called "640x480".
 
 ### Settings
 
-`gtaprefs` is a small Intuition window that picks the sound path (Paula or AHI)
-and the display path (AGA, RTG or a window on Workbench), and tells you which of
-those your machine actually has. It writes `gta.prefs` next to the game.
+`gtaprefs` is a small Intuition window that picks the sound path (Paula or AHI),
+the display path (AGA, RTG or a window on Workbench) and the screen size, and
+tells you which of those your machine actually has. It writes `gta.prefs` next
+to the game.
 
-It needs no mouse — `A`, `G`, `S` and `Esc` drive it — and it has a command line
-for machines with no working pointer at all:
+It needs no mouse — `A`, `G`, `R`, `S` and `Esc` drive it — and it has a command
+line for machines with no working pointer at all:
 
 ```
 gtaprefs SHOW              print the settings and what was detected
 gtaprefs GFX=WB            set it and save, no window
+gtaprefs SCREEN=640x480    the size the game opens at
 gtaprefs AUDIO=AHI
 ```
 
@@ -51,7 +63,7 @@ fast RAM, and your own copy of GTA (1997) for the PC. The DOS 8-bit release is
 what it was built against; the 2002 Windows re-release carries the same two data
 files, so that works too.
 
-## What v0.0.3 actually is
+## What v0.0.4 actually is
 
 **Works:** the city renders in 2.5D with correct projection and no gaps in the
 geometry; you walk, run and turn; pedestrians keep to the pavements, turn
@@ -62,16 +74,21 @@ approach it from the far side, drag the driver out if there is one, and ride a
 bike or a convertible in view; the driven car has the original's own physics —
 mass, moment of inertia, contact point, and cornering that rotates the car when
 you clip it rather than sliding it bodily; cars collide with each other and with
-walls; fists and a pistol work, and the street reacts to a shot.
+walls, and neither of them can be pushed through the other or thrown out of a
+contact; all five weapons work — fists, pistol, machine gun, rocket launcher
+and flamethrower — and the street reacts to a shot; cars take damage from
+crashes and gunfire, wear the dents, and at a hundred points burn and explode,
+taking whatever is parked next to them with them; the score counts, and it and
+the current weapon are on screen.
 
-**Not there yet:** no missions, no police, no wanted level; only fists and the
-pistol, with no pickups; sound is not wired up; tyre marks, blood and oil are
-not drawn; only Liberty City.
+**Not there yet:** no missions, no police, no wanted level; the five weapons are
+handed to you at the start because the crates that hold them are not built yet;
+sound is not wired up; tyre marks, blood and oil are not drawn; only Liberty
+City.
 
-**Speed:** 59.8 fps for `gta-aga` on the project's calibration machine — a
-68020 core with the throttle set to stand in for a faster CPU, JIT off. That
-number is a measurement on one specific configuration, not a promise about your
-Amiga.
+**Speed:** 60.3 fps at 320x200 on the project's calibration machine — a 68020
+core with the throttle set to stand in for a faster CPU, JIT off. That number is
+a measurement on one specific configuration, not a promise about your Amiga.
 
 ## How it was made
 
@@ -102,7 +119,7 @@ Toolchain: [bebbo amiga-gcc](https://github.com/bebbo/amiga-gcc) 6.5.0b, plus
 `vasm`. The build runs under WSL or any Linux.
 
 ```sh
-tools/bin/build.sh          # the three Amiga binaries and the tile converter
+tools/bin/build.sh          # the Amiga game, the settings editor, the converter
 tools/bin/build_host.sh     # the renderer as a host binary, for fast iteration
 tools/bin/package.sh        # the release archives
 ```

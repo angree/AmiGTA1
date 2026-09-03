@@ -81,6 +81,7 @@ compile gta_car.c
 compile gta_nav.c
 compile gta_vehphys.c
 compile gta_peds.c
+compile gta_score.c
 compile gta_weapon.c
 compile gta_route.c
 compile gta_traffic.c
@@ -104,34 +105,25 @@ echo "--- assembling ---"
 assemble c2p_glue.s
 assemble amiga_span_blit.s
 
-# THREE BINARIES, ONE SET OF OBJECTS.
+# ONE BINARY. THERE USED TO BE THREE, AND THAT WAS THE BUG.
 #
-# Only gta_main.c reads GTA_SCREEN_W/H, GTA_SCALE2X and GTA_DEFAULT_BACKEND, so
-# everything else above is compiled once and shared between the three. If one
-# variant misbehaves it cannot be because a different file was built for it.
+# gta-aga, gta-rtg240 and gta-rtg480 were the same program built three times
+# with different -D flags on gta_main.c: the screen width, the height, and
+# whether the picture is doubled on the way out. Nothing else differed. So the
+# archive carried three copies of the game, the player had to know which icon
+# was for their machine, and picking wrong looked like a broken port.
 #
-#   gta-aga      320x200  AGA   the reference; every timing in the notes
-#   gta-rtg240   320x240  RTG   the same picture, more of the city on screen
-#   gta-rtg480   640x480  RTG   320x240 doubled at present time - see
-#                               scale2x_rows() for why it is not rendered
+# gtaprefs already chooses the display path, so since v0.0.4 it chooses the
+# size too and the game reads both out of gta.prefs at start-up. The rig can
+# still switch size without a GUI: `screen 200|240|480` in opts.txt.
 #
-# Work:backend.txt still overrides the backend at runtime in all three.
+# Work:backend.txt still overrides the backend at runtime.
 
-echo "--- variants ---"
-variant() {
-    name="$1"; shift
-    echo "  CC  gta_main.c ($name)"
-    m68k-amigaos-gcc $CFLAGS "$@" -c "$NATIVE/gta_main.c" \
-        -o "$OBJ/gta_main_$name.o"
-    m68k-amigaos-gcc $COMMON -o "$OUT/$name" "$OBJ/gta_main_$name.o" $OBJS -lm
-    echo "  LD  build/$name"
-}
-
-variant gta-aga
-variant gta-rtg240 -DGTA_SCREEN_W=320 -DGTA_SCREEN_H=240 \
-        -DGTA_DEFAULT_BACKEND=AMIGAGFX_BACKEND_RTG
-variant gta-rtg480 -DGTA_SCREEN_W=640 -DGTA_SCREEN_H=480 -DGTA_SCALE2X \
-        -DGTA_DEFAULT_BACKEND=AMIGAGFX_BACKEND_RTG
+echo "--- the game ---"
+echo "  CC  gta_main.c"
+m68k-amigaos-gcc $CFLAGS -c "$NATIVE/gta_main.c" -o "$OBJ/gta_main.o"
+m68k-amigaos-gcc $COMMON -o "$OUT/AmiGTA" "$OBJ/gta_main.o" $OBJS -lm
+echo "  LD  build/AmiGTA"
 
 # THE SETTINGS EDITOR.
 #
@@ -159,5 +151,11 @@ m68k-amigaos-gcc $CFLAGS -o "$OUT/gtabake" \
     "$NATIVE/gta_car.c" "$NATIVE/gta_trig.c" "$NATIVE/gta_sfx.c" -lm
 echo "  LD  build/gtabake"
 
-ls -la "$OUT/gta-aga" "$OUT/gta-rtg240" "$OUT/gta-rtg480" "$OUT/gtabake" "$OUT/gtaprefs"
+# The three old names are removed rather than left lying in build/, because a
+# stale binary from before the merge would still deploy, still run, and still
+# be reported as "the new build" - which is exactly the class of mistake that
+# cost an evening when a stale gta-aga was tested against a fresh source.
+rm -f "$OUT/gta-aga" "$OUT/gta-rtg240" "$OUT/gta-rtg480" "$OUT/gta-rtg"
+
+ls -la "$OUT/AmiGTA" "$OUT/gtabake" "$OUT/gtaprefs"
 echo "--- NOT stripped, on purpose (see the header of this script) ---"

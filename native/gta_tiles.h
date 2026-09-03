@@ -219,6 +219,21 @@
 #define GTA_DELTA_DOOR2       11
 #define GTA_DELTA_DOOR_FRAMES  4
 
+/* AND WHICH ONES ARE THE DENTS. Same source, same reason: Carnage3D's
+ * GameDefs.h names the seven damage overlays a car carries, one per panel,
+ * and the art agrees - `gtadump spritedelta <til> 31 <out.bmp>` draws record
+ * 0 as a crumpled front right wing and record 10 as a starred windscreen.
+ * They are independent: a car can wear all seven at once, which is why the
+ * renderer takes a MASK and not an index. */
+#define GTA_DELTA_DMG_FR       0    /* front right */
+#define GTA_DELTA_DMG_BL       1    /* back left   */
+#define GTA_DELTA_DMG_ML       2    /* middle left */
+#define GTA_DELTA_DMG_FL       3    /* front left  */
+#define GTA_DELTA_DMG_BR       4    /* back right  */
+#define GTA_DELTA_DMG_MR       5    /* middle right */
+#define GTA_DELTA_DMG_WS      10    /* windscreen  */
+#define GTA_DELTA_DMG_MASK  (0x3fUL | (1UL << GTA_DELTA_DMG_WS))
+
 typedef struct {
     unsigned short w, h;
     unsigned long  off;         /* byte offset into gta_tiles.sprite_pixels */
@@ -330,6 +345,11 @@ void gta_tiles_free(gta_tiles *t);
  * A size-0 delta is an empty slot in the original data and copies the base
  * through unchanged, which is exactly what the caller wants for "closed". */
 int gta_tiles_delta_count(const gta_tiles *t, int sprite);
+/* The same, for a SET of overlays: the base sprite copied into `dst` and then
+ * every delta whose bit is set laid over it, lowest index first. One pass per
+ * overlay; a car wearing three dents and an open door costs four. */
+int gta_tiles_delta_apply_mask(const gta_tiles *t, int sprite,
+                               unsigned long mask, unsigned char *dst);
 int gta_tiles_delta_apply(const gta_tiles *t, int sprite, int d,
                           unsigned char *dst);
 

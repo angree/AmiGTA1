@@ -25,8 +25,11 @@
  *      and forward offset - where the original aims everybody at one of
  *      four fixed points and they pile up on it.
  *   2. Peds keep a little distance: one within a few pixels ahead of
- *      another slows and sidesteps. The original's ambient peds walk
- *      straight through each other and stack.
+ *      another slows and sidesteps, and two who overlap are pushed apart.
+ *      NOBODY EVER STOPS FOR ANYBODY - an earlier version held them still
+ *      for each other and a knot of three then stood in the same doorway
+ *      for a minute at a time. The original's ambient peds walk straight
+ *      through each other and stack.
  *   3. Nobody stops to stand within sight of a corner; the stop happens
  *      mid-block.
  *   4. A T-junction is a per-ped coin flip, not the original's global
@@ -119,7 +122,18 @@ typedef struct {
     /* PANIC from gunfire: the flee mode with this many ticks before the
      * pavement exit may end it (ours; the original's runs until culled). */
     int  panic;
+    /* ON FIRE - the original attaches a fire object to the ped and takes a
+     * point of health a tick, so a hundred ticks from full health to a body,
+     * and an AI ped runs at full speed the whole time. `burn` is what is
+     * left of that; `burn_frame` animates the fire drawn over him. */
+    int  burn, burn_frame, burn_tick;
 } gta_ped;
+
+/* A hundred of the original's ticks, one health point each. */
+#define GTA_BURN_TICKS      100
+/* The fire object's own run of frames, three ticks each. */
+#define GTA_FIRE_FRAMES       7
+#define GTA_FIRE_FRAME_TICKS  3
 
 #define GTA_SHOT_STATES     4
 #define GTA_SHOT_STATE_TICKS 4
@@ -158,6 +172,9 @@ typedef struct {
     int remap_next;
     int fidget;
     int spawned_since_retire;
+    /* The fire object's first sprite, resolved once from the tile set: a
+     * burning man is drawn with his own frame and this on top. */
+    int fire_sprite;
     /* The original's global 0..12 punch counter: 10 of 13 punches land. */
     int punch_wheel;
     long stat_spawned, stat_runover, stat_killed, stat_shot, stat_punched;
@@ -219,5 +236,14 @@ int gta_peds_punch(gta_peds *ps, long x, long y, int angle, int layer);
 /* Gunfire at (x,y): every walking or standing ped within a block runs from
  * it, as the original's gunfire panic does. */
 void gta_peds_panic(gta_peds *ps, long x, long y, int layer);
+
+/* Ped `i` catches fire, from a flame or an explosion at (fx,fy): he runs -
+ * away from it - and burns to death in GTA_BURN_TICKS. Does nothing to
+ * somebody already alight, dead or being dragged out of a car. */
+void gta_peds_burn(gta_peds *ps, int i, long fx, long fy);
+
+/* Ped `i` is killed where he stands - the explosion's inner ring, which the
+ * original kills outright rather than knocking down. */
+void gta_peds_kill(gta_peds *ps, int i);
 
 #endif /* GTA_PEDS_H */

@@ -5,6 +5,7 @@
  *     gtaprefs SHOW                  print the settings and what this
  *                                    machine has, then exit
  *     gtaprefs AUDIO=AHI GFX=WB      set those and save, no window
+ *     gtaprefs SCREEN=320x240        the size the game opens at
  *     gtaprefs ?                     usage
  *
  * WHY THIS IS A SEPARATE PROGRAM and not a menu inside the game.
@@ -19,8 +20,8 @@
  * containing the two letters `wb`, which is a workaround printed in a README
  * rather than a program. This is the program.
  *
- * IT ALSO WORKS WITHOUT A MOUSE, on purpose. Every gadget has a key (A, G, S,
- * Esc) and the whole thing can be done from the command line instead. That is
+ * IT ALSO WORKS WITHOUT A MOUSE, on purpose. Every gadget has a key (A, G, R,
+ * S, Esc) and the whole thing can be done from the command line instead. That is
  * not thoroughness for its own sake: the entire MorphOS investigation was run
  * on a machine whose pointer did not work, and a settings editor that needs a
  * pointer would have been useless in exactly the case it exists for.
@@ -55,7 +56,7 @@
  * nothing - the string is never read by any code, which is the whole
  * point of a version cookie. */
 static const char verstag[] __attribute__((used)) =
-    "$VER: gtaprefs 0.0.3 (01.09.2026)";
+    "$VER: gtaprefs 0.0.4 (03.09.2026)";
 
 /* The settings live beside the executable, exactly like the game's own data.
  * PROGDIR: is the drawer this binary was loaded from and AmigaOS sets it for
@@ -157,7 +158,26 @@ static const char *gfx_hint(int g)
     case GTA_GFX_AGA: return "Planar screen and c2p. Real Amiga chipset only.";
     case GTA_GFX_RTG: return "CyberGraphX 8-bit screen. Needs a graphics card.";
     case GTA_GFX_WB:  return "A window on Workbench. Slowest, works anywhere.";
-    default:          return "Whatever this build was made for. Try this first.";
+    default:          return "An AGA screen. Try this first.";
+    }
+}
+
+/* THE SIZE THE GAME OPENS AT - three separate binaries until v0.0.4.
+ *
+ * gta-aga, gta-rtg240 and gta-rtg480 were one program built with three sets
+ * of -D flags, so a player picked their screen size by picking a program and
+ * had no way of knowing which one their machine wanted. It is a setting now
+ * and this is where it is set. */
+static const char *screen_hint(int s)
+{
+    switch (s) {
+    case GTA_SCR_320200: return "The reference size. Every speed figure.";
+    case GTA_SCR_320240: return "More of the city. Wants an RTG screen.";
+    case GTA_SCR_640480:
+        return "Really drawn at 640x480. Sharp, and four times the work.";
+    case GTA_SCR_640480X2:
+        return "320x240 doubled. Fills the screen, costs almost nothing.";
+    default:             return "320x200, or 320x240 if graphics is RTG.";
     }
 }
 
@@ -166,6 +186,7 @@ static const char *gfx_hint(int g)
 /* ------------------------------------------------------------------------ */
 
 enum { GID_AUDIO = 1, GID_AUDIOHINT, GID_GFX, GID_GFXHINT,
+       GID_SCREEN, GID_SCREENHINT,
        GID_MACHINE, GID_KEYS, GID_SAVE, GID_CANCEL };
 
 /* THE KEYS GO IN THE WINDOW, NOT IN THE TITLE BAR.
@@ -176,7 +197,8 @@ enum { GID_AUDIO = 1, GID_AUDIOHINT, GID_GFX, GID_GFXHINT,
  * way out of the program was the part that got cut off. A window that must
  * work for somebody with no pointer cannot hide the keyboard instructions in
  * the one piece of text it does not control the width of. */
-#define KEYS_LINE "Keys:  A audio   G graphics   S save   Esc cancel"
+#define KEYS_LINE \
+    "Keys:  A audio   G graphics   R screen   S save   Esc cancel"
 
 /* Text width in pixels on the screen's own font. Measured rather than assumed
  * as "characters times 8": the Workbench font is the player's choice and can
@@ -198,6 +220,10 @@ static int max_hint_w(struct Screen *scr)
         t = text_w(scr, gfx_hint(i));
         if (t > w) w = t;
     }
+    for (i = 0; i < GTA_SCR_COUNT; i++) {
+        t = text_w(scr, screen_hint(i));
+        if (t > w) w = t;
+    }
     return w;
 }
 
@@ -209,11 +235,13 @@ static int run_window(gta_prefs *p)
     struct Screen *scr;
     APTR vi = NULL;
     struct Gadget *glist = NULL, *gad, *g_audio = NULL, *g_gfx = NULL;
-    struct Gadget *g_ahint = NULL, *g_ghint = NULL;
+    struct Gadget *g_screen = NULL;
+    struct Gadget *g_ahint = NULL, *g_ghint = NULL, *g_shint = NULL;
     struct Window *win = NULL;
     struct NewGadget ng;
     STRPTR audio_labels[GTA_AUDIO_COUNT + 1];
     STRPTR gfx_labels[GTA_GFX_COUNT + 1];
+    STRPTR screen_labels[GTA_SCR_COUNT + 1];
     char machine[96];
     int i, cw, fh, gh, lm, gap, labw, gadw, hintw, innerw, innerh;
     int leftb, topb, x, y, btnw;
@@ -233,6 +261,9 @@ static int run_window(gta_prefs *p)
     for (i = 0; i < GTA_GFX_COUNT; i++)
         gfx_labels[i] = (STRPTR)gta_prefs_gfx_name(i);
     gfx_labels[GTA_GFX_COUNT] = NULL;
+    for (i = 0; i < GTA_SCR_COUNT; i++)
+        screen_labels[i] = (STRPTR)gta_prefs_screen_name(i);
+    screen_labels[GTA_SCR_COUNT] = NULL;
 
     machine_line(machine, (int)sizeof machine);
 
@@ -251,6 +282,12 @@ static int run_window(gta_prefs *p)
     gadw = text_w(scr, "Window") + cw * 2 + 24;
     for (i = 0; i < GTA_AUDIO_COUNT; i++) {
         int t = text_w(scr, (const char *)audio_labels[i]) + cw * 2 + 24;
+        if (t > gadw) gadw = t;
+    }
+    /* "640x480 (x2)" is the longest label in the window, so it decides the
+     * gadget width - which is why it is measured rather than assumed. */
+    for (i = 0; i < GTA_SCR_COUNT; i++) {
+        int t = text_w(scr, (const char *)screen_labels[i]) + cw * 2 + 24;
         if (t > gadw) gadw = t;
     }
     hintw = max_hint_w(scr);
@@ -329,6 +366,34 @@ static int run_window(gta_prefs *p)
                        GTTX_Text, (ULONG)gfx_hint(p->gfx),
                        TAG_END);
     g_ghint = gad;
+    y += fh + gap;
+
+    /* --- screen size ----------------------------------------------------- */
+    ng.ng_LeftEdge   = leftb + x;
+    ng.ng_TopEdge    = topb + y;
+    ng.ng_Width      = gadw;
+    ng.ng_Height     = gh;
+    ng.ng_GadgetText = (STRPTR)"Screen:";
+    ng.ng_GadgetID   = GID_SCREEN;
+    ng.ng_Flags      = PLACETEXT_LEFT;
+    gad = CreateGadget(CYCLE_KIND, gad, &ng,
+                       GTCY_Labels, (ULONG)screen_labels,
+                       GTCY_Active, (ULONG)p->screen,
+                       TAG_END);
+    g_screen = gad;
+    y += gh + 2;
+
+    ng.ng_LeftEdge   = leftb + lm;
+    ng.ng_TopEdge    = topb + y;
+    ng.ng_Width      = innerw - lm * 2;
+    ng.ng_Height     = fh;
+    ng.ng_GadgetText = NULL;
+    ng.ng_GadgetID   = GID_SCREENHINT;
+    ng.ng_Flags      = 0;
+    gad = CreateGadget(TEXT_KIND, gad, &ng,
+                       GTTX_Text, (ULONG)screen_hint(p->screen),
+                       TAG_END);
+    g_shint = gad;
     y += fh + gap + gap;
 
     /* --- what the machine has ------------------------------------------- */
@@ -430,6 +495,12 @@ static int run_window(gta_prefs *p)
                                       GTTX_Text, (ULONG)gfx_hint(p->gfx),
                                       TAG_END);
                     break;
+                case GID_SCREEN:
+                    p->screen = (int)code;
+                    GT_SetGadgetAttrs(g_shint, win, NULL,
+                                      GTTX_Text, (ULONG)screen_hint(p->screen),
+                                      TAG_END);
+                    break;
                 case GID_SAVE:   result = 1; done = 1; break;
                 case GID_CANCEL: result = 0; done = 1; break;
                 default: break;
@@ -456,6 +527,14 @@ static int run_window(gta_prefs *p)
                                       GTCY_Active, (ULONG)p->gfx, TAG_END);
                     GT_SetGadgetAttrs(g_ghint, win, NULL,
                                       GTTX_Text, (ULONG)gfx_hint(p->gfx),
+                                      TAG_END);
+                    break;
+                case 'r': case 'R':
+                    p->screen = (p->screen + 1) % GTA_SCR_COUNT;
+                    GT_SetGadgetAttrs(g_screen, win, NULL,
+                                      GTCY_Active, (ULONG)p->screen, TAG_END);
+                    GT_SetGadgetAttrs(g_shint, win, NULL,
+                                      GTTX_Text, (ULONG)screen_hint(p->screen),
                                       TAG_END);
                     break;
                 case 's': case 'S': case 13:
@@ -489,8 +568,10 @@ static void usage(void)
     printf("  gtaprefs                  open the window\n");
     printf("  gtaprefs SHOW             print the settings and this machine\n");
     printf("  gtaprefs AUDIO=<word>     auto | off | paula | ahi\n");
-    printf("  gtaprefs GFX=<word>       auto | aga | rtg | wb\n\n");
-    printf("Giving AUDIO= or GFX= saves straight away and opens no window,\n");
+    printf("  gtaprefs GFX=<word>       auto | aga | rtg | wb\n");
+    printf("  gtaprefs SCREEN=<word>    auto | 320x200 | 320x240 |\n");
+    printf("                            640x480 | 640x480x2\n\n");
+    printf("Giving any of those saves straight away and opens no window,\n");
     printf("which is how the settings are changed on a machine whose pointer\n");
     printf("does not work. Settings are written to " GTA_DIR "gta.prefs\n");
     printf("(and backend.txt is kept in step with GFX).\n");
@@ -505,6 +586,14 @@ static void show(const gta_prefs *p)
            gta_prefs_audio_name(p->audio), audio_hint(p->audio));
     printf("gfx   %s   - %s\n",
            gta_prefs_gfx_name(p->gfx), gfx_hint(p->gfx));
+    {
+        int w = 0, h = 0, x2 = 0;
+        gta_prefs_screen_size(p->screen, p->gfx, &w, &h, &x2);
+        printf("screen %s   - %s\n",
+               gta_prefs_screen_name(p->screen), screen_hint(p->screen));
+        printf("       the game will open %dx%d%s\n",
+               w, h, x2 ? " and render a quarter of it" : "");
+    }
     printf("musicvol %d   sfxvol %d\n", p->music_vol, p->sfx_vol);
 }
 
@@ -561,6 +650,12 @@ int main(int argc, char **argv)
                 if (v < 0) { printf("gtaprefs: GFX must be auto, aga, rtg "
                                     "or wb\n"); return 20; }
                 p.gfx = v; changed = 1; continue;
+            }
+            if (eq_ci(key, "SCREEN")) {
+                v = gta_prefs_screen_from_word(val);
+                if (v < 0) { printf("gtaprefs: SCREEN must be auto, 320x200, "
+                                    "320x240, 640x480 or 640x480x2\n"); return 20; }
+                p.screen = v; changed = 1; continue;
             }
         }
         printf("gtaprefs: do not understand \"%s\"\n\n", argv[i]);

@@ -1166,6 +1166,7 @@ int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
     sp = &v->sprites[v->n_sprites++];
     sp->remap = remap;
     sp->delta = -1;
+    sp->delta_mask = 0;
     sp->wx = wx;
     sp->wy = wy;
     sp->layer = layer;
@@ -1181,6 +1182,17 @@ int gta_render_add_sprite_d(gta_view *v, long wx, long wy, int layer, int grid,
     if (!gta_render_add_sprite_r(v, wx, wy, layer, grid, index, angle, remap))
         return 0;
     v->sprites[v->n_sprites - 1].delta = delta;
+    return 1;
+}
+
+int gta_render_add_sprite_dm(gta_view *v, long wx, long wy, int layer, int grid,
+                             int index, int angle, int remap, int delta,
+                             unsigned long delta_mask)
+{
+    if (!gta_render_add_sprite_r(v, wx, wy, layer, grid, index, angle, remap))
+        return 0;
+    v->sprites[v->n_sprites - 1].delta = delta;
+    v->sprites[v->n_sprites - 1].delta_mask = delta_mask;
     return 1;
 }
 
@@ -1254,7 +1266,7 @@ void gta_render_sprite(gta_view *v, const gta_sprite_req *sp)
      * has ever needed it (the car being entered), and a game where no door
      * opens never allocates it at all. If the allocation fails the sprite is
      * drawn plain, which is a shut door rather than a missing car. */
-    if (sp->delta >= 0 && t->delta_data) {
+    if ((sp->delta >= 0 || sp->delta_mask) && t->delta_data) {
         unsigned long need = (unsigned long)sw * sh;
         if (v->spr_scratch_cap < need) {
             unsigned char *nb = (unsigned char *)malloc((size_t)need);
@@ -1265,7 +1277,10 @@ void gta_render_sprite(gta_view *v, const gta_sprite_req *sp)
             }
         }
         if (v->spr_scratch && v->spr_scratch_cap >= need) {
-            gta_tiles_delta_apply(t, sp->index, sp->delta, v->spr_scratch);
+            unsigned long m = sp->delta_mask;
+            if (sp->delta >= 0 && sp->delta < 32)
+                m |= 1UL << sp->delta;
+            gta_tiles_delta_apply_mask(t, sp->index, m, v->spr_scratch);
             src = v->spr_scratch;
         }
     }

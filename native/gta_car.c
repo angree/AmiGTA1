@@ -18,6 +18,7 @@
 
 #include "gta_car.h"
 #include "gta_tiles.h"
+#include "gta_trig.h"
 
 /* GTA_TIL_CARREC is a number in a header and the pack below is a list of
  * assignments; nothing but this makes them agree. A negative array size is a
@@ -190,4 +191,30 @@ void gta_car_unpack(gta_car_info *c, const unsigned char *rec)
     }
 
     c->sprite_index = (int)get_be32(p); p += 4;
+}
+
+/* See gta_car.h. The car's own axes: `along` runs nose to tail, `across` is
+ * the width, and the thirds of the length pick front, middle or back. The
+ * delta numbers are not in an order anybody would choose - front right is 0,
+ * back left 1 - so this is a table rather than arithmetic. */
+int gta_car_panel_delta(const gta_car_info *ci, long cx, long cy, int face,
+                        long hx, long hy)
+{
+    /* front-left, middle-left, back-left, then the same three on the right */
+    static const unsigned char panel[6] = {
+        GTA_DELTA_DMG_FL, GTA_DELTA_DMG_ML, GTA_DELTA_DMG_BL,
+        GTA_DELTA_DMG_FR, GTA_DELTA_DMG_MR, GTA_DELTA_DMG_BR
+    };
+    long fx = gta_sin(face), fy = -gta_cos(face);
+    long rx = gta_cos(face), ry = gta_sin(face);
+    long dx = (hx - cx) >> 16, dy = (hy - cy) >> 16;
+    long along  = (dx * fx + dy * fy) >> 14;
+    long across = (dx * rx + dy * ry) >> 14;
+    long half   = gta_car_world_len(ci) / 2;
+    int third, side;
+
+    if (half < 3) half = 3;
+    third = (along > half / 3) ? 0 : (along < -half / 3) ? 2 : 1;
+    side  = (across >= 0) ? 1 : 0;      /* + = the car's right */
+    return (int)panel[side * 3 + third];
 }

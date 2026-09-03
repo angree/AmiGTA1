@@ -1017,6 +1017,48 @@
 #define GTA_HOLD_ROAD      6    /* the road ladder: too little clear ahead */
 #define GTA_HOLD_GAP       7    /* the bumper-to-bumper gap to the car ahead */
 #define GTA_HOLD_STUCK     8    /* backing out of a jam - see GTA_TRAFFIC_STUCK */
+/* HOW FAR A BODY MAY BE MOVED BY THE SEPARATION IN ONE TICK.
+ *
+ * This is Box2D's `b2_maxLinearCorrection` and it exists for exactly the
+ * fault the developer reported: "gdy pukne auto z boku jakby teleportuje sie
+ * o jakas ilosc pikseli". A striker at 20 px a tick opens seven pixels of
+ * overlap in the tick it arrives, and paying all seven back at once IS a
+ * teleport - one frame, seven pixels, no motion in between. Paid at two
+ * pixels a tick instead, the same overlap clears in four ticks and reads as
+ * a shove.
+ *
+ * The literature is unanimous on the shape of this (Catto's Box2D, Gaul's
+ * tutorials, Chou on slops): correct a PERCENTAGE of the penetration beyond
+ * a slop, split by inverse mass, after the impulse, and clamp it. The port's
+ * own numbers were chosen by measurement; see PROGRESS.md. */
+#define GTA_SEP_MAX_PX     2
+
+/* ...and how far the one that DROVE INTO IT may be backed out in the same
+ * tick. It is generous on purpose: a car that over-drove into another by ten
+ * pixels has to be put back, or the pair simply passes through each other
+ * (`ramsweep`, 208 of 2888 runs when both sides were capped at two). Being
+ * stopped short is what hitting something feels like; it is the VICTIM
+ * jumping that reads as a teleport. */
+#define GTA_SEP_STRIKER_PX 3
+
+/* HOW CLOSE COUNTS AS TOUCHING. The sweep stops a body clear of another one,
+ * so the collision test has to be slightly generous or nothing ever registers
+ * as a hit. Two pixels, because the box tests work in whole pixels. */
+#define GTA_TOUCH_PX       2
+
+/* WHAT A CAR CANNOT DO IN ONE TICK, and therefore what counts as a bug when
+ * it happens: turn more than this many of the 256 steps (24 = 34 degrees, and
+ * the fleet's own corner is 4 a tick), or move more than this many pixels
+ * (the top speed is about six). Both are counted in gta_traffic.stat_face_jump
+ * / stat_pos_jump so a fault the developer can see has a number. */
+#define GTA_SANE_TURN      24
+#define GTA_SANE_STEP      10
+
+/* A car is a write-off at a hundred points of damage, and burns this long
+ * before it explodes - the original's own fuse. */
+#define GTA_CAR_WRECKED    100
+#define GTA_CAR_FUSE        40
+
 #define GTA_HOLD_COUNT     9
 
 typedef struct {
@@ -1155,6 +1197,16 @@ typedef struct {
      * of every hit the player lands on this car; nothing reads it yet except
      * the log - the visual deltas and the wreck state come later. */
     int damage;
+    /* WHICH PANELS ARE DENTED - one bit per damage delta (gta_tiles.h), laid
+     * over the car's sprite when it is drawn. The original dents the panel
+     * that was struck, so a car remembers where it has been hit rather than
+     * just how hard. */
+    unsigned long dmg_bits;
+    /* THE FUSE. A car at GTA_CAR_WRECKED burns for this many ticks and then
+     * goes up; the original arms the same countdown when a blast writes a car
+     * off, which is what makes a row of parked cars explode one after
+     * another instead of all at once. 0 = not burning. */
+    int fuse;
 
     /* Ticks left before this car can be charged for a collision again. It
      * stands in for the original's one-shot impulse latch: without it, a
@@ -1991,6 +2043,15 @@ typedef struct {
     long stat_offroad_recovered;
 
     long stat_moved;                    /* world px, all cars, since reset */
+    /* The two impossible things, counted: a turn or a step no car could make
+     * in one tick. See GTA_SANE_TURN / GTA_SANE_STEP. */
+    long stat_face_jump, stat_face_jump_max, stat_face_jump_ctx;
+    /* Corners abandoned because the car was shoved off its arc. */
+    long stat_arc_dropped;
+    /* Corner landings that refused to snap because the car had been
+     * pushed off its arc - see the snap in drive_one(). */
+    long stat_land_declined;
+    long stat_pos_jump,  stat_pos_jump_max, stat_pos_jump_ctx;
 
     /* WHERE ONE TICK GOES, measured on the machine itself. The host profile
      * mis-ranks this file - it pays GHz for arithmetic and nothing for
@@ -2047,6 +2108,32 @@ int gta_traffic_light_green(const gta_traffic *tr, int bx, int by, int along_x);
  * area had no room, which is information rather than a failure. */
 int gta_traffic_park(gta_traffic *tr, const gta_map *m,
                      int bx, int by, int radius, int want);
+
+/* IS THIS BOX CLEAR OF EVERY CAR IN THE FLEET? The player's own car is not in
+ * the fleet, so this is how the caller asks "may I be here" before committing
+ * a step - see the bisection in gta_main.c. The original never lets a body
+ * end a tick inside another one, so it never needs a big correction to get
+ * it out again. */
+int gta_traffic_box_free(const gta_traffic *tr, long x, long y, int face,
+                         int hl, int hw, int layer);
+
+/* STOP A MOVE AT THE CONTACT INSTEAD OF LETTING IT END INSIDE A CAR.
+ *
+ * Give it where the body WAS (x0,y0,ang0) and where it wants to be
+ * (*x,*y,*ang, updated in place); if the destination is inside a fleet car it
+ * bisects the move eight times - position and angle together, the angle the
+ * short way round - and returns the last point that was clear. Returns 1 when
+ * it moved the destination, 0 when nothing was in the way or when the body
+ * was already overlapping (there is nothing to back off to then, and the
+ * separation in gta_traffic_ram() does that job instead).
+ *
+ * This is the original's own method, and the reason it needs no violent
+ * correction afterwards: a body that never ends a tick
+ * inside another one never has to be thrown out of it. */
+int gta_traffic_sweep_box(const gta_traffic *tr,
+                          long x0, long y0, long ang0,
+                          long *x, long *y, long *ang,
+                          int hl, int hw, int layer);
 
 /* ONE SIMULATION TICK of the whole fleet, at the caller's fixed rate - the
  * same 50 Hz tick the player runs on, and for the same reason: traffic that

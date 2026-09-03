@@ -37,4 +37,8 @@ char *gta_hud_tenths(char *buf, long value_x10);
 /* Append a plain integer to a buffer position; returns the new end. */
 char *gta_hud_int(char *buf, long value);
 
+/* The width in pixels gta_hud_text() will take for `s`, so a caller can put
+ * it against the right-hand edge. */
+int gta_hud_width(const char *s);
+
 #endif /* GTA_HUD_H */

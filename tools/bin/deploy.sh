@@ -62,7 +62,14 @@ echo "deployed: autoinput.txt"
 cp "$ROOT/winuae/work-template/autowalk.txt" "$WORK/autowalk.txt"
 echo "deployed: autowalk.txt"
 
-for b in gta-aga gta-rtg240 gta-rtg480 gta-rtg gtaprefs gtabake; do
+# ONE GAME BINARY since v0.0.4 - the screen size is a setting, not a build.
+# Any leftover gta-aga / gta-rtg* in the shared folder is deleted rather than
+# left alone: a stale one still runs, and a stale binary that still runs is
+# the most expensive kind of debris this rig can leave behind.
+for b in gta-aga gta-rtg240 gta-rtg480 gta-rtg; do
+    rm -f "$WORK/$b" "$WORK/$b.info"
+done
+for b in AmiGTA gtaprefs gtabake; do
     if [ -f "$ROOT/build/$b" ]; then
         cp "$ROOT/build/$b" "$WORK/$b"
         echo "deployed: $b"
@@ -81,10 +88,9 @@ done
 # running out of stack on a 68020 is a silent corruption of whatever sits below
 # it, not an error message. tools/bin/mkicon.py has the number and the reason.
 #
-# `AmiGTA` is a copy of the AGA binary under the name the game actually goes
-# by, so Workbench shows "AmiGTA" under the icon rather than "gta-aga". It is
-# re-copied on every deploy, so it cannot drift from the binary it came from -
-# which is the usual objection to keeping a second copy.
+# Since v0.0.4 the game IS `AmiGTA` - one binary, the name it goes by on the
+# Workbench, with the screen size chosen in gtaprefs instead of by picking one
+# of three icons.
 # Which python actually RUNS, rather than which one is on the PATH. On this
 # host `python3` under Git Bash is Microsoft's Store stub: it exists, it is
 # executable, and it prints an advert instead of running the script. So the
@@ -99,25 +105,29 @@ for c in python3 python py; do
 done
 
 if [ -n "$PY" ]; then
-    if [ -f "$ROOT/build/gta-aga" ]; then
-        cp "$ROOT/build/gta-aga" "$WORK/AmiGTA"
-        echo "deployed: AmiGTA (copy of gta-aga, for Workbench)"
+    if [ -f "$WORK/AmiGTA" ]; then
+        "$PY" "$ROOT/tools/bin/mkicon.py" "$WORK/AmiGTA.info" 1000000 \
+            --kind game >/dev/null
+        echo "deployed: AmiGTA.info (stack 1000000)"
     fi
-    for n in AmiGTA gta-aga gta-rtg240 gta-rtg480 gta-rtg; do
-        if [ -f "$WORK/$n" ]; then
-            "$PY" "$ROOT/tools/bin/mkicon.py" "$WORK/$n.info" 1000000 >/dev/null
-            echo "deployed: $n.info (stack 1000000)"
-        fi
-    done
     # The two tools are not the game and do not need the game's stack.
     # gtabake recurses through the sprite reader, gtaprefs opens one window;
     # 100000 covers both with room to spare. Giving them 1 MB would suggest
     # the number means something here, and the one place it does mean
     # something is the game - see the header of mkicon.py.
+    #
+    # AND THEY GET THEIR OWN PICTURES. Every program in the drawer used to
+    # carry the same car icon, so the settings editor was identifiable only by
+    # the name under it - which is no use at all on the machine this program
+    # exists for, where the display is already wrong.
     for n in gtaprefs gtabake; do
         if [ -f "$WORK/$n" ]; then
-            "$PY" "$ROOT/tools/bin/mkicon.py" "$WORK/$n.info" 100000 >/dev/null
-            echo "deployed: $n.info (stack 100000)"
+            # if/else and not `[ ... ] && k=bake`: under `set -e` a test that
+            # comes out false at the end of a line ends the script.
+            if [ "$n" = gtabake ]; then k=bake; else k=prefs; fi
+            "$PY" "$ROOT/tools/bin/mkicon.py" "$WORK/$n.info" 100000 \
+                --kind "$k" >/dev/null
+            echo "deployed: $n.info (stack 100000, $k icon)"
         fi
     done
 else

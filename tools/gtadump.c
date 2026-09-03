@@ -2122,6 +2122,14 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
      * numbers above cannot be told apart from a change that never runs. */
     printf("drive: fleet hits %ld (cars knocked loose %ld, settled %ld)\n",
            tr.stat_fleet_hits, tr.stat_knocked, tr.stat_knock_ended);
+    /* THE TWO IMPOSSIBLE THINGS. A car that turns more than GTA_SANE_TURN or
+     * moves more than GTA_SANE_STEP in one tick is a bug being watched, not a
+     * manoeuvre - the developer's "obraca sie niemal o 360 stopni" and
+     * "teleportuje sie o jakas ilosc pikseli", counted. */
+    printf("drive: impossible - %ld turns (worst %ld of 256, state %ld), %ld jumps "
+           "(worst %ld px, state %ld)\n",
+           tr.stat_face_jump, tr.stat_face_jump_max, tr.stat_face_jump_ctx,
+           tr.stat_pos_jump, tr.stat_pos_jump_max, tr.stat_pos_jump_ctx);
     {
         int with_route = 0;
         for (i = 0; i < tr.n; i++)
@@ -3472,9 +3480,10 @@ static int cmd_spritedelta(const char *tilPath, int sprite, const char *out)
 
     cell = (t.sprites[sprite].w > t.sprites[sprite].h
             ? t.sprites[sprite].w : t.sprites[sprite].h) + 2;
-    cols = nd + 1;                      /* the base, then every delta */
+    cols = nd + 2;                      /* base, each delta, then all the
+                                         * damage panels laid over one copy */
     if (cols > 8) cols = 8;
-    rows = (nd + 1 + cols - 1) / cols;
+    rows = (nd + 2 + cols - 1) / cols;
     w = cols * cell;
     h = rows * cell;
 
@@ -3489,14 +3498,23 @@ static int cmd_spritedelta(const char *tilPath, int sprite, const char *out)
      * mistake this project already made once with the tiles. */
     memset(sheet, 255, (size_t)w * (size_t)h);
 
-    for (i = 0; i <= nd; i++) {
+    for (i = 0; i <= nd + 1; i++) {
         int cx = (i % cols) * cell + 1;
         int cy = (i / cols) * cell + 1;
         int x, y, runs;
-        /* i == 0 is the base: delta -1 decodes to a plain copy. */
-        runs = gta_tiles_delta_apply(&t, sprite, i - 1, scratch);
-        if (i > 0)
-            printf("  delta %2d -> %d runs\n", i - 1, runs);
+        /* i == 0 is the base: delta -1 decodes to a plain copy. The LAST cell
+         * is every damage panel over ONE copy - a car shot to pieces, and the
+         * proof that the mask apply the game draws with agrees with the
+         * single-delta one beside it. */
+        if (i == nd + 1) {
+            runs = gta_tiles_delta_apply_mask(&t, sprite,
+                                              GTA_DELTA_DMG_MASK, scratch);
+            printf("  all damage panels -> %d runs\n", runs);
+        } else {
+            runs = gta_tiles_delta_apply(&t, sprite, i - 1, scratch);
+            if (i > 0)
+                printf("  delta %2d -> %d runs\n", i - 1, runs);
+        }
         for (y = 0; y < t.sprites[sprite].h; y++)
             for (x = 0; x < t.sprites[sprite].w; x++) {
                 unsigned char px = scratch[(long)y * t.sprites[sprite].w + x];
@@ -4172,7 +4190,22 @@ static int ram_run(gta_tiles *tip, int pmodel, int tmodel,
         long rvx, rvy, ryaw, rpx, rpy;
         double ov;
 
-        gta_veh_step(&v, 0, 0, 0, 0, 0);          /* coasting into it */
+        {
+            /* THE GAME'S OWN SWEEP, or this measures a game nobody plays:
+             * the striker is stopped at the contact instead of ending the
+             * tick inside the target, which is what keeps the correction
+             * afterwards small. See gta_traffic_sweep_box(). */
+            long px0 = v.ox, py0 = v.oy, pa0 = v.ang16;
+            long nx_, ny_, na_;
+            gta_veh_step(&v, 0, 0, 0, 0, 0);      /* coasting into it */
+            nx_ = v.ox; ny_ = v.oy; na_ = v.ang16;
+            if (gta_traffic_sweep_box(&tr, px0, py0, pa0, &nx_, &ny_, &na_,
+                                      v.len / 2, v.wid / 2, 0)) {
+                v.x += nx_ - v.ox;
+                v.y += ny_ - v.oy;
+                v.ox = nx_; v.oy = ny_; v.ang16 = na_;
+            }
+        }
         gta_traffic_ram(&tr, v.ox, v.oy, gta_veh_angle(&v),
                         v.len / 2, v.wid / 2, v.vx, v.vy, v.mass, 0,
                         &rvx, &rvy, &ryaw, &rpx, &rpy);
@@ -4421,7 +4454,7 @@ static int cmd_remapsheet(const char *tilesPath, const char *outBmp, int frame)
  */
 static int cmd_hitcar(const char *mapPath, const char *tilesPath,
                       int pmodel, int want_speed, int ticks, int lateral,
-                      int vmodel)
+                      int vmodel, int vface)
 {
     gta_map mp;
     gta_tiles ti;
@@ -4441,6 +4474,10 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
      * of a pixel so resting noise does not register. The developer's report
      * is literally this number: "teleportuje w te i we wte na moment". */
     int rev_victim = 0, rev_player = 0, have_last = 0;
+    long worst_player_push = 0;         /* px the player was shoved, one tick */
+    int  worst_player_at = -1;
+    long trace_x = 0, trace_y = 0;      /* the victim, as it was last tick */
+    int  trace_f = 0, trace_have = 0;
     long lvx = 0, lvy = 0, lpx = 0, lpy = 0;        /* last positions     */
     long ldvx = 0, ldvy = 0, ldpx = 0, ldpy = 0;    /* last displacements */
 
@@ -4464,8 +4501,13 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
         tr.cars[0].layer = 2;
         tr.cars[0].x = ((long)62 * 32 + 16) << 16;
         tr.cars[0].y = ((long)66 * 32 + 16) << 16;
-        tr.cars[0].face = 0;
-        tr.cars[0].angle = 0;
+        /* THE VICTIM'S FACING IS AN ARGUMENT, because a car hit in the FLANK
+         * behaves nothing like one hit in the tail and the developer's two
+         * reports are both about the flank: "gdy pukne auto na rogu reaguje
+         * realistycznie, ale gdy pukne z boku jakby teleportuje sie". 0 is a
+         * rear-end shunt, 64 puts the victim broadside across the street. */
+        tr.cars[0].face = vface & 255;
+        tr.cars[0].angle = vface & 255;
         tr.cars[0].speed = 0;
         tr.cars[0].remap = -1;
         tr.cars[0].serial = 1;
@@ -4504,7 +4546,32 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
         long rvx, rvy, ryaw, rpx, rpy, sp_, sq_;
         int nh;
 
-        gta_veh_step(&v, 1, 0, 0, 0, 1);
+        {
+            /* THE SAME SWEEP THE GAME DOES - the player's car is stopped at
+             * the contact rather than ending the tick inside a fleet car.
+             * The harness has to run it too or it measures a game nobody
+             * plays (gta_main.c, and gta_traffic_sweep_box). */
+            long px0 = v.ox, py0 = v.oy, pa0 = v.ang16;
+            long nx_, ny_, na_;
+            gta_veh_step(&v, 1, 0, 0, 0, 1);
+            nx_ = v.ox; ny_ = v.oy; na_ = v.ang16;
+            if (gta_traffic_sweep_box(&tr, px0, py0, pa0, &nx_, &ny_, &na_,
+                                      v.len / 2, v.wid / 2, 2)) {
+                v.x += nx_ - v.ox;
+                v.y += ny_ - v.oy;
+                v.ox = nx_; v.oy = ny_; v.ang16 = na_;
+            }
+        }
+        {
+            extern int gta_traffic_debug;
+            gta_traffic_debug = getenv("GTA_HITCAR_DEBUG") && t > 40 && t < 60;
+        }
+        if (getenv("GTA_HITCAR_DEBUG") && (t % 5) == 0 && tr.n > 0)
+            printf("  dbg t=%3d player (%ld,%ld) v(%ld,%ld) car0 (%ld,%ld) "
+                   "gap %ld px\n", t, v.ox >> 16, v.oy >> 16,
+                   v.vx >> 16, v.vy >> 16,
+                   tr.cars[0].x >> 16, tr.cars[0].y >> 16,
+                   ((v.oy - tr.cars[0].y) >> 16));
         sp_ = v.vx < 0 ? -v.vx : v.vx;
         sq_ = v.vy < 0 ? -v.vy : v.vy;
         gta_traffic_set_player(&tr, 1, v.ox, v.oy, sp_ > sq_ ? sp_ : sq_,
@@ -4513,6 +4580,19 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
         nh = gta_traffic_ram(&tr, v.ox, v.oy, gta_veh_angle(&v),
                              v.len / 2, v.wid / 2, v.vx, v.vy, v.mass, 2,
                              &rvx, &rvy, &ryaw, &rpx, &rpy);
+        /* WHAT THE COLLISION DOES TO THE PLAYER'S OWN CAR, in pixels, in the
+         * tick it happens. The developer feels this one in his hands:
+         * "teleportuje mnie o 10 pikseli w 1 klatce". The victim's jump was
+         * measured and fixed; this is the same measurement on the other
+         * body, and it is the number that says whether the fix simply moved
+         * the fault across. */
+        {
+            long jp = ((rpx < 0 ? -rpx : rpx) + (rpy < 0 ? -rpy : rpy)) >> 16;
+            if (jp > worst_player_push) {
+                worst_player_push = jp;
+                worst_player_at = t;
+            }
+        }
         if (rpx || rpy) { v.x += rpx; v.ox += rpx; v.y += rpy; v.oy += rpy; }
         v.vx += rvx; v.vy += rvy;
         v.ang16 = (v.ang16 + ryaw) & 0xFFFFFFL;
@@ -4549,6 +4629,33 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
             victim = -1;
             for (q = 0; q < tr.n; q++)
                 if (tr.cars[q].serial == victim_serial) { victim = q; break; }
+        }
+        /* THE TICK-BY-TICK TRACE, which is the only way to tell a shove from
+         * a teleport: a shove moves a pixel or two a tick in one direction, a
+         * teleport is one line with eight pixels in it and the next line back
+         * where it was. Same for the heading - a car that "turns 350 degrees"
+         * has taken the long way round a wrap and it shows up here as one
+         * step of +250 instead of -6. */
+        /* THE PREVIOUS TICK IS TRACKED FROM THE START, not from the contact.
+         * The interesting tick is the one the hit lands on, and a trace that
+         * takes its first sample there reports that tick's jump as zero -
+         * which is exactly the number under investigation. */
+        if (tr.n > 0) {
+            const gta_car *c0 = &tr.cars[victim >= 0 ? victim : 0];
+            long sx = c0->x >> 16, sy = c0->y >> 16;
+            if (contact_at >= 0 && t <= contact_at + 20 && victim >= 0)
+                printf("  t%+3d  x %5ld y %5ld  (d %+4ld %+4ld)  face %3d "
+                       "(d %+4d)  knock %2d recover %2d  kv %+5ld %+5ld  "
+                       "komega %+7ld\n",
+                       t - contact_at, sx, sy,
+                       trace_have ? sx - trace_x : 0,
+                       trace_have ? sy - trace_y : 0,
+                       c0->face,
+                       trace_have ? (((c0->face - trace_f + 128) & 255) - 128)
+                                  : 0,
+                       c0->knock, c0->recover,
+                       c0->kvx >> 10, c0->kvy >> 10, c0->komega);
+            trace_x = sx; trace_y = sy; trace_f = c0->face; trace_have = 1;
         }
         if (victim >= 0 && contact_at >= 0 && t <= contact_at + 15) {
             const gta_car *c = &tr.cars[victim];
@@ -4629,7 +4736,9 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
                best_along, best_push, best_turn, best_turn * 360 / 256,
                best_speed >> 16, ((best_speed & 0xFFFF) * 100) >> 16);
     if (victim >= 0 || contact_at >= 0)
-        printf("hitcar: REVERSALS in the window - victim %d, player %d "
+        printf("hitcar: WORST PUSH ON THE PLAYER - %ld px in one tick "
+               "(t=%d)\n", worst_player_push, worst_player_at);
+    printf("hitcar: REVERSALS in the window - victim %d, player %d "
                "(0 = smooth, >0 = the out-and-back jump)\n",
                rev_victim, rev_player);
 
@@ -4744,6 +4853,20 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                 if (with_traffic && have_nav) {
                     long rvx, rvy, ryaw, rpx, rpy, sp_, sq_;
                     int nh;
+                    {
+                        /* The game's own sweep - stopped at the contact
+                         * rather than inside it. See gta_traffic_sweep_box();
+                         * without it here the harness measures a game
+                         * nobody plays. */
+                        long nx_ = v.ox, ny_ = v.oy, na_ = v.ang16;
+                        if (gta_traffic_sweep_box(&tr, wox0, woy0, wang0,
+                                                  &nx_, &ny_, &na_,
+                                                  v.len / 2, v.wid / 2, 2)) {
+                            v.x += nx_ - v.ox;
+                            v.y += ny_ - v.oy;
+                            v.ox = nx_; v.oy = ny_; v.ang16 = na_;
+                        }
+                    }
                     sp_ = v.vx < 0 ? -v.vx : v.vx;
                     sq_ = v.vy < 0 ? -v.vy : v.vy;
                     gta_traffic_set_player(&tr, 1, v.x, v.y,
@@ -4831,9 +4954,17 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
         }
     }
     fclose(f);
-    if (with_traffic)
+    if (with_traffic) {
         printf("drivecar: RAMS %ld, player damage %d; peds spawned %ld, run over %ld\n",
                rams, v.damage, pd.stat_spawned, pd.stat_runover);
+        /* The two impossible things, on the path where they were reported:
+         * a car being hit by the PLAYER. See GTA_SANE_TURN / GTA_SANE_STEP. */
+        printf("drivecar: impossible - %ld turns (worst %ld of 256, state %ld), %ld jumps"
+               " (worst %ld px); fleet hits %ld, knocked %ld\n",
+               tr.stat_face_jump, tr.stat_face_jump_max, tr.stat_face_jump_ctx,
+               tr.stat_pos_jump, tr.stat_pos_jump_max,
+               tr.stat_fleet_hits, tr.stat_knocked);
+    }
     printf("drivecar: BODY IN WALL - %ld of %d ticks, worst %ld of 10 outline "
            "points, %ld point-ticks in all\n",
            wall_ticks, tick, wall_worst, wall_points);
@@ -4930,7 +5061,8 @@ int main(int argc, char **argv)
                           argc >= 6 ? atoi(argv[5]) : 12,
                           argc >= 7 ? atoi(argv[6]) : 200,
                           argc >= 8 ? atoi(argv[7]) : 0,
-                          argc >= 9 ? atoi(argv[8]) : -1);
+                          argc >= 9 ? atoi(argv[8]) : -1,
+                          argc >= 10 ? atoi(argv[9]) : 0);
     if (argc >= 4 && strcmp(argv[1], "remapsheet") == 0)
         return cmd_remapsheet(argv[2], argv[3],
                               argc >= 5 ? atoi(argv[4]) : 0);

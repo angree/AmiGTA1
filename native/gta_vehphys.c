@@ -245,6 +245,8 @@ void gta_veh_init(gta_veh *v, const gta_tiles *t, int model,
     v->steer16 = v->ang16;              /* wheels straight ahead */
     v->vx = v->vy = 0;
     v->damage = 0;
+    v->dmg_bits = 0;
+    v->fuse = 0;
     v->mass = m;
 
     /* The centre of mass sits `cy` source pixels along the body from the

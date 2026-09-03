@@ -96,6 +96,12 @@ typedef struct {
     long vmax, vmin;        /* 16.16 px/step - only the tank is capped */
     long mass;              /* raw 16.16 table mass, for collisions */
     int  damage;
+    /* The dented panels, one bit per damage delta - the same set the fleet's
+     * cars carry (gta_traffic.h), so a car keeps its scars when you get in
+     * and out of it. */
+    unsigned long dmg_bits;
+    /* Ticks of burning left before it goes up; 0 = not on fire. */
+    int  fuse;
     long skid;              /* |sum of the axles' lateral forces|, this step */
     int  sliding;           /* the game's own "lay tyre marks" test */
     long skid_level;        /* what `skid` has to beat, scaled by this mass */

@@ -754,6 +754,8 @@ static long rchk_(long v, const char *where)
  * chosen among those. `rvx`/`rvy` is a's velocity less b's, 16.16. If nothing
  * is closing (a resting overlap, a pair being pushed apart by a third car) the
  * plain least-overlap answer stands. */
+int gta_traffic_debug = 0;
+
 static int box_mtv(long ax, long ay, int aang, int ahl, int ahw,
                    long bx_, long by_, int bang, int bhl, int bhw,
                    long rvx, long rvy,
@@ -1359,6 +1361,8 @@ static int park_band(gta_traffic *tr, const gta_map *m,
                  * kind of leftover. */
                 car->abandoned = 0;
                 car->damage = 0;
+                car->dmg_bits = 0;
+                car->fuse = 0;
                 car->knock = 0;
                 car->recover = 0;
                 car->allow_turn = 1;
@@ -1427,6 +1431,79 @@ static int park_band(gta_traffic *tr, const gta_map *m,
         }
     }
     return placed;
+}
+
+int gta_traffic_box_free(const gta_traffic *tr, long x, long y, int face,
+                         int hl, int hw, int layer)
+{
+    int i;
+    for (i = 0; i < tr->n; i++) {
+        const gta_car *o = &tr->cars[i];
+        const gta_car_info *oi;
+        long ddx, ddy;
+
+        if (o->done || o->layer != layer)
+            continue;
+        ddx = (x - o->x) >> FP; if (ddx < 0) ddx = -ddx;
+        ddy = (y - o->y) >> FP; if (ddy < 0) ddy = -ddy;
+        if (ddx > 96 || ddy > 96)
+            continue;
+        oi = &tr->tiles->cars[o->model];
+        if (box_hit(x, y, face, hl, hw, o->x, o->y, o->face,
+                    gta_car_world_len(oi) / 2, gta_car_world_wid(oi) / 2))
+            return 0;
+    }
+    return 1;
+}
+
+int gta_traffic_sweep_box(const gta_traffic *tr,
+                          long x0, long y0, long ang0,
+                          long *x, long *y, long *ang,
+                          int hl, int hw, int layer)
+{
+    long dx, dy, da;
+    int lo = 0, hi = 256, k;
+
+    if (gta_traffic_box_free(tr, *x, *y, (int)((*ang >> 16) & 255),
+                             hl, hw, layer))
+        return 0;                       /* the proposed place is clear */
+    if (!gta_traffic_box_free(tr, x0, y0, (int)((ang0 >> 16) & 255),
+                              hl, hw, layer))
+        return 0;                       /* it was already overlapping */
+
+    dx = *x - x0;
+    dy = *y - y0;
+    da = (*ang - ang0) & 0xFFFFFFL;
+    if (da > 0x800000L) da -= 0x1000000L;   /* the short way round */
+
+    /* Eight halvings of the step. `lo` is always a place known to be clear
+     * and `hi` one known not to be, so the answer is the last clear point
+     * within a 256th of the move - well under half a pixel at any speed a
+     * car reaches. */
+    for (k = 0; k < 8; k++) {
+        int mid = (lo + hi) / 2;
+        long tx = x0 + dx * mid / 256;
+        long ty = y0 + dy * mid / 256;
+        long ta = (ang0 + da * mid / 256) & 0xFFFFFFL;
+        if (gta_traffic_box_free(tr, tx, ty, (int)((ta >> 16) & 255),
+                                 hl, hw, layer))
+            lo = mid;
+        else
+            hi = mid;
+    }
+    /* AND IT STOPS CLEAR, not a pixel inside.
+     *
+     * Leaving a pixel of overlap here - the solver's "slop", which is the
+     * right idea in the right place - had a consequence one tick later: the
+     * sweep's own early-out sees a body that is ALREADY overlapping, gives
+     * up, and lets the next step run to its full length. `ramsweep` went
+     * from 0 cars driving through each other to 38. The contact is made to
+     * register a different way instead: gta_traffic_ram() tests the boxes
+     * with a pixel of margin, so touching counts as hitting. */
+    *x = x0 + dx * lo / 256;
+    *y = y0 + dy * lo / 256;
+    *ang = (ang0 + da * lo / 256) & 0xFFFFFFL;
+    return 1;
 }
 
 int gta_traffic_park(gta_traffic *tr, const gta_map *m,
@@ -3701,6 +3778,29 @@ static void knock_step(gta_traffic *tr, gta_car *c)
          * directions. */
         c->knock = 0;
         c->kvx = c->kvy = c->komega = 0;
+        /* AND THE CORNER IT WAS TAKING IS OFF.
+         *
+         * An arc is an absolute path: every tick puts the car ON the circle
+         * it committed to, at the arc length reached so far. A car that has
+         * been shoved off that circle and then resumes the arc is therefore
+         * PUT BACK on it - one tick, as many pixels as the shove was, which
+         * is the developer's "jakby teleportuje sie o jakas ilosc pikseli -
+         * i czasem wraca do poprzedniej pozycji". Measured: the worst jump
+         * in a 6000-tick sweep was 11 px and its state said turning + arc +
+         * straightening (`gtadump drive ... impossible`, state 13).
+         *
+         * So the corner is abandoned where it stands. The car drives on as
+         * an ordinary car and triggers the turn again when it next reaches
+         * a junction line - which is what a driver who has just been rammed
+         * mid-corner would do. */
+        if (c->turn != 0 || c->arc_s > 0) {
+            c->turn = 0;
+            c->turn_accum = 0;
+            c->arc_s = 0;
+            c->arc_len = 0;
+            c->turn_lock = 0;
+            tr->stat_arc_dropped++;
+        }
         c->angle = ((c->face + 32) >> 6 << 6) & 255;
         c->speed = sp > c->top ? c->top : sp;
         c->hold = GTA_HOLD_NONE;
@@ -4284,8 +4384,27 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
              * one thing the whole corner exists for true to the bit. */
             c->face = (c->turn_from + ((c->turn > 0) ? GTA_TURN_QUARTER
                                                      : -GTA_TURN_QUARTER)) & 255;
-            if ((c->face & 127) == 64) c->y = c->arc_line;
-            else                       c->x = c->arc_line;
+            {
+                /* ...BUT ONLY IF IT IS ALREADY THERE. The snap assumes the
+                 * arc ended within a fraction of a pixel of the line, which
+                 * is true right up until something pushes the car off its
+                 * circle mid-corner - another car, now that the fleet
+                 * collides with itself, or the player. Then this line is an
+                 * absolute placement that undoes the shove in one tick, and
+                 * that is the teleport again: caught in the developer's own
+                 * session at 11 px, state 24 (mid-arc, lane fix).
+                 *
+                 * Off by more than a pixel means it was moved, so the snap
+                 * is declined and the lane keeper walks it back at its own
+                 * two pixels a tick. */
+                long *p = ((c->face & 127) == 64) ? &c->y : &c->x;
+                long d = *p - c->arc_line;
+                if (d < 0) d = -d;
+                if (d <= (1L << FP))
+                    *p = c->arc_line;
+                else
+                    tr->stat_land_declined++;
+            }
             c->turn_accum = GTA_TURN_QUARTER;
 
             /* AND THE LANE KEEPER IS TOLD WHERE THE CORNER PUT THE CAR.
@@ -5111,6 +5230,19 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
                 ready = 1;
                 give_way = 0;
             }
+
+            /* NOT WHILE IT IS STILL STRAIGHTENING UP, whatever else said the
+             * corner was ready - the bend override above sets `ready` too.
+             *
+             * An arc is entered on the ROAD's heading, so a car whose drawn
+             * heading is still being walked back from a shunt snaps to the
+             * tangent in a single tick: measured at 27 of 256, which is 38
+             * degrees in a fiftieth of a second (`gtadump drive ...
+             * impossible`, state 13 = turning + straightening + arc). It
+             * straightens first and corners after; the junction is still
+             * there a few ticks later. */
+            if (c->recover > 0)
+                ready = 0;
 
             if (!ready) {
                 /* Not yet, and nothing said - this is every tick of every
@@ -6224,11 +6356,17 @@ static void fleet_collide(gta_traffic *tr, gta_car *a, gta_car *b)
         return;
 
     vrel = ((((rvx) >> 8) * nx) + (((rvy) >> 8) * ny)) >> 6;
-    if (vrel <= GTA_KNOCK_HARD)
-        return;                     /* touching, not colliding - a queue */
 
     am = ai->mass >> 16;  if (am < 1) am = 1;
     bm = bi->mass >> 16;  if (bm < 1) bm = 1;
+
+    /* SEPARATE FIRST, WHATEVER THE SPEED - and this is the change the
+     * developer asked for ("dodaj kolizje miedzy autami ai"). This function
+     * used to return here unless the pair was closing hard, so two AI cars
+     * that drifted into each other slowly - a lane change, a queue, a car
+     * shoved into another by the player - simply stayed inside one another
+     * and drove on. Bodies that overlap have to come apart even when nobody
+     * is going anywhere; only the IMPULSE below needs a real impact. */
 
     /* Separate them first, by inverse mass, so the pair does not grind.
      * Half the overlap beyond a pixel of slop per tick, same recipe and same
@@ -6240,21 +6378,34 @@ static void fleet_collide(gta_traffic *tr, gta_car *a, gta_car *b)
         sep = (sep << 1) / (am + bm);
         mvx = NRAM_MUL(sep * am, nx);
         mvy = NRAM_MUL(sep * am, ny);
-        /* The excess beyond the band goes to the victim alone, in full -
-         * same three rules as gta_traffic_ram(). */
+        /* Deep overlap is paid faster but still not all at once - see
+         * GTA_SEP_MAX_PX and gta_traffic_ram(). */
+        long ax_, ay_;
+        long cap = (long)GTA_SEP_MAX_PX << FP;
         if (depth > GTA_SEP_DEEP) {
-            long extra = (depth - GTA_SEP_DEEP) << 2;
+            long extra = (depth - GTA_SEP_DEEP) << 1;
             mvx += NRAM_MUL(extra, nx);
             mvy += NRAM_MUL(extra, ny);
         }
-        if (mvx >  NRAM_MAXPUSH) mvx =  NRAM_MAXPUSH;
-        if (mvx < -NRAM_MAXPUSH) mvx = -NRAM_MAXPUSH;
-        if (mvy >  NRAM_MAXPUSH) mvy =  NRAM_MAXPUSH;
-        if (mvy < -NRAM_MAXPUSH) mvy = -NRAM_MAXPUSH;
+        if (mvx >  cap) mvx =  cap;
+        if (mvx < -cap) mvx = -cap;
+        if (mvy >  cap) mvy =  cap;
+        if (mvy < -cap) mvy = -cap;
+        ax_ = NRAM_MUL(sep * bm, nx);
+        ay_ = NRAM_MUL(sep * bm, ny);
+        if (ax_ >  cap) ax_ =  cap;
+        if (ax_ < -cap) ax_ = -cap;
+        if (ay_ >  cap) ay_ =  cap;
+        if (ay_ < -cap) ay_ = -cap;
         b->x += mvx;  b->y += mvy;
-        a->x -= NRAM_MUL(sep * bm, nx);
-        a->y -= NRAM_MUL(sep * bm, ny);
+        a->x -= ax_;  a->y -= ay_;
     }
+
+    /* AND ONLY A REAL IMPACT IS WORTH AN IMPULSE. Below this the pair is
+     * touching rather than colliding - a queue, a lane change, a car being
+     * leant on - and the separation above is the whole response. */
+    if (vrel <= GTA_KNOCK_HARD)
+        return;
 
     /* ONE RESPONSE PER CONTACT - the original's `car+0x230` latch. The pair
      * has been separated above; while the latch stands it pays nothing else. */
@@ -6334,7 +6485,12 @@ static void fleet_collisions(gta_traffic *tr)
         const gta_car_info *ai;
         int ahl, ahw;
 
-        if (a->done || a->abandoned)
+        /* AN ABANDONED CAR IS STILL A CAR. It used to be skipped here, so
+         * the fleet drove through anything parked - the developer's
+         * "dodaj kolizje miedzy autami ai" is half this and half the
+         * closing-speed gate inside fleet_collide(). It takes no part in the
+         * AI, but it has a body and a mass like everything else. */
+        if (a->done)
             continue;
         ai = &tr->tiles->cars[a->model];
         ahl = gta_car_world_len(ai) / 2;
@@ -6345,7 +6501,7 @@ static void fleet_collisions(gta_traffic *tr)
             const gta_car_info *bi;
             long dx, dy, lim;
 
-            if (b->done || b->abandoned || b->layer != a->layer)
+            if (b->done || b->layer != a->layer)
                 continue;
             bi = &tr->tiles->cars[b->model];
             dx = (b->x - a->x) >> FP;
@@ -6510,6 +6666,16 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
     for (i = 0; i < tr->n; i++) {
         long px = tr->cars[i].x, py = tr->cars[i].y;
         long mx, my;
+        /* THE TWO IMPOSSIBLE THINGS, caught where they happen.
+         *
+         * A car cannot turn a quarter of a circle in a fiftieth of a second
+         * and cannot jump four pixels sideways, so either is a bug rather
+         * than a manoeuvre - and both are what the developer reported:
+         * "obraca sie niemal o 360 stopni" and "jakby teleportuje sie o
+         * jakas ilosc pikseli". The wrapped difference is the whole point of
+         * the first one: 350 degrees the wrong way IS -10 the right way, and
+         * a raw subtraction cannot tell them apart. */
+        int face_was = tr->cars[i].face;
 
         /* The collision cool-downs, run down once a tick per car. */
         if (tr->cars[i].ram_cool)
@@ -6518,6 +6684,29 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
             tr->cars[i].hit_latch--;
 
         drive_one(tr, m, i);
+        {
+            int d = (tr->cars[i].face - face_was) & 255;
+            if (d > 128) d -= 256;
+            if (d < 0) d = -d;
+            /* The worst is kept whatever it is - a threshold that never fires
+             * says nothing about how close the fleet came to it - and WITH
+             * THE STATE THE CAR WAS IN, because "a car span" is a symptom and
+             * the state is the cause. One bit per mechanism that can move a
+             * heading: 1 turning, 2 knocked loose, 4 straightening up,
+             * 8 mid-arc, 16 correcting its lane. */
+            if (d > tr->stat_face_jump_max) {
+                const gta_car *cc = &tr->cars[i];
+                tr->stat_face_jump_max = d;
+                tr->stat_face_jump_ctx =
+                      (cc->turn != 0 ? 1 : 0)
+                    | (cc->knock  > 0 ? 2 : 0)
+                    | (cc->recover > 0 ? 4 : 0)
+                    | (cc->arc_s  > 0 ? 8 : 0)
+                    | (cc->lane_fix != 0 ? 16 : 0);
+            }
+            if (d > GTA_SANE_TURN)
+                tr->stat_face_jump++;
+        }
 
         offroad_check(tr, m, i);
         if (tr->cars[i].offroad)
@@ -6527,6 +6716,24 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
         my = tr->cars[i].y - py;
         if (mx < 0) mx = -mx;
         if (my < 0) my = -my;
+        /* ...and the jump. A car at the fleet's top speed covers about six
+         * pixels a tick along its own heading; anything past GTA_SANE_STEP
+         * in one tick is a correction being paid all at once. */
+        if (((mx + my) >> FP) > tr->stat_pos_jump_max) {
+            const gta_car *cc = &tr->cars[i];
+            tr->stat_pos_jump_max = (mx + my) >> FP;
+            /* Same bits as the turn's, so one number says which mechanism
+             * moved the car: 1 turning, 2 knocked, 4 straightening,
+             * 8 mid-arc, 16 lane fix, 32 the arc's landing snap. */
+            tr->stat_pos_jump_ctx =
+                  (cc->turn != 0 ? 1 : 0)
+                | (cc->knock  > 0 ? 2 : 0)
+                | (cc->recover > 0 ? 4 : 0)
+                | (cc->arc_s  > 0 ? 8 : 0)
+                | (cc->lane_fix != 0 ? 16 : 0);
+        }
+        if (((mx + my) >> FP) > GTA_SANE_STEP)
+            tr->stat_pos_jump++;
         tr->stat_moved += (mx + my) >> FP;
         tr->cars[i].odo += (mx + my) >> FP;
 
@@ -6765,10 +6972,39 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
         ovy = ((long)-gta_cos(o->face) >> 6) * (o->speed >> 8);
 
         /* The contact normal and the depth, from the boxes themselves. */
-        if (!box_mtv(px, py, pface, phl, phw,
+        /* A PIXEL OF MARGIN ON THE PLAYER'S BOX. The sweep above stops him
+         * at the contact rather than inside it, and two boxes that merely
+         * touch have no overlap for box_mtv to report - so without this the
+         * impulse, the spin, the damage and the shove all quietly stop
+         * happening and the car just halts against traffic. Speculative
+         * contact, in the literature's terms: test a body slightly larger
+         * than it is, respond as if it had arrived.
+         *
+         * TWO pixels and not one, because both box tests reduce the centres
+         * to WHOLE pixels (`dx = (bx - ax) >> FP`) before they start: a one
+         * pixel margin disappears into that rounding and the contact is
+         * missed altogether - measured, the striker stopped a pixel short
+         * and stood there for a hundred ticks with nothing happening. */
+        if (!box_mtv(px, py, pface, phl + GTA_TOUCH_PX, phw + GTA_TOUCH_PX,
                      o->x, o->y, o->face, ohl, ohw,
-                     pvx - ovx, pvy - ovy, &nx, &ny, &depth))
+                     pvx - ovx, pvy - ovy, &nx, &ny, &depth)) {
+            if (gta_traffic_debug) {
+                long ddx = (o->x - px) >> FP, ddy = (o->y - py) >> FP;
+                if (ddx > -40 && ddx < 40 && ddy > -40 && ddy < 40)
+                    printf("    ram: no mtv with car %d, d(%ld,%ld) "
+                           "phl %d phw %d ohl %d ohw %d\n",
+                           i, ddx, ddy, phl, phw, ohl, ohw);
+            }
             continue;
+        }
+        if (gta_traffic_debug)
+            printf("    ram: MTV car %d depth %ld n(%ld,%ld)\n",
+                   i, depth, nx, ny);
+        /* The margin is not real overlap: take it back off before anything
+         * is separated by it, or a pair standing a pixel apart is pushed
+         * apart for ever. */
+        depth -= ((long)GTA_TOUCH_PX << 14);
+        if (depth < 0) depth = 0;
 
         om = oi->mass >> 16;
         if (om < 1) om = 1;
@@ -6803,19 +7039,59 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
         sep = RCHK(sep << 1, "sep depth") / (pm + om);
         mvx = NRAM_MUL(RCHK(sep * pm, "sep*pm"), nx);
         mvy = NRAM_MUL(sep * pm, ny);
+        /* DEEP OVERLAP IS PAID FASTER, NOT ALL AT ONCE. The excess beyond
+         * the band used to be handed to the victim in full, which is a
+         * seven-pixel jump in the tick a fast striker arrives - measured
+         * with `gtadump hitcar ... 20 200 0 0 64`, and reported by the
+         * developer as a teleport. It raises the correction instead, and
+         * the clamp below decides what is actually paid this tick. */
         if (depth > GTA_SEP_DEEP) {
-            long extra = (depth - GTA_SEP_DEEP) << 2;   /* Q14 -> 16.16 */
+            long extra = (depth - GTA_SEP_DEEP) << 1;   /* half of it */
             mvx += NRAM_MUL(extra, nx);
             mvy += NRAM_MUL(extra, ny);
         }
-        if (mvx > NRAM_MAXPUSH)  mvx = NRAM_MAXPUSH;
-        if (mvx < -NRAM_MAXPUSH) mvx = -NRAM_MAXPUSH;
-        if (mvy > NRAM_MAXPUSH)  mvy = NRAM_MAXPUSH;
-        if (mvy < -NRAM_MAXPUSH) mvy = -NRAM_MAXPUSH;
+        {
+            /* THE VICTIM'S SHARE IS CAPPED. Box2D's maxLinearCorrection, in
+             * this port's pixels: whatever is left over is paid on the next
+             * tick and the one after, so the overlap still closes but at a
+             * speed a car could plausibly be shoved at. */
+            long cap = (long)GTA_SEP_MAX_PX << FP;
+            if (mvx >  cap) mvx =  cap;
+            if (mvx < -cap) mvx = -cap;
+            if (mvy >  cap) mvy =  cap;
+            if (mvy < -cap) mvy = -cap;
+        }
         o->x += mvx;
         o->y += mvy;
-        *dpx -= NRAM_MUL(RCHK(sep * om, "sep*om"), nx);
-        *dpy -= NRAM_MUL(sep * om, ny);
+        {
+            /* AND THE STRIKER BACKS OUT OF WHAT IS LEFT.
+             *
+             * This is the half that keeps the pair apart. Capping BOTH sides
+             * at two pixels a tick stopped the teleport and let fast cars
+             * pass through each other instead - `ramsweep` went from 0 driving
+             * through to 208 of 2888, worst penetration 32 px. The overlap
+             * has to go somewhere, and it belongs to whoever drove into it:
+             * a car pushed back along the contact normal, on the tick it
+             * over-drove, reads as hitting something solid, while the same
+             * distance handed to the victim reads as the victim teleporting.
+             * So the victim gets the gentle capped share and the striker
+             * takes the rest, up to a whole car length a tick if that is
+             * what it opened. */
+            long cap = (long)GTA_SEP_STRIKER_PX << FP;
+            long sx_ = NRAM_MUL(RCHK(sep * om, "sep*om"), nx);
+            long sy_ = NRAM_MUL(sep * om, ny);
+            if (depth > GTA_SEP_DEEP) {
+                long extra = (depth - GTA_SEP_DEEP) << 2;   /* Q14 -> 16.16 */
+                sx_ += NRAM_MUL(extra, nx);
+                sy_ += NRAM_MUL(extra, ny);
+            }
+            if (sx_ >  cap) sx_ =  cap;
+            if (sx_ < -cap) sx_ = -cap;
+            if (sy_ >  cap) sy_ =  cap;
+            if (sy_ < -cap) sy_ = -cap;
+            *dpx -= sx_;
+            *dpy -= sy_;
+        }
 
         /* Closing speed along that normal - the player's velocity less the
          * car's own along its face. Only a CLOSING pair exchanges an impulse;
@@ -7045,6 +7321,12 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
          * stops the pair interpenetrating, and it costs no bodywork. */
         if (vrel > GTA_RAM_HARD && o->ram_cool == 0) {
             o->damage += (int)(jp >> 14) + 1;
+            /* ...and it dents the panel the other body was against, which is
+             * what the player sees: a car rammed in the tail carries a
+             * crumpled tail. */
+            o->dmg_bits |= 1UL << gta_car_panel_delta(
+                &tr->tiles->cars[o->model], o->x, o->y, o->face,
+                tr->pl_x, tr->pl_y);
             o->ram_cool = GTA_RAM_COOL;
             hits++;
             tr->stat_rams++;
@@ -7100,6 +7382,8 @@ int gta_traffic_abandon(gta_traffic *tr, int model, long x, long y, int face,
     c->speed = 0;
     c->remap = remap;
     c->damage = damage;
+    c->dmg_bits = 0;
+    c->fuse = 0;
     c->abandoned = 1;
     c->done = 0;
     c->serial = ++tr->next_serial;
@@ -7167,9 +7451,21 @@ void gta_traffic_draw(gta_traffic *tr, gta_view *v)
          * lists, and -1 means the sprite's own paint. The field has existed
          * since traffic did; nothing could apply it until the renderer could
          * remap a sprite. */
-        gta_render_add_sprite_r(v, c->x, c->y, c->layer, c->layer,
+        gta_render_add_sprite_dm(v, c->x, c->y, c->layer, c->layer,
                               info->sprite_index, gta_car_draw_angle(c),
                               c->remap >= 0 && c->remap < GTA_CAR_REMAPS
-                                  ? (int)info->remap8[c->remap] : 0);
+                                  ? (int)info->remap8[c->remap] : 0,
+                              -1, c->dmg_bits);
+        /* A WRITE-OFF BURNS WHILE ITS FUSE RUNS, and it has to be seen to:
+         * a car that simply explodes forty ticks after the shot that killed
+         * it reads as a delayed bug rather than as a warning. The fire is
+         * the game's own object 0x2e, the one a burning pedestrian wears,
+         * turning over three ticks a frame. */
+        if (c->fuse > 0) {
+            int fs = gta_tiles_object_sprite(tr->tiles, 0x2e);
+            if (fs >= 0)
+                gta_render_add_sprite(v, c->x, c->y, c->layer, c->layer,
+                                      fs + ((c->fuse / 3) % 7), 0);
+        }
     }
 }

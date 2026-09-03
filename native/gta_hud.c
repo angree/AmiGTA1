@@ -36,7 +36,23 @@ static const unsigned char glyph[][GH] = {
     { 7, 2, 2, 2, 2 },   /* T  index 21 */
     { 7, 1, 2, 4, 7 },   /* Z  index 22 */
     { 7, 5, 5, 5, 7 },   /* O  index 23 */
-    { 5, 5, 2, 5, 5 }    /* X  index 24 */
+    { 5, 5, 2, 5, 5 },   /* X  index 24 */
+    /* THE REST OF THE ALPHABET, added when the score readout arrived: a
+     * weapon called PISTOL cannot be spelled out of F P S N U C H T Z O X.
+     * Same 3x5 cell, same one-glyph-per-line table. */
+    { 7, 5, 7, 5, 5 },   /* A  index 25 */
+    { 6, 5, 6, 5, 6 },   /* B  index 26 */
+    { 6, 5, 5, 5, 6 },   /* D  index 27 */
+    { 7, 4, 6, 4, 7 },   /* E  index 28 */
+    { 7, 4, 5, 5, 7 },   /* G  index 29 */
+    { 7, 2, 2, 2, 7 },   /* I  index 30 */
+    { 5, 5, 6, 5, 5 },   /* K  index 31 */
+    { 4, 4, 4, 4, 7 },   /* L  index 32 */
+    { 5, 7, 7, 5, 5 },   /* M  index 33 */
+    { 7, 5, 7, 6, 5 },   /* R  index 34 */
+    { 5, 5, 5, 5, 2 },   /* V  index 35 */
+    { 5, 5, 7, 7, 5 },   /* W  index 36 */
+    { 5, 5, 2, 2, 2 }    /* Y  index 37 */
 };
 
 static unsigned char hud_ink = 255;
@@ -75,6 +91,19 @@ static int glyph_index(char c)
     case 'Z': return 22;
     case 'O': return 23;
     case 'X': return 24;
+    case 'A': return 25;
+    case 'B': return 26;
+    case 'D': return 27;
+    case 'E': return 28;
+    case 'G': return 29;
+    case 'I': return 30;
+    case 'K': return 31;
+    case 'L': return 32;
+    case 'M': return 33;
+    case 'R': return 34;
+    case 'V': return 35;
+    case 'W': return 36;
+    case 'Y': return 37;
     default:  return 13;
     }
 }
@@ -121,6 +150,17 @@ void gta_hud_text(unsigned char *dst, int pitch, int w, int h,
         }
         x += GW + 1;
     }
+}
+
+/* How wide gta_hud_text() will draw `s`, plate included. A caller that wants
+ * the text against the RIGHT edge needs this: the score is right-aligned in
+ * the original and a left-aligned one jumps sideways as the digits grow. */
+int gta_hud_width(const char *s)
+{
+    int len = 0;
+    const char *p;
+    for (p = s; *p; p++) len++;
+    return len * (GW + 1) + 1;
 }
 
 char *gta_hud_int(char *buf, long value)

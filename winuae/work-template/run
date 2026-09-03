@@ -17,12 +17,13 @@
 ; and OpenXcom ports both needed 1 MB for the same reason. The .info files
 ; carry the same number for a Workbench double-click.
 ;
-; Change the last line to switch which build runs:
-;   gta-aga      320x200 AGA          gta-rtg240   320x240 RTG
-;   gta-rtg480   640x480 RTG
+; There is one binary. Up to v0.0.3 there were three - gta-aga, gta-rtg240
+; and gta-rtg480 - which differed only in the screen size compiled into them.
+; The size and the display path are settings now: run `gtaprefs` (or edit
+; gta.prefs by hand; the words are in it) and start the same game either way.
 ;
 ; This file is the version-controlled template. tools/bin/deploy.sh copies it
 ; to the emulator's shared folder (adding a CD for the unattended test rig)
 ; and tools/bin/package.sh ships it as-is; edit it here, not there.
 Stack 1000000
-gta-aga >gta.log
+AmiGTA >gta.log

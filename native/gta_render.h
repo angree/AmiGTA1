@@ -220,6 +220,9 @@ typedef struct {
      * overlay is decoded into the view's scratch buffer at draw time, because
      * the base sprite in the tile set is shared and must never be edited. */
     int  delta;
+    /* ...and a SET of them, laid over the same copy: a car wears one dent per
+     * damaged panel and an open door at the same time. Bit N = delta N. */
+    unsigned long delta_mask;
 } gta_sprite_req;
 
 typedef struct {
@@ -452,6 +455,13 @@ int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
  * gta_sprite_req.delta. Pass -1 and it is exactly gta_render_add_sprite_r(). */
 int gta_render_add_sprite_d(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap, int delta);
+
+/* The same again with a MASK of deltas as well - a car wears its dents and
+ * its open door at the same time, and one index cannot say that. `delta` is
+ * still the single overlay (-1 for none) and the two are combined. */
+int gta_render_add_sprite_dm(gta_view *v, long wx, long wy, int layer, int grid,
+                             int index, int angle, int remap, int delta,
+                             unsigned long delta_mask);
 
 /* Draw one sprite immediately, rotated and scaled, wherever the camera
  * currently is. gta_render_frame() calls this at the right point in the layer
