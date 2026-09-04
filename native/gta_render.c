@@ -1157,12 +1157,63 @@ int gta_render_add_sprite(gta_view *v, long wx, long wy, int layer, int grid,
     return gta_render_add_sprite_r(v, wx, wy, layer, grid, index, angle, 0);
 }
 
+/* ON A RAMP, THE SURFACE UNDER A SPRITE IS ITS OWN LAYER'S LID.
+ *
+ * A sprite on layer L is drawn at the START of pass L - after the lid of
+ * layer L-1, which is the surface it stands on, and before anything at its
+ * own height or above (see the layer loop). That is right on every flat
+ * surface and wrong on every slope: a ramp block carries the road TYPE and
+ * the sloping LID in the same block, so the surface the car is driving up is
+ * painted in pass L, after the car, and the car vanishes for the length of
+ * the ramp. Reported four times as "wjezdza sie pod most": the car drove into
+ * the truss bridge at (32..25,44..47), disappeared under the ramp's own road
+ * tiles, and came out on the deck a layer up.
+ *
+ * So a sprite standing on a slope goes in one pass later. The block under the
+ * centre is not enough: a car is a block and a half long, and at the top of
+ * the far ramp its nose is on the slope while its middle is still on the
+ * deck - the layer follows the nose (gta_veh_layer), so for one block the car
+ * would be drawn under the deck. Both ends of the sprite are tested. */
+static int slope_under_sprite(const gta_view *v, long wx, long wy, int layer,
+                              int index, int angle)
+{
+    const gta_tiles *t = v->tiles;
+    long hl, dx, dy;
+    int a;
+
+    if (!v->map || layer < 0 || layer >= GTA_MAP_LAYERS)
+        return 0;
+    if (gta_map_slope_up_dir(v->map, (int)(wx >> 21), (int)(wy >> 21),
+                             layer) >= 0)
+        return 1;
+    if (!t || !t->sprites || index < 0 || index >= t->n_sprites)
+        return 0;
+    hl = (long)t->sprites[index].h / 2;
+    if (hl < TILE / 2)
+        return 0;                       /* a man: his one block is enough */
+    /* The art faces south, so the heading is the angle less that; the sine
+     * is Q14 and world pixels times four is 16.16. Sign does not matter -
+     * both ends are looked at. */
+    a = (angle - 128) & 255;
+    dx = gta_sin(a) * hl * 4;
+    dy = gta_cos(a) * hl * 4;
+    if (gta_map_slope_up_dir(v->map, (int)((wx + dx) >> 21),
+                             (int)((wy - dy) >> 21), layer) >= 0)
+        return 1;
+    if (gta_map_slope_up_dir(v->map, (int)((wx - dx) >> 21),
+                             (int)((wy + dy) >> 21), layer) >= 0)
+        return 1;
+    return 0;
+}
+
 int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap)
 {
     gta_sprite_req *sp;
     if (v->n_sprites >= GTA_MAX_SPRITES)
         return 0;
+    if (slope_under_sprite(v, wx, wy, layer, index, angle))
+        layer++;
     sp = &v->sprites[v->n_sprites++];
     sp->remap = remap;
     sp->delta = -1;

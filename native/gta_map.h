@@ -68,6 +68,36 @@ int  gta_map_block(const gta_map *m, int x, int y, int z, gta_block *out);
  * counting up from the ground. 0 means the column is entirely air. */
 int  gta_map_column_height(const gta_map *m, int x, int y);
 
+/* WHICH WAY A RAMP GOES UP - 0 N, 64 E, 128 S, 192 W - or -1 if this block is
+ * not a ramp at all.
+ *
+ * `type_map` bits 8..13 are the slope: 0 flat, 1..8 a 26-degree ramp, 9..40 a
+ * 7-degree one in eight steps, 41..44 a 45-degree one, four directions each.
+ * Carnage3D groups them N/S/W/E; that the letter is the direction of ASCENT
+ * comes out of the map itself, and getting it backwards sends anything using
+ * it down where it should go up. `gtadump slopes` shows the run at
+ * (11..18, 44) rising eastward with the value climbing 33 to 40 - the "E"
+ * group in ascending order - and the run at x=25..32 doing the same westward.
+ *
+ * THIS LIVES HERE AND NOT IN gta_player.c because the walker is no longer the
+ * only thing that climbs: a car has to find the same ramps, and two copies of
+ * a table this easy to get backwards is one copy too many. */
+int gta_map_slope_up_dir(const gta_map *m, int bx, int by, int z);
+
+/* Is this ramp block at its HIGHEST step - the one whose surface reaches the
+ * top of its own layer?
+ *
+ * A ramp climbs over several blocks: the 7-degree group takes eight of them,
+ * and only the last stands a full layer high. That distinction is what lets
+ * anything stand at layer z over the top of a ramp whose block is at z-1,
+ * while still refusing the layer above the MIDDLE of the ramp, where the
+ * surface is nowhere near that high. */
+int gta_map_slope_is_top(const gta_map *m, int bx, int by, int z);
+
+/* The compass point a movement is mostly along: 0 N, 64 E, 128 S, 192 W.
+ * Beside the two above because it is what their answers are compared with. */
+int gta_map_step_dir(long dx, long dy);
+
 /* --- block attribute accessors (see cds.doc for the meaning of each) --- */
 #define gta_block_slope(b)        (((b)->type_map >> 8) & 0x3f)
 #define gta_block_lid_rotation(b) (((b)->type_map >> 14) & 0x03)

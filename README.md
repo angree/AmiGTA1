@@ -7,9 +7,11 @@ hardware — 68020 and up, AGA or RTG. Not PiStorm, not Vampire, not Emu68.
 It contains no game code and no game data. You supply your own copy of GTA and
 the port converts it on your own machine.
 
-Current release: **v0.0.4** — you can walk around Liberty City, steal a car,
-drive it, and use any of five weapons on what you find. Cars dent, burn and
-explode. See [what is and is not in it](#what-v004-actually-is).
+Current release: **v0.1.0** — you can walk around Liberty City, steal a car,
+drive it over the bridges and ramps, and use any of five weapons on what you
+find. Cars dent, burn, explode and leave a burnt-out wreck. Traffic steers
+round what blocks it, changes lane and turns round. See
+[what is and is not in it](#what-v010-actually-is).
 
 ---
 
@@ -63,12 +65,17 @@ fast RAM, and your own copy of GTA (1997) for the PC. The DOS 8-bit release is
 what it was built against; the 2002 Windows re-release carries the same two data
 files, so that works too.
 
-## What v0.0.4 actually is
+## What v0.1.0 actually is
 
 **Works:** the city renders in 2.5D with correct projection and no gaps in the
 geometry; you walk, run and turn; pedestrians keep to the pavements, turn
 corners, cross roads at a run and are knocked down or killed by a car; traffic
-drives itself along real routes, gives way, queues and takes corners as an arc;
+drives itself along real routes, gives way, queues, takes corners as an arc,
+stops for a person in the road, and **steers** rather than slides — a car
+blocked off a junction changes lane through an S-curve after looking down the
+new lane, a car with nowhere to go turns round, and a car shoved off its lane
+steers back onto it; cars climb every ramp in the city and are drawn on it
+rather than under it;
 getting in and out of a car is animated door-by-door, you vault the car when you
 approach it from the far side, drag the driver out if there is one, and ride a
 bike or a convertible in view; the driven car has the original's own physics —
@@ -78,8 +85,8 @@ walls, and neither of them can be pushed through the other or thrown out of a
 contact; all five weapons work — fists, pistol, machine gun, rocket launcher
 and flamethrower — and the street reacts to a shot; cars take damage from
 crashes and gunfire, wear the dents, and at a hundred points burn and explode,
-taking whatever is parked next to them with them; the score counts, and it and
-the current weapon are on screen.
+taking whatever is parked next to them with them, and leave a burnt-out wreck
+behind; the score counts, and it and the current weapon are on screen.
 
 **Not there yet:** no missions, no police, no wanted level; the five weapons are
 handed to you at the start because the crates that hold them are not built yet;

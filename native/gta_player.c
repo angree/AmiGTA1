@@ -81,85 +81,13 @@ static int walkable_at(const gta_map *m, int bx, int by, int z)
     return g >= GTA_GROUND_ROAD && g <= GTA_GROUND_FIELD;
 }
 
-/* WHICH WAY A RAMP GOES UP, or -1 if this block is not a ramp.
- *
- * `type_map` bits 8..13 are the slope: 0 flat, 1..8 a 26-degree ramp, 9..40 a
- * 7-degree one in eight steps, 41..44 a 45-degree one, four directions each.
- * Carnage3D groups them N/S/W/E and this port needs to know whether that
- * letter is the direction of ASCENT - which matters, because getting it
- * backwards sends a walker down where he should go up.
- *
- * The map settles it. `gtadump slopes` finds the real ramps - the ones with a
- * walkable ground type of their own, as opposed to the sloping walls and roofs
- * that make up most of the slope values in the file:
- *
- *   (11,44) slope 33   (12,44) 34   ...   (18,44) 40
- *
- * an unbroken run rising eastward with the value climbing 33 to 40, which is
- * exactly the "E" group in ascending order. The run at x=25..32 does the same
- * thing westward with the "W" group. So the letter IS the ascent and the value
- * within a group is the height. */
-static int slope_up_dir(const gta_map *m, int bx, int by, int z)
-{
-    gta_block b;
-    int s;
-
-    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM)
-        return -1;
-    if (z < 0 || z >= GTA_MAP_LAYERS)
-        return -1;
-    if (!gta_map_block(m, bx, by, z, &b))
-        return -1;
-
-    s = gta_block_slope(&b);
-    if (s == 0)  return -1;
-    if (s <= 2)  return 0;      /* 26 degrees, north */
-    if (s <= 4)  return 128;
-    if (s <= 6)  return 192;
-    if (s <= 8)  return 64;
-    if (s <= 16) return 0;      /* 7 degrees, eight steps */
-    if (s <= 24) return 128;
-    if (s <= 32) return 192;
-    if (s <= 40) return 64;
-    if (s == 41) return 0;      /* 45 degrees */
-    if (s == 42) return 128;
-    if (s == 43) return 192;
-    if (s == 44) return 64;
-    return -1;
-}
-
-/* Is this ramp block at its HIGHEST step - the one whose surface reaches the
- * top of its own layer?
- *
- * A ramp climbs over several blocks: the 7-degree group takes eight of them,
- * and only the last stands a full layer high. That distinction is what lets a
- * walker stand at layer z over the top of a ramp whose block is at z-1, while
- * still refusing to let him stand a layer up over the middle of it, where the
- * surface is nowhere near that high. */
-static int slope_is_top(const gta_map *m, int bx, int by, int z)
-{
-    gta_block b;
-    int s;
-
-    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM) return 0;
-    if (z < 0 || z >= GTA_MAP_LAYERS) return 0;
-    if (!gta_map_block(m, bx, by, z, &b)) return 0;
-
-    s = gta_block_slope(&b);
-    if (s == 2 || s == 4 || s == 6 || s == 8)       return 1;  /* 26 degrees */
-    if (s == 16 || s == 24 || s == 32 || s == 40)   return 1;  /* 7 degrees  */
-    if (s >= 41 && s <= 44)                         return 1;  /* 45, one block */
-    return 0;
-}
-
-/* The compass point a movement is mostly along: 0 N, 64 E, 128 S, 192 W. */
-static int step_dir(long dx, long dy)
-{
-    long ax = dx < 0 ? -dx : dx;
-    long ay = dy < 0 ? -dy : dy;
-    if (ax >= ay) return dx >= 0 ? 64 : 192;
-    return dy >= 0 ? 128 : 0;
-}
+/* The ramp tables live in gta_map.c now - the driven car climbs the same
+ * ramps and two copies of a direction table this easy to get backwards is one
+ * copy too many. These three names are kept so the code below still reads as
+ * it did. */
+#define slope_up_dir(m, bx, by, z) gta_map_slope_up_dir((m), (bx), (by), (z))
+#define slope_is_top(m, bx, by, z) gta_map_slope_is_top((m), (bx), (by), (z))
+#define step_dir(dx, dy)           gta_map_step_dir((dx), (dy))
 
 /* Which layer the player ends up on standing in this column.
  *

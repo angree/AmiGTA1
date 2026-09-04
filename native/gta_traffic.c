@@ -526,6 +526,15 @@ static int body_on_sq(const gta_traffic *tr, int skip, int bx, int by,
         (int)(tr->pl_x >> (FP + 5)) == bx &&
         (int)(tr->pl_y >> (FP + 5)) == by)
         return 1;
+    /* AND SOMEBODY STANDING IN IT. A pedestrian is not a car and does not
+     * queue, but a square with a person in it is not a square to drive into.
+     * `stopped_only` does not apply: a walker is soft whatever it is doing. */
+    for (i = 0; i < tr->n_walk; i++) {
+        if (tr->walk_layer[i] != z) continue;
+        if ((int)(tr->walk_x[i] >> (FP + 5)) == bx &&
+            (int)(tr->walk_y[i] >> (FP + 5)) == by)
+            return 1;
+    }
     return 0;
 }
 
@@ -1360,6 +1369,11 @@ static int park_band(gta_traffic *tr, const gta_map *m,
                  * (PROGRESS.md 113). Damage and the knock state are the same
                  * kind of leftover. */
                 car->abandoned = 0;
+                /* AND IT IS NOT A WRECK ANY MORE EITHER. Same reason: a
+                 * recycled slot that kept `wrecked` would be a brand new car
+                 * that nobody could get into and that swept up on the wrong
+                 * radius. */
+                car->wrecked = 0;
                 car->damage = 0;
                 car->dmg_bits = 0;
                 car->fuse = 0;
@@ -1379,6 +1393,13 @@ static int park_band(gta_traffic *tr, const gta_map *m,
                 car->arc_len = 0;
                 car->lane_fix = 0;
                 car->lane_target = lane_tgt;
+                /* The line it will steer along - see gta_car.lane_*. It is
+                 * spawned ON its lane, so this is where it already is. */
+                car->lane_axis = ((ang & 127) == 64) ? 1 : 0;
+                car->lane_off  = ((long)((car->lane_axis ? cy : cx) * 32
+                                         + lane_tgt)) << FP;
+                car->lane_dir  = ang & 255;
+                car->lane_set  = 1;
                 car->wait = 0;
                 car->hold = GTA_HOLD_NONE;
                 car->at_light = 0;
@@ -2499,6 +2520,43 @@ static long gap_ahead(const gta_traffic *tr, int idx, long *lead_speed,
                     *lead_i = -1;
                 }
             }
+        }
+    }
+
+    /* AND ANYONE ON FOOT IN FRONT OF IT, the same projection again.
+     *
+     * A pedestrian has no speed worth following at - a car does not queue
+     * behind a walker, it waits for them to get out of the way - so the lead
+     * speed is left at zero and the gap does the rest: the car slows as it
+     * closes and stops short. That is what braking for somebody looks like.
+     *
+     * Half a car's width sideways rather than the full follow window, because
+     * a person on the pavement beside the road must not stop the traffic. */
+    for (i = 0; i < tr->n_walk; i++) {
+        long ox, oy, along, side, wgap;
+
+        if (tr->walk_layer[i] != c->layer)
+            continue;
+        ox = tr->walk_x[i] - c->x;
+        oy = tr->walk_y[i] - c->y;
+        if (ox > GTA_TRAFFIC_LOOKAHEAD || ox < -GTA_TRAFFIC_LOOKAHEAD ||
+            oy > GTA_TRAFFIC_LOOKAHEAD || oy < -GTA_TRAFFIC_LOOKAHEAD)
+            continue;
+        along = ((ox >> 8) * fx + (oy >> 8) * fy) >> 6;
+        side  = ((ox >> 8) * -fy + (oy >> 8) * fx) >> 6;
+        if (side < 0) side = -side;
+        if (along <= 0 || along > GTA_TRAFFIC_LOOKAHEAD)
+            continue;
+        if (side > (GTA_FOLLOW_SIDE / 2))
+            continue;
+        wgap = along -
+            (((long)gta_car_world_len(&tr->tiles->cars[c->model]) / 2 + 4)
+             << FP);
+        if (wgap < 0) wgap = 0;
+        if (best < 0 || wgap < best) {
+            best = wgap;
+            *lead_speed = 0;
+            *lead_i = -1;
         }
     }
     return best;
@@ -3736,7 +3794,12 @@ static long to_block_edge(const gta_car *c, int bx, int by)
  * looks at the block under it, finds a lane, and drives - which is exactly how
  * a real driver recovers from being shunted.
  */
-static void knock_step(gta_traffic *tr, gta_car *c)
+/* The controller, defined below - a knocked car is given its line back the
+ * moment it settles, which is where the walk-back used to be. */
+static void line_from_block(const gta_map *m, gta_car *c,
+                            int bx, int by, int dir);
+
+static void knock_step(gta_traffic *tr, const gta_map *m, gta_car *c)
 {
     long sp;
     /* THE BODY TURNS ABOUT ITS CENTRE OF MASS, not about the middle of its
@@ -3764,8 +3827,23 @@ static void knock_step(gta_traffic *tr, gta_car *c)
 
     c->angle = c->face;
 
-    c->kvx = (c->kvx >> 8) * GTA_KNOCK_DAMP;
-    c->kvy = (c->kvy >> 8) * GTA_KNOCK_DAMP;
+    /* THE TYRES. A car on wheels rolls along its own axis and resists
+     * being dragged across it, so the velocity is split into the two and
+     * damped differently: the rolling share keeps GTA_KNOCK_DAMP, the
+     * lateral share loses GTA_KNOCK_SIDE_DAMP of itself a tick. That is
+     * what makes a car pushed on its nose slide straight back and a car
+     * pushed on its flank barely move - and it is why a shunted car stops
+     * sliding sideways in a few ticks instead of skating for a second. */
+    {
+        long fx = gta_sin(c->face), fy = -gta_cos(c->face);
+        /* 16.16 times Q14: (v >> 8) * (s >> 6) is 16.16 again. */
+        long along  = ((c->kvx >> 8) * (fx >> 6)) + ((c->kvy >> 8) * (fy >> 6));
+        long across = ((c->kvx >> 8) * (-fy >> 6)) + ((c->kvy >> 8) * (fx >> 6));
+        along  = (along  >> 8) * GTA_KNOCK_DAMP;
+        across = (across >> 8) * GTA_KNOCK_SIDE_DAMP;
+        c->kvx = ((along >> 8) * (fx >> 6)) + ((across >> 8) * (-fy >> 6));
+        c->kvy = ((along >> 8) * (fy >> 6)) + ((across >> 8) * (fx >> 6));
+    }
     c->komega = (c->komega >> 8) * GTA_KNOCK_SPIN;
 
     sp = (c->kvx < 0 ? -c->kvx : c->kvx) + (c->kvy < 0 ? -c->kvy : c->kvy);
@@ -3804,12 +3882,508 @@ static void knock_step(gta_traffic *tr, gta_car *c)
         c->angle = ((c->face + 32) >> 6 << 6) & 255;
         c->speed = sp > c->top ? c->top : sp;
         c->hold = GTA_HOLD_NONE;
-        /* THE DRAWN HEADING IS NOT SNAPPED. `angle` is the road direction and
-         * the AI needs it square, but `face` is what is drawn - walking it
-         * back over the next second is the difference between a car that
-         * straightens out and one that clicks straight. */
-        c->recover = GTA_RECOVER_TICKS;
+        /* THE DRAWN HEADING IS NOT SNAPPED. `angle` is the road direction
+         * and the AI needs it square, but `face` is what is drawn and what
+         * the car drives along, and it is left exactly where the collision
+         * put it. The steering controller takes it from there: the car
+         * turns back onto its lane line at a rate its speed and its
+         * turning circle allow, and arrives pointing along the road.
+         *
+         * That replaces GTA_RECOVER_*, which walked `face` back on a timer
+         * while the old lane keeper slid the body across at a quarter rate
+         * - two mechanisms, neither of them steering, and between them the
+         * developer's "jak sie go wykopie z alejki powinien byc w stanie
+         * wrocic realistycznie".
+         *
+         * WHICH LANE IT COMES BACK TO is decided here, once, because it is
+         * a decision and not a path: the block the car has come to rest on
+         * if that block carries its new heading, else the block one step to
+         * either side that does - a car shoved onto the oncoming
+         * carriageway goes back to its own rather than driving up it. If
+         * none of the three answers, the car is left with the line it had
+         * and the block refresh in drive_one picks one up as soon as it
+         * reaches a block that can answer. */
+        c->recover = 0;
+        {
+            int kbx = (int)(c->x >> (FP + 5));
+            int kby = (int)(c->y >> (FP + 5));
+            int sdx, sdy, k;
+            heading_step((c->angle + GTA_TURN_QUARTER) & 255, &sdx, &sdy);
+            for (k = 0; k < 3; k++) {
+                int tx = kbx + (k == 1 ? sdx : k == 2 ? -sdx : 0);
+                int ty = kby + (k == 1 ? sdy : k == 2 ? -sdy : 0);
+                if (ground_at(m, tx, ty, c->layer) != GROUND_ROAD)
+                    continue;
+                if (!dir_allowed(m, tx, ty, c->layer, c->angle))
+                    continue;
+                line_from_block(m, c, tx, ty, c->angle);
+                break;
+            }
+        }
         tr->stat_knock_ended++;
+    }
+}
+
+/* ---- THE LINE AND THE CONTROLLER --------------------------------------
+ *
+ * See gta_car.line_* for what a line is and why every lateral intention is
+ * one. These two functions are the whole of it: one gives a car a line, the
+ * other steers it onto whatever line it has.
+ */
+
+/* GIVE THE CAR THE LANE LINE OF BLOCK (bx,by) FOR DIRECTION `dir`.
+ *
+ * The offset within the block comes from lane_target_at(), the same
+ * function the old lane keeper used, so a car handed its own block keeps
+ * exactly the line it had. What is different is that the answer is turned
+ * into an ABSOLUTE coordinate and kept: the car then follows the line even
+ * while it is over a block that would have answered differently, which is
+ * what makes a lane change a single decision instead of a slide. */
+static void line_from_block(const gta_map *m, gta_car *c,
+                            int bx, int by, int dir)
+{
+    int tgt = lane_target_at(m, bx, by, c->layer, dir);
+    c->lane_axis = ((dir & 127) == 64) ? 1 : 0;
+    c->lane_off  = ((long)((c->lane_axis ? by : bx) * 32 + tgt)) << FP;
+    c->lane_dir  = dir & 255;
+    c->lane_set  = 1;
+    /* The old field stays in step: the corner geometry and the instruments
+     * still read it, and it must not drift away from the line. */
+    c->lane_target = tgt;
+}
+
+/* ONE TICK OF STEERING TOWARD THE LINE. Returns the heading to move along.
+ *
+ * Pure pursuit: aim at the point on the line L ahead, turn toward it at no
+ * more than the speed and the turning radius allow, move where you point.
+ * That one loop is the lane keeping, the lane change, the return after a
+ * shove and the U-turn - see gta_car.line_*.
+ *
+ * `*slow` comes back 1 when the heading is far enough out that the car
+ * should be held to cornering speed; the caller applies it, because the
+ * speed ladder is the caller's. */
+static int steer_along_line(gta_car *c, int *slow)
+{
+    long tx, ty, want16, d, w;
+    int  L;
+
+    *slow = 0;
+    if (!c->lane_set)
+        return c->face;
+
+    /* HOW FAR AHEAD, in whole px. The multiply is done BEFORE the shift:
+     * the fleet cruises at 1.8 px/tick and corners at 0.6, so rounding the
+     * speed to whole pixels first makes every car look the same to this and
+     * throws the scaling away - measured, every speed came out at the
+     * GTA_PURSUIT_MIN floor. Speed is under 2^17 and K is small, so the
+     * product is nowhere near 32 bits. */
+    L = (int)((c->speed * GTA_PURSUIT_K) >> FP);
+    if (L < GTA_PURSUIT_MIN) L = GTA_PURSUIT_MIN;
+    if (L > GTA_PURSUIT_MAX) L = GTA_PURSUIT_MAX;
+
+    /* THE PURSUIT POINT: along the line, L ahead of where the car projects
+     * onto it. The along axis is the car's own coordinate on that axis -
+     * projection onto an axis-aligned line is just taking the other
+     * coordinate - and the cross axis is the line itself. */
+    if (c->lane_axis) {                 /* y = line_off, driving east/west */
+        tx = c->x + ((long)((c->lane_dir == 64) ? L : -L) << FP);
+        ty = c->lane_off;
+    } else {                            /* x = line_off, driving north/south */
+        tx = c->lane_off;
+        ty = c->y + ((long)((c->lane_dir == 128) ? L : -L) << FP);
+    }
+
+    /* The heading that points at it. gta_dir16 wants screen axes (y down),
+     * which is what these are; the arguments are shifted down so the
+     * products inside it stay well clear of 32 bits. */
+    want16 = gta_dir16((tx - c->x) >> 8, (ty - c->y) >> 8);
+
+    /* FACE16 IS ONLY AUTHORITATIVE WHILE IT AGREES WITH FACE.
+     *
+     * It was introduced for a knocked car and is maintained only there; the
+     * arc writes `face` directly and so does the compass snap when a knock
+     * ends. Reading it as the current heading without this check is what a
+     * whole regression run looked like: the controller believed a car
+     * driving east was pointing north, steered from that belief, and wrote
+     * the answer back into `face` - 691 heading reversals in 6000 ticks and
+     * the fleet's flow down from 93% to 43%. When they agree, face16's
+     * extra resolution is real and is kept; when they do not, `face` is the
+     * one that just drove the car and face16 is stale. */
+    if (((c->face16 >> FP) & 255) != (long)c->face)
+        c->face16 = (long)c->face << FP;
+
+    /* THE TURN THIS TICK, the short way round. */
+    d = (want16 - c->face16) & 0xFFFFFFL;
+    if (d > 0x800000L) d -= 0x1000000L;
+
+    if (d > (GTA_STEER_SLOW << FP) || d < -(GTA_STEER_SLOW << FP))
+        *slow = 1;
+
+    /* v / R, in 16.16 steps a tick - see GTA_STEER_W. */
+    w = ((c->speed >> 6) * GTA_STEER_W) / GTA_TURN_RADIUS;
+    if (w < GTA_STEER_W_MIN) w = GTA_STEER_W_MIN;
+    if (w > GTA_STEER_W_MAX) w = GTA_STEER_W_MAX;
+
+    if (d >  w) d =  w;
+    if (d < -w) d = -w;
+
+    c->face16 = (c->face16 + d) & 0xFFFFFFL;
+    c->face   = (int)((c->face16 >> FP) & 255);
+
+    /* ON THE LINE AND POINTING ALONG IT: SNAP, AND STOP HUNTING.
+     *
+     * A pursuit controller never quite settles - it holds a step or two of
+     * heading against the last pixel of error for ever. On a car that costs
+     * more than it looks: `face` is what books junction squares and what
+     * car_free_at sweeps, so a permanently slewed car occupies a diagonal
+     * rectangle and a wider footprint. Measured with the hunt left in:
+     * junction-box waiting up from 6851 to 8292 car-ticks and the fleet's
+     * flow 93% -> 91%, with nothing else changed.
+     *
+     * Inside a pixel of the line and a step of the road's own direction the
+     * car is, for every purpose anything downstream has, straight - so it
+     * is made exactly straight. Any real error takes it back out. */
+    {
+        long err = (c->lane_axis ? c->y : c->x) - c->lane_off;
+        long dd  = (((long)c->lane_dir << FP) - c->face16) & 0xFFFFFFL;
+        if (dd > 0x800000L) dd -= 0x1000000L;
+        if (err < 0) err = -err;
+        if (err <= (1L << FP) && dd < (1L << FP) && dd > -(1L << FP)) {
+            c->face16 = (long)c->lane_dir << FP;
+            c->face   = c->lane_dir;
+        }
+    }
+    return c->face;
+}
+
+/* The controller on its own, for `gtadump steertest` - see the header. */
+void gta_traffic_set_line(gta_car *c, int axis, long off, int dir)
+{
+    c->lane_axis = axis;
+    c->lane_off  = off;
+    c->lane_dir  = dir & 255;
+    c->lane_set  = 1;
+}
+
+void gta_traffic_steer_step(gta_car *c, int *slow)
+{
+    int f = steer_along_line(c, slow);
+    c->x +=  ((long)gta_sin(f) * (c->speed >> 4)) >> 10;
+    c->y += -((long)gta_cos(f) * (c->speed >> 4)) >> 10;
+}
+
+/* --- 6b. BLOCKED ON OPEN ROAD: TAKE THE NEXT LANE ---------------------
+ *
+ * "jak auto jest zablokowane poza skrzyzowaniem to powinno po jakims
+ * czasie probowac zmienic pas zeby ominac (o ile ten drugi tez nie jest
+ * zajety - sprawdz to najpierw)."
+ *
+ * A car held by the gap at a junction is queueing and will move when the
+ * light changes. A car held in the middle of a street is behind something
+ * that is not going anywhere - a parked car, a wreck, a person standing in
+ * the road - and waiting is the one thing that cannot help.
+ *
+ * The check the developer asked for comes first and it is three conditions:
+ * the block beside it must be road, it must carry the car's OWN direction
+ * (so it is the next lane of this carriageway and not the oncoming one),
+ * and it must be empty. Left is tried before right, as a driver would.
+ *
+ * The move itself is one pixel a tick across the direction of travel for a
+ * block's worth; the lane keeper stands down while it runs and then holds
+ * the car in its new lane, because the keeper always aims at the middle of
+ * whatever block the car is now in.
+ *
+ * A FUNCTION, BECAUSE IT HAS TO RUN FOR A CAR THAT HAS STOPPED. It was a
+ * block of drive_one() placed after the early return a stopped car takes,
+ * so the one car that needed it - speed nought, held behind a man in the
+ * road - never reached it; and it keyed on GTA_HOLD_GAP alone, while a car
+ * the follow ladder has eased to a standstill is stamped GTA_HOLD_QUEUE.
+ * Measured in the emulator: a driven car braked for the player standing in
+ * its lane, stopped 1.4 blocks short, and stood there for 400 ticks with
+ * the lane beside it empty. Both holds mean "something ahead", and both
+ * paths call this now. */
+/* TURN ROUND, IF THIS IS A PLACE TO DO IT. Returns 1 if the car was given
+ * the oncoming lane. See the call site for the policy; this is the test.
+ *
+ * The oncoming carriageway of a right-hand-drive city is on the car's LEFT,
+ * and the port's own count says so without exception: of every road block
+ * with one direction bit, the perpendicular neighbour carrying the reverse
+ * bit is on the left 9976 times and on the right 0 in nyc.cmp
+ * (the traffic notes). So there is one side to look at. */
+/* Why a U-turn was refused. Rare enough to print unconditionally, and it is
+ * the one thing a log cannot otherwise say - every refusal looks the same
+ * from outside. Always returns 0, so it reads as `return uturn_no(...)`. */
+static int uturn_no(const gta_car *c, int bx, int by, const char *why)
+{
+    printf("gta: car %lu at (%d,%d) will not turn round: %s\n",
+           c->serial, bx, by, why);
+    return 0;
+}
+
+static int uturn_try(gta_traffic *tr, const gta_map *m, int idx,
+                     int bx, int by)
+{
+    gta_car *c = &tr->cars[idx];
+    int back = (c->angle + 128) & 255;
+    int sdx, sdy, fdx, fdy, k, tbx, tby, wide;
+
+    /* NEVER AT A CROSSING, and never one block off one either: the arc
+     * takes a couple of blocks and it must not end up inside a junction
+     * that other cars have claimed. */
+    heading_step(c->angle, &fdx, &fdy);
+    /* NOT WHILE IT IS STANDING IN A CROSSING - and that is the whole of the
+     * junction rule, arrived at by measurement rather than by caution.
+     *
+     * It began as "not here and not in either neighbour", which refused
+     * every U-turn in the city: Liberty City's crossings are three or four
+     * blocks apart and the junction BOX is wider than the blocks whose
+     * arrows actually cross, so almost every stretch of street has one
+     * within a block. Then "not here and not the block ahead", which is
+     * where the arc's forward sweep goes - and the filmed case refused on
+     * exactly that, a car boxed in at (39,45) with the crossing's box
+     * reaching (38,45), frozen for ever with two blocked lanes and an
+     * empty carriageway beside it.
+     *
+     * What the sweep actually costs is under one block forward, and the
+     * car ends up pointing AWAY from the crossing and drives away from it.
+     * The junction claim still governs entering the crossing itself. A car
+     * that can never turn round is the fault being fixed; a car that
+     * clips the mouth of a junction while turning is what a driver does. */
+    if (is_junction(m, bx, by, c->layer))
+        return uturn_no(c, bx, by, "it is standing in a crossing");
+
+    /* THE FIRST LANE TO THE LEFT THAT GOES THE OTHER WAY, and it need not
+     * be the block next door: Liberty City's main streets are two lanes
+     * each way, so from the inner westbound lane the oncoming carriageway
+     * is TWO blocks left, and a test that looked only at the neighbour
+     * refused every U-turn on exactly the roads wide enough for one. Every
+     * block crossed on the way has to be road, or the scan has left the
+     * carriageway over a kerb. */
+    heading_step((c->angle - GTA_TURN_QUARTER) & 255, &sdx, &sdy);
+    tbx = tby = -1;
+    for (k = 1; k <= GTA_UTURN_SCAN; k++) {
+        int qx = bx + sdx * k, qy = by + sdy * k;
+        if (ground_at(m, qx, qy, c->layer) != GROUND_ROAD)
+            break;
+        if (dir_allowed(m, qx, qy, c->layer, back)) { tbx = qx; tby = qy; break; }
+    }
+    if (tbx < 0)
+        return uturn_no(c, bx, by, "no oncoming lane within reach on the left");
+
+    /* THREE BLOCKS OF IT, THE WAY THE CAR WILL BE GOING, and all clear.
+     * Turning into a lane that is blocked a car's length along is worse
+     * than waiting: the car ends up across both carriageways. */
+    for (k = 0; k < 3; k++) {
+        int qx = tbx - fdx * k, qy = tby - fdy * k;
+        if (ground_at(m, qx, qy, c->layer) != GROUND_ROAD)
+            return uturn_no(c, qx, qy, "the way out is not road");
+        if (!dir_allowed(m, qx, qy, c->layer, back))
+            return uturn_no(c, qx, qy, "the way out does not go that way");
+        if (body_on_sq(tr, idx, qx, qy, c->layer, 0, 0))
+            return uturn_no(c, qx, qy, "the way out is occupied");
+        /* NOT "and none of them is a junction": in a grid the lane a car
+         * drives away along meets a crossing within two blocks almost
+         * everywhere, and requiring three clear of one refused every
+         * U-turn in the city. The rule about junctions is about where the
+         * car TURNS, and that is tested above against its own block and
+         * its two neighbours along the street. */
+    }
+
+    /* AND ROOM FOR THE CIRCLE. The car swings a half circle of radius
+     * GTA_TURN_RADIUS, so it needs twice that across the road measured
+     * from its own line. Counting drivable blocks to the left is the
+     * road's width in 32 px units; two blocks is 64 px and the circle is
+     * 58, so two is the floor and it is not a coincidence - it is the
+     * two-lane carriageway the manoeuvre was designed against. */
+    wide = 0;
+    for (k = 1; k <= 3; k++) {
+        if (ground_at(m, bx + sdx * k, by + sdy * k, c->layer) != GROUND_ROAD)
+            break;
+        wide++;
+    }
+    if (wide * 32 < 2 * GTA_TURN_RADIUS)
+        return uturn_no(c, bx, by, "the road is too narrow for the circle");
+
+    /* Round it goes. The route is thrown away rather than reversed: it was
+     * a path to somewhere ahead and the car is no longer going there. */
+    /* THE ORDER IS THE LINE, AND NOTHING ELSE.
+     *
+     * `c->angle` is deliberately NOT set: the road direction is derived
+     * from the drawn heading every tick (`angle = (face + 32) & 0xC0`), so
+     * setting it here is overwritten before the next line of the function
+     * runs - measured, the log read "now heading 64" and the watch two
+     * ticks later read 192. The controller swings `face` round and `angle`
+     * follows it through the quadrants on its own, which is also what
+     * makes every other rule - the following, the claims, the lights -
+     * see the right direction at the right moment without being told. */
+    line_from_block(m, c, tbx, tby, back);
+    c->path_n = 0;
+    c->path_i = 0;
+    c->want_route = 1;
+    c->swap_wait = 0;
+    /* A U-TURN IS A LANE CHANGE, AS FAR AS THE MANOEUVRE STATE GOES, and it
+     * has to be: the line is re-read from the block under the car every
+     * tick, and the block the car is turning OUT of does not carry its new
+     * heading. Without this the refresh overwrote the U-turn's line on the
+     * very next tick with "this westbound block, heading east", which no
+     * other rule will drive along - the car turned round in the log, stood
+     * exactly where it was, and turned round again when the cooldown ran
+     * out. `swap` suppresses the refresh until the car has arrived in the
+     * lane it was given, which is what the same flag does for a change. */
+    c->swap = 1;
+    c->swap_ticks = 0;
+    c->swap_bx = tbx;
+    c->swap_by = tby;
+    c->swap_sdx = sdx;
+    c->swap_sdy = sdy;
+    tr->stat_uturns++;
+    printf("gta: car %lu at (%d,%d) turns round into (%d,%d), now heading "
+           "%d\n", c->serial, bx, by, tbx, tby, back);
+    return 1;
+}
+
+static void lane_swap_step(gta_traffic *tr, const gta_map *m, int idx,
+                           int bx, int by)
+{
+    gta_car *c = &tr->cars[idx];
+    /* "BLOCKED" IS STANDING STILL, NOT A HOLD LABEL. The labels lie here:
+     * the car measured behind the player was stamped GTA_HOLD_BOX because
+     * the block the man stood on is a junction block two blocks ahead, and
+     * the box logic had run first. What is true of every such car is that
+     * its speed is nought and it is not waiting at a red light. */
+    int blocked = (c->speed == 0 && c->hold != GTA_HOLD_LIGHT &&
+                   (c->lead_kind == 1 || c->lead_kind == 2));
+
+    /* A STANDING CAR AHEAD MAY BE THE FRONT OF A JUNCTION QUEUE, and that
+     * queue moves when the box clears. With the crossing right in front of
+     * it the car waits its turn; the log showed cars at the box asking for
+     * the lane beside them. A man in the road is never a queue - the box
+     * grid covers the block he stands on here, and the first version of
+     * this test refused him too. */
+    if (blocked && c->lead_kind == 2) {
+        int adx, ady;
+        heading_step(c->angle, &adx, &ady);
+        if (is_junction(m, bx + adx, by + ady, c->layer))
+            blocked = 0;
+    }
+
+    if (c->swap_cool > 0)
+        c->swap_cool--;
+
+    if (c->swap != 0) {
+        /* A CHANGE IS UNDER WAY. The car already has the new lane's line and
+         * the controller is driving it there; this only watches.
+         *
+         * ARRIVED: the car's own block is the one that was aimed at, on the
+         * cross axis - the along axis has moved on and is not the question.
+         * ABANDONED: the lane it is going to has been taken, or the change
+         * is taking absurdly long (a car held by something else half way
+         * across would otherwise never let go of the line). */
+        /* ARRIVED MEANS IN THE LANE **AND** POINTING ALONG IT. The block
+         * alone is not enough: a manoeuvre that reverses the direction can
+         * be ordered for the block the car is already standing in (the
+         * route wanting the way it came), and a block-only test would call
+         * that finished on its first tick - the refresh would then put the
+         * old direction back before the car had turned a degree, which is
+         * the flip-flop the instant 180 was replaced to avoid. */
+        long derr = (((long)c->lane_dir << FP) - c->face16) & 0xFFFFFFL;
+        int cross_now  = c->lane_axis ? by : bx;
+        int cross_want = c->lane_axis ? c->swap_by : c->swap_bx;
+        int done;
+        if (derr > 0x800000L) derr -= 0x1000000L;
+        done = (cross_now == cross_want) &&
+               derr < (GTA_STEER_SLOW << FP) && derr > -(GTA_STEER_SLOW << FP);
+
+        if (!done && ++c->swap_ticks > GTA_LANE_SWAP_MAX) {
+            done = 1;
+            tr->stat_lane_swap_timeout++;
+        }
+        if (!done && (c->swap_sdx || c->swap_sdy) &&
+            body_on_sq(tr, idx, bx + c->swap_sdx, by + c->swap_sdy,
+                       c->layer, 0, 0)) {
+            /* Somebody came down it. Go back to the lane the car is still
+             * mostly in - the controller turns it back, which is what a
+             * driver does when the gap closes. */
+            line_from_block(m, c, bx, by, c->angle);
+            done = 1;
+            tr->stat_lane_swap_aborted++;
+        }
+        if (done) {
+            c->swap = 0;
+            c->swap_ticks = 0;
+            c->swap_cool = GTA_LANE_SWAP_COOL;
+        }
+    } else if (c->turn == 0 && blocked && c->swap_cool == 0 &&
+               !is_junction(m, bx, by, c->layer)) {
+        if (++c->swap_wait >= GTA_LANE_SWAP_WAIT) {
+            int t;
+            c->swap_wait = 0;
+            for (t = 0; t < 2 && c->swap == 0; t++) {
+                int sd = t == 0 ? -GTA_TURN_QUARTER : GTA_TURN_QUARTER;
+                int side = (c->angle + sd) & 255;
+                int sdx, sdy, nbx, nby, g, da, bo, adx, ady;
+                heading_step(side, &sdx, &sdy);
+                heading_step(c->angle, &adx, &ady);
+                nbx = bx + sdx;
+                nby = by + sdy;
+                g  = ground_at(m, nbx, nby, c->layer) == GROUND_ROAD;
+                da = g && dir_allowed(m, nbx, nby, c->layer, c->angle);
+                /* IS IT FREE AHEAD, NOT JUST BESIDE?
+                 *
+                 * Looking only at the block alongside is how a car pulls
+                 * into a lane that is blocked two car-lengths on: filmed
+                 * with both westbound lanes blocked, the car changed lane,
+                 * met the second parked car, changed back, and would have
+                 * weaved between them for ever - every single change was
+                 * legal by the beside-test. Three blocks is a bus length
+                 * and it is also what makes the U-turn reachable, because
+                 * a lane that is refused is what leads to it. */
+                bo = 0;
+                if (da) {
+                    int q;
+                    for (q = 0; q < GTA_LANE_SWAP_LOOK && !bo; q++)
+                        if (body_on_sq(tr, idx, nbx + adx * q, nby + ady * q,
+                                       c->layer, 0, 0))
+                            bo = 1;
+                }
+                if (!g || !da || bo)
+                    continue;
+                /* TAKE THAT LANE. The whole order is a new line; how to get
+                 * onto it from wherever the car happens to be, at whatever
+                 * angle, is the controller's problem and it re-solves it
+                 * every tick - which is what the developer asked for: "to
+                 * nie moze byc zaprogramowane na twardo bo auto moze puknac
+                 * moze przesunac moze miec pas nagle zajety". */
+                line_from_block(m, c, nbx, nby, c->angle);
+                c->swap = 1;            /* a change is under way */
+                c->swap_ticks = 0;
+                c->swap_bx = nbx;
+                c->swap_by = nby;
+                c->swap_sdx = sdx;
+                c->swap_sdy = sdy;
+                tr->stat_lane_swaps++;
+            }
+            /* NEITHER LANE: TURN ROUND. "i powinien miec tez mozliwosc
+             * zawrocic."
+             *
+             * Nothing about this is a manoeuvre either - the car is given
+             * the oncoming lane's line with the direction reversed, and the
+             * controller does the rest: the pursuit point is behind it, so
+             * the heading error is about 128 steps, and it turns at the
+             * full rate its speed and circle allow until it is round. On a
+             * two-lane carriageway that is a half circle 29 px in radius,
+             * 58 px across, which is what the road is.
+             *
+             * WHAT HAS TO BE TRUE FIRST, and the policy is the developer's:
+             * mid-block when blocked, yes; at or beside a crossing, never
+             * (a car turning round in a junction is exactly what the
+             * junction rules exist to prevent); a road too narrow for the
+             * circle, refuse and wait. */
+            if (c->swap == 0)
+                uturn_try(tr, m, idx, bx, by);
+        }
+    } else if (!blocked) {
+        c->swap_wait = 0;
     }
 }
 
@@ -3828,40 +4402,47 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
     int move_face = -1;         /* mid-arc heading for this step, -1 = not set */
     long gap, lead, want, edge, dx, dy;
 
+    /* NOBODY IS DRIVING THIS ONE, YET. A car that has just been hit hard is
+     * loose: it travels on the velocity the collision gave it and is not
+     * steered, not held to its lane and not held off the car in front,
+     * because none of those are things a driver who has just been rammed is
+     * doing. See knock_step().
+     *
+     * AND THAT INCLUDES A CAR WITH NOBODY IN IT. This used to come after the
+     * abandoned test below, so a parked car or a wreck took the impulse and
+     * the spin from a collision and then never integrated them: it sat
+     * exactly where it was, with a velocity it was not allowed to use, and
+     * the player's car, swept to a stop against it, sat there too with the
+     * throttle down. Measured: pushed on its corner for 200 ticks, the
+     * parked car stayed at (1104,1448) face 192 to the pixel. A body is a
+     * body whether or not somebody is driving it; what an abandoned car
+     * must not do is DRIVE OFF afterwards, so when the knock ends it is
+     * put back at rest where it stopped, at the heading it stopped on. */
+    if (c->knock > 0) {
+        knock_step(tr, m, c);
+        if (c->abandoned && c->knock == 0) {
+            c->speed = 0;
+            c->recover = 0;
+            c->angle = c->face;
+        }
+        return;
+    }
+
     /* NOBODY IS DRIVING THIS ONE. A car the player parked and walked away
      * from stays exactly where it was left - it is still drawn, still solid,
      * still enterable, and it never books a square or asks for a route. */
     if (c->abandoned)
         return;
 
-    /* AND NOBODY IS DRIVING THIS ONE EITHER, YET. A car that has just been hit
-     * hard is loose: it travels on the velocity the collision gave it and is
-     * not steered, not held to its lane and not held off the car in front,
-     * because none of those are things a driver who has just been rammed is
-     * doing. See knock_step(). */
-    if (c->knock > 0) {
-        knock_step(tr, c);
-        return;
-    }
-
-    /* STRAIGHTENING UP AFTER A KNOCK. The car drives normally again - this
-     * only walks the drawn heading back towards the road's, a step a tick, so
-     * the slew fades instead of vanishing between two frames. */
-    if (c->recover > 0) {
-        long want = (long)c->angle << 16;
-        long d = (want - c->face16) & 0xFFFFFFL;
-
-        if (d > 0x800000L) d -= 0x1000000L;      /* the short way round */
-        if (d > GTA_RECOVER_STEP)  d = GTA_RECOVER_STEP;
-        if (d < -GTA_RECOVER_STEP) d = -GTA_RECOVER_STEP;
-        c->face16 = (c->face16 + d) & 0xFFFFFFL;
-        c->face = (int)((c->face16 >> 16) & 255);
-        if (--c->recover <= 0 || (d < 4096L && d > -4096L)) {
-            c->recover = 0;
-            c->face = c->angle;
-            c->face16 = (long)c->angle << 16;
-        }
-    }
+    /* STRAIGHTENING UP AFTER A KNOCK IS JUST DRIVING, and it is done by the
+     * steering controller in section 6 like every other lateral intention:
+     * the car keeps the heading the collision left it with and turns back
+     * onto its lane line at a rate its speed and turning circle allow.
+     *
+     * What used to be here walked the drawn heading back on a timer while
+     * the lane keeper slid the body sideways at a quarter rate - two
+     * mechanisms, neither of them steering, and the reason a shunted car
+     * came back on a straight diagonal instead of an arc. */
 
     if (c->done)
         return;
@@ -4419,6 +5000,16 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
              * by the time the car left the crossing. The two mechanisms have
              * to agree, and the corner is the one that knows. */
             c->lane_target = c->turn_aim_tgt;
+            /* ...and the same answer as the line the controller steers on,
+             * from the block the aim named rather than from the crossing the
+             * car is standing in. Without this the first tick out of the
+             * corner steers at whatever the junction block answers. */
+            c->lane_axis = ((c->angle & 127) == 64) ? 1 : 0;
+            c->lane_off  = ((long)((c->lane_axis ? c->turn_aim_by
+                                                 : c->turn_aim_bx) * 32
+                                   + c->turn_aim_tgt)) << FP;
+            c->lane_dir  = c->angle;
+            c->lane_set  = 1;
 
 
         }
@@ -4583,8 +5174,20 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * A car is nudged away from the kerb only when there is a kerb on exactly
      * one side. Between two lanes - both sides road - the block centre is the
      * lane centre and nothing is added. */
-    if (!is_junction(m, bx, by, c->layer))
+    if (!is_junction(m, bx, by, c->layer)) {
+        /* ...AND THE LINE ITSELF, which is the same answer as an ABSOLUTE
+         * coordinate for the controller to steer onto - see gta_car.lane_*.
+         *
+         * NOT WHILE A LANE CHANGE OWNS IT. During a change the car is
+         * deliberately crossing into the next block, and re-reading the line
+         * from the block underneath would adopt whichever lane the body has
+         * most of and cancel the manoeuvre half way. lane_swap_step() sets
+         * the line and clears `swap` when the car has arrived, and the
+         * refresh then confirms the new lane from the new block. */
         c->lane_target = lane_target_at(m, bx, by, c->layer, c->angle);
+        if (c->swap == 0)
+            line_from_block(m, c, bx, by, c->angle);
+    }
 
 
     /* --- 2. where the route says to go ------------------------------------ */
@@ -4790,14 +5393,40 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
             /* AND A U-TURN OBEYS THE ARROWS TOO. It writes the heading
              * straight into the car without going through the corner logic,
              * so the check above never sees it. */
+            /* ...AND IT IS STEERED NOW, NOT SNAPPED.
+             *
+             * This branch used to write the reversed heading straight into
+             * `face`, a whole half circle between two frames, because
+             * nothing in the port could turn a car through 180 degrees -
+             * the corner code does quarter arcs and that is all. It is the
+             * developer's "samochody sie insta o 180 stopni czasem
+             * odwracaja", and it fires far more often since a car can be
+             * left facing against its block's arrows (a shove across the
+             * road, or the blocked-street U-turn throwing its route away).
+             *
+             * The steering controller turns a car round in about 74 ticks
+             * on a two-lane carriageway (`gtadump steertest`), so the flip
+             * is now an ORDER, exactly like a lane change: the line for
+             * this block in the direction the route wants, and the
+             * manoeuvre state so the per-tick refresh does not put the old
+             * direction back before the car has swung round.
+             *
+             * If the map does not allow it here, the car carries straight
+             * on as before and asks again on the next block. */
             if (is_junction(m, bx, by, c->layer) || c->turn_lock != 0 ||
                 !dir_allowed(m, bx, by, c->layer, want_dir)) {
                 want_dir = c->angle;            /* carry straight on instead */
             } else {
-                c->face = want_dir;
-                c->angle = want_dir;
+                line_from_block(m, c, bx, by, want_dir);
+                c->swap = 1;
+                c->swap_ticks = 0;
+                c->swap_bx = bx;
+                c->swap_by = by;
+                c->swap_sdx = 0;
+                c->swap_sdy = 0;
                 c->turn_lock = 0;
-                heading_step(c->angle, &dxs, &dys);
+                tr->stat_uturns++;
+                heading_step(want_dir, &dxs, &dys);
             }
         } else {
             /* THE ORIGINAL'S TEST, AND IT IS A COMPARISON OF BLOCKS, NOT A
@@ -5241,8 +5870,19 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
              * impossible`, state 13 = turning + straightening + arc). It
              * straightens first and corners after; the junction is still
              * there a few ticks later. */
-            if (c->recover > 0)
-                ready = 0;
+            /* NOT WHILE IT IS STILL COMING BACK ONTO ITS LANE. A car
+             * asked to corner while its heading is still 30 degrees out
+             * would jump to the arc's tangent in a single tick: measured
+             * at 27 of 256, 38 degrees in a fiftieth of a second. The
+             * heading error against the road is what says so now that the
+             * walk-back timer is gone. */
+            {
+                long dsq = (((long)c->angle << FP) - c->face16) & 0xFFFFFFL;
+                if (dsq > 0x800000L) dsq -= 0x1000000L;
+                if (dsq > (GTA_STEER_SLOW << FP) ||
+                    dsq < -(GTA_STEER_SLOW << FP))
+                    ready = 0;
+            }
 
             if (!ready) {
                 /* Not yet, and nothing said - this is every tick of every
@@ -5429,6 +6069,13 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * So the rectangle runs with a short horizon and only ever tightens the
      * answer: it is an emergency brake, not a following distance. */
     gap = gap_ahead(tr, idx, &lead, &lead_i);
+    /* Remembered for the lane change - see gta_car.lead_kind. */
+    if (gap < 0)                 c->lead_kind = 0;
+    else if (lead_i < 0)         c->lead_kind = lead == 0 ? 1 : 3;
+    else if (lead_i < tr->n && tr->cars[lead_i].speed == 0
+             && tr->cars[lead_i].knock == 0)
+                                 c->lead_kind = 2;
+    else                         c->lead_kind = 3;
     /* THE RESERVATION IS THE JUDGE - "jesli robi rezerwacje to musi jechac
      * rezerwacja i koniec". A committed car brakes for a body standing ON
      * one of ITS booked squares - its own queue, or a genuine violation -
@@ -5877,12 +6524,40 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
                 c->serial, want >> FP, ((want & 0xffffL) * 100) >> FP,
                 gap >= 0 ? (gap >> FP) : -1, clear, lead >> FP,
                 give_way, c->hold, c->crossing, c->turn);
+    /* A MANOEUVRE HAS TO MOVE TO HAPPEN AT ALL.
+     *
+     * The controller turns the heading at v/R: a car at rest turns at the
+     * floor rate and a half circle would take ten seconds. So a car in the
+     * middle of a lane change or a U-turn is given cornering speed even
+     * when the ladder above wants it stopped - measured without this, a
+     * car that turned round sat at speed 0 for the whole run and the log
+     * showed it deciding to turn again every time the cooldown expired.
+     *
+     * It is safe because the manoeuvre only exists after three blocks of
+     * the target lane were checked clear, and the check is repeated every
+     * tick in lane_swap_step(), which abandons the move the moment they
+     * are not. And it stops the moment the heading is nearly right, so an
+     * arrived car queues normally again. */
+    if (c->swap != 0) {
+        long dman = (((long)c->lane_dir << FP) - c->face16) & 0xFFFFFFL;
+        if (dman > 0x800000L) dman -= 0x1000000L;
+        if (dman > (GTA_STEER_SLOW << FP) || dman < -(GTA_STEER_SLOW << FP)) {
+            long floor_ = (long)GTA_SPEED_TURN_TIGHT * GTA_SPEED_UNIT;
+            if (want < floor_) want = floor_;
+            if (c->hold == GTA_HOLD_BOX || c->hold == GTA_HOLD_QUEUE ||
+                c->hold == GTA_HOLD_GAP)
+                c->hold = GTA_HOLD_NONE;
+        }
+    }
+
     c->speed = approach(c->speed, want, c->accel, c->brake);
     if (c->speed <= 0) {
         c->speed = 0;
         if (c->hold == GTA_HOLD_NONE) c->hold = GTA_HOLD_QUEUE;
         c->wait++;
-
+        /* A car standing still is exactly the car the lane change is for -
+         * see lane_swap_step(). It sat behind this return and never ran. */
+        lane_swap_step(tr, m, idx, bx, by);
         return;
     }
     /* A MOVING CAR IS NOT BEING HELD BY ANYTHING, and the two exceptions that
@@ -5923,8 +6598,38 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
          * straight step on top of it would take it off the circle. */
         dx = dy = 0;
     } else {
-        if (move_face < 0)
-            move_face = c->face;        /* not turning: just the heading */
+        if (move_face < 0) {
+            /* NOT TURNING: STEER ONTO THE LINE, AND MOVE WHERE YOU POINT.
+             *
+             * This is where the sideways slide used to be replaced by
+             * driving. `move_face` was simply `c->face` and the car's
+             * lateral position was then edited by section 7; now the
+             * controller turns the heading toward the lane line and the
+             * ordinary step does the rest, so a car reaches its lane by
+             * driving onto it. See gta_car.lane_* and steer_along_line().
+             *
+             * A car with no line yet (one that has never been on an open
+             * block) drives straight along its heading, exactly as before. */
+            int slow = 0;
+            /* NOT INSIDE A CROSSING. A car crossing a junction straight
+             * ahead should be square to it: `face` is what books the
+             * junction's squares and what car_free_at sweeps, so a car
+             * carrying a step or two of slew through a crossing occupies a
+             * diagonal rectangle and blocks more of the box than it needs
+             * to. Measured with the controller running everywhere:
+             * junction-box waiting 6851 -> 8292 car-ticks and flow 93.5%
+             * -> 92.25% over four seeds, with the distance covered
+             * unchanged - cars were not driving worse, they were queueing
+             * for boxes they were filling themselves.
+             *
+             * A car that still has to converge does it on the open road
+             * the other side, which is also where a driver would. */
+            if (!is_junction(m, bx, by, c->layer))
+                move_face = steer_along_line(c, &slow);
+            else
+                move_face = c->face;
+            (void)slow;
+        }
         dx =  ((long)gta_sin(move_face) * (c->speed >> 4)) >> 10;
         dy = -((long)gta_cos(move_face) * (c->speed >> 4)) >> 10;
         /* THE BACKSTOP - see car_free_at(). The follow gap is supposed to make
@@ -5954,77 +6659,26 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         }
     }
 
-    /* --- 7. keep to the lane ---------------------------------------------
+    /* --- 7. KEEP TO THE LANE - BY STEERING, IN SECTION 6.
      *
-     * The car's offset WITHIN its block against a target with a dead band
-     * either side; outside the band the whole car is slid sideways by the
-     * band's width a tick, without being turned, until it is back inside.
-     * The target is the middle of the block and nothing else - see
-     * GTA_LANE_TARGET for why that deletion is the fix for the junctions.
+     * This used to be the car's offset WITHIN its block against a target
+     * with a dead band, and outside the band the whole body was SLID
+     * sideways, without being turned, a pixel a tick until it was back
+     * inside. It is the original's own method and the developer's verdict
+     * on it was final: "auta przesuwaja sie na pasach ... nierealistycznie
+     * zamiast zakrecic poprawnie i przejechac".
      *
-     * THE SLIDE ONLY GOES SOMEWHERE THE CAR MAY DRIVE. The original probes the
-     * navigation grid beside the car and abandons the correction if the block
-     * there is not road, or if its arrows do not include the car's own
-     * direction. That is what stops a car nudging itself over a kerb, or out
-     * of a one-way lane into the one beside it going the other way. */
-    if (c->turn == 0) {
-        long *p = ((c->angle & 127) == 64) ? &c->y : &c->x;
-        long off = (*p >> FP) & 31;
-        long d = off - c->lane_target;
-
-        if (c->lane_fix == 0) {
-            if (d > GTA_LANE_BAND || d < -GTA_LANE_BAND)
-                c->lane_fix = (d > 0) ? 1 : -1;
-        } else if (d <= GTA_LANE_BAND && d >= -GTA_LANE_BAND) {
-            c->lane_fix = 0;
-        }
-
-        if (c->lane_fix != 0) {
-            /* The slide is ALWAYS towards the middle of the block the car is
-             * already in, so it cannot take the car out of its own lane and
-             * the original's probe of the block beside it has nothing left to
-             * refuse. What the probe is there for is the pull-over manoeuvre,
-             * where the target is 7 or 0x37 rather than the middle; this port
-             * has no such manoeuvre yet, and adding a test that can only
-             * misfire would be worse than leaving it out. The clamp below is
-             * what guarantees the car stops at the middle instead of stepping
-             * past it and oscillating. */
-            long step = (long)GTA_LANE_BAND << FP;
-            long centre = ((((*p >> (FP + 5)) * 32) + c->lane_target) << FP);
-
-            long was = *p;
-
-            /* A CAR STRAIGHTENING UP AFTER A KNOCK DRIFTS BACK, NOT DARTS.
-             * At the full 2 px a tick a car shunted half a lane out is back
-             * on its line in a third of a second, sliding sideways with no
-             * turn - the developer's "auta za szybko probuja wrocic na swoj
-             * tor". While the heading is still being walked back (recover),
-             * the slide runs at a quarter rate, so the way back takes about
-             * as long as the straightening does. */
-            if (c->recover > 0)
-                step >>= 2;
-
-            if (c->lane_fix > 0) {
-                *p -= step;
-                if (*p < centre) *p = centre;
-            } else {
-                *p += step;
-                if (*p > centre) *p = centre;
-            }
-            /* Counted, because this sideways drag IS the reported fault - see
-             * gta_traffic.stat_lane_fix. A car placed on its lane by the turn
-             * needs none of it. */
-            {
-                long moved_px = ((was > *p) ? (was - *p) : (*p - was)) >> FP;
-                tr->stat_lane_fix += moved_px;
-                if (c->since_turn < GTA_AFTER_TURN) {
-                    tr->stat_lane_fix_corner += moved_px;
-                    if (c->turn_routed) tr->stat_corner_routed   += moved_px;
-                    else                tr->stat_corner_fallback += moved_px;
-                }
-            }
-        }
-    }
+     * The car now steers onto an absolute lane line in section 6
+     * (steer_along_line), so this section has nothing left to do: a car off
+     * its lane turns toward it and drives back on. The line is set from the
+     * block at the top of this function, by the corner at its exit, and by
+     * the lane change - see gta_car.lane_*.
+     *
+     * WHAT WAS KEPT from the old code: the target itself (lane_target_at,
+     * still the one answer for where a lane sits), and the rule that a car
+     * inside a crossing keeps the value it carried in. */
+    /* --- 6b. blocked on open road: take the next lane - lane_swap_step() */
+    lane_swap_step(tr, m, idx, bx, by);
 }
 
 /* Give ONE car that wants a route a destination and a path to it.
@@ -6706,6 +7360,26 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
             }
             if (d > GTA_SANE_TURN)
                 tr->stat_face_jump++;
+            /* AND IT SAYS SO OUT LOUD IN THE GAME. "samochody sie insta o
+             * 180 stopni czasem odwracaja" - the counter above has caught
+             * this since the fleet was written, but it is a number at the
+             * end of a host run and the developer sees the fault on the
+             * Amiga, in a fleet the host run does not reproduce (the
+             * player, his car, the people he knocks over). Half a circle
+             * in one tick cannot be driving, so it is worth a line
+             * wherever it happens, with everything needed to place it. */
+            if (d > 48) {
+                const gta_car *cc = &tr->cars[i];
+                printf("gta: SPIN car %lu at (%d,%d): face %d -> %d (%d "
+                       "steps) angle %d lane_dir %d set %d | turn %d "
+                       "knock %d arc %ld swap %d hold %d\n",
+                       cc->serial,
+                       (int)(cc->x >> (FP + 5)), (int)(cc->y >> (FP + 5)),
+                       face_was, cc->face, d, cc->angle, cc->lane_dir,
+                       cc->lane_set, cc->turn, cc->knock, cc->arc_s,
+                       cc->swap, cc->hold);
+                fflush(stdout);
+            }
         }
 
         offroad_check(tr, m, i);
@@ -6861,9 +7535,13 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
             gta_car *c = &tr->cars[i];
             int dx = (int)(c->x >> (FP + 5)) - camx;
             int dy = (int)(c->y >> (FP + 5)) - camy;
+            /* A WRECK KEEPS ITS OWN, FIXED RADIUS - see
+             * GTA_WRECK_KEEP_BLOCKS. It is something the player made and it
+             * must not disappear because he changed the zoom. */
+            int rr = c->wrecked ? GTA_WRECK_KEEP_BLOCKS : r;
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
-            if (dx > r || dy > r || c->done)
+            if (dx > rr || dy > rr || c->done)
                 continue;
             if (keep != i)
                 tr->cars[keep] = *c;
@@ -6933,6 +7611,30 @@ void gta_traffic_junction_root(const gta_map *m, int bx, int by, int z,
  * The player's shares come back as deltas rather than being applied here: the
  * caller owns the vehicle, and the physics acts about a centre of mass this
  * function has no business knowing about. */
+/* WHERE THE TWO BODIES MEET, as a lever arm from the victim's centre: the
+ * closest point of the victim's box to the striker's centre, halved - the
+ * original takes the contact as the MIDPOINT of the victim's centre and the
+ * contact. (dx,dy) is striker->victim in whole world px. Continuous in the
+ * aim, unlike the original's corner-inside-box test, which flipped the
+ * torque's sign across four pixels of approach at shallow penetration. */
+static void contact_arm(const gta_car *o, const gta_car_info *oi,
+                        long dx, long dy, long *rx, long *ry)
+{
+    long ofx = gta_sin(o->face), ofy = -gta_cos(o->face);
+    long along  = ((-dx) *  ofx + (-dy) *  ofy) >> 14;
+    long across = ((-dx) * -ofy + (-dy) *  ofx) >> 14;
+    int ohl = gta_car_world_len(oi) / 2;
+    int ohw = gta_car_world_wid(oi) / 2;
+
+    if (along >  ohl) along =  ohl;
+    if (along < -ohl) along = -ohl;
+    if (across >  ohw) across =  ohw;
+    if (across < -ohw) across = -ohw;
+
+    *rx = ((along * ofx - across * ofy) >> 14) / 2;
+    *ry = ((along * ofy + across * ofx) >> 14) / 2;
+}
+
 int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
                     int phl, int phw, long pvx, long pvy, long pmass,
                     int layer, long *dvx, long *dvy, long *dyaw,
@@ -7209,32 +7911,15 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
              * comes out near zero and the car is shoved bodily instead of
              * slewing. Reported as "the whole vehicle slides away; in the
              * original it turned when you hit it on a corner". */
-            {
-                /* WHERE THE TWO BODIES MEET: the closest point of the victim's
-                 * box to the striker's centre. The striker's centre in the
-                 * victim's frame, clamped to the victim's half-extents.
-                 *
-                 * Corner-inside-box - which is what the original tests - is
-                 * unstable here: at shallow penetration whether one corner is
-                 * in or two, and which, flips with a pixel of approach, and
-                 * the torque jumped from +40 to -15 degrees across four pixels
-                 * of aim. This is continuous: dead-centre gives a point on the
-                 * axis and no torque, and the arm grows smoothly out to the
-                 * corner as the hit moves out. */
-                long ofx = gta_sin(o->face), ofy = -gta_cos(o->face);
-                long along  = ((-dx) *  ofx + (-dy) *  ofy) >> 14;
-                long across = ((-dx) * -ofy + (-dy) *  ofx) >> 14;
-
-                if (along >  ohl) along =  ohl;
-                if (along < -ohl) along = -ohl;
-                if (across >  ohw) across =  ohw;
-                if (across < -ohw) across = -ohw;
-
-                /* Back to world, and halved - the original's contact is the
-                 * MIDPOINT of the victim's centre and the contact. */
-                rx = ((along * ofx - across * ofy) >> 14) / 2;
-                ry = ((along * ofy + across * ofx) >> 14) / 2;
-            }
+            /* WHERE THE TWO BODIES MEET - contact_arm(): the closest point
+             * of the victim's box to the striker's centre, halved. Corner-
+             * inside-box, which is what the original tests, is unstable
+             * here: at shallow penetration whether one corner is in or two,
+             * and which, flips with a pixel of approach, and the torque
+             * jumped from +40 to -15 degrees across four pixels of aim. The
+             * clamped point is continuous: dead-centre gives no torque and
+             * the arm grows smoothly out to the corner. */
+            contact_arm(o, oi, dx, dy, &rx, &ry);
             /* r x F, and TIMES FOUR for the half-scale world: this port
              * draws 32 world pixels to a block where the original draws 64,
              * so r and F are each halved and their product is quartered -
@@ -7290,16 +7975,54 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
             *dvx -= pvx >> 1;
             *dvy -= pvy >> 1;
         } else {
-            /* Not a crash - a lean. Push it out of the way and leave it be. */
-            long ox_ = NRAM_MUL(jt, nx), oy_ = NRAM_MUL(jt, ny);
-            if (ox_ > NRAM_MAXPUSH)  ox_ = NRAM_MAXPUSH;
-            if (ox_ < -NRAM_MAXPUSH) ox_ = -NRAM_MAXPUSH;
-            if (oy_ > NRAM_MAXPUSH)  oy_ = NRAM_MAXPUSH;
-            if (oy_ < -NRAM_MAXPUSH) oy_ = -NRAM_MAXPUSH;
-            o->x += ox_;
-            o->y += oy_;
-            if (o->speed > GTA_SPEED_UNIT)
-                o->speed = GTA_SPEED_UNIT;
+            /* NOT A CRASH - A LEAN, AND A LEAN STILL MOVES A CAR.
+             *
+             * This used to shove the victim a few pixels along the contact
+             * and cut its speed, and leave it on the rails. On the rails the
+             * lane keeper slid it straight back, two pixels a tick, so a car
+             * being pushed sideways by the player was pushed and un-pushed
+             * every tick and went nowhere: "rozpychalem sie miedzy dwoma
+             * pojazdami a nie chcialy sie rozjechac". And with the striker
+             * backing out of the overlap on alternate ticks, the player's
+             * own car twitched left and right between them.
+             *
+             * Now a lean is a small collision: the victim takes the same
+             * mass-shared impulse the crash path gives it, and the same spin
+             * from the same lever arm, and it is LOOSE while it moves - not
+             * steered, not held to its lane - so a sustained push keeps
+             * feeding it velocity and it rolls, or turns, out of the way.
+             * The tyres are in knock_step(): the lateral share of that
+             * velocity and the spin both die fast, the rolling share does
+             * not, so a car pushed on its nose slides straight back and a
+             * car pushed on its corner pivots a little and stops -
+             * "powinny rotowac z duzym dragiem (bo opony hamuja)".
+             *
+             * No latch: the impulse is proportional to the closing speed,
+             * so a lean pays a small one every tick it lasts, which is what
+             * a force is. No damage and no halving of the striker: those
+             * belong to the crash. */
+            long rx, ry, torque, inertia;
+            if (!o->knock) {
+                long sfx = gta_sin(o->face), sfy = -gta_cos(o->face);
+                o->kvx = ((sfx >> 6) * (o->speed >> 8) >> 8);
+                o->kvy = ((sfy >> 6) * (o->speed >> 8) >> 8);
+                o->face16 = (long)o->face << 16;
+            }
+            o->kvx += NRAM_MUL(jt, nx);
+            o->kvy += NRAM_MUL(jt, ny);
+            contact_arm(o, oi, dx, dy, &rx, &ry);
+            /* The force behind the spin is the victim's share of the
+             * impulse this tick, in whole pixels, along the normal. */
+            torque = (rx * (NRAM_MUL(jt, ny) >> FP)
+                      - ry * (NRAM_MUL(jt, nx) >> FP)) * 4;
+            inertia = oi->moment;
+            if (inertia < 1) inertia = 1;
+            o->komega += ((torque * GTA_HIT_SPIN) / inertia) << 6;
+            if (o->komega >  GTA_KNOCK_SPIN_MAX) o->komega =  GTA_KNOCK_SPIN_MAX;
+            if (o->komega < -GTA_KNOCK_SPIN_MAX) o->komega = -GTA_KNOCK_SPIN_MAX;
+            o->knock = GTA_KNOCK_TICKS;
+            o->hold = GTA_HOLD_NONE;
+            tr->stat_leaned++;
         }
 
         /* AND ONLY A REAL IMPACT COSTS BODYWORK.
@@ -7387,6 +8110,94 @@ int gta_traffic_abandon(gta_traffic *tr, int model, long x, long y, int face,
     c->abandoned = 1;
     c->done = 0;
     c->serial = ++tr->next_serial;
+    /* AND EVERYTHING A DRIVER WOULD NEED, so the car is a whole car and
+     * not a sprite with a position. The memset left `top`, `accel` and
+     * `brake` at zero and the booking at square (0,0): the autodrive's
+     * `park ... 1` fixture, which is this call with `abandoned` cleared
+     * afterwards, produced a car that could not accelerate past nought and
+     * sat where it was put for ever - which read as "the fleet does not
+     * stop for a man in the road" when the man was 120 px ahead of a car
+     * that was never going to move. A parked car the player walks away
+     * from is left with the same fields, and nothing was stopping a future
+     * feature from waking one up into the same trap. */
+    {
+        const gta_car_info *info = &tr->tiles->cars[model];
+        c->top = (long)info->max_speed * SPEED_UNIT;
+        if (c->top > (long)GTA_SPEED_CRUISE * GTA_SPEED_UNIT)
+            c->top = (long)GTA_SPEED_CRUISE * GTA_SPEED_UNIT;
+        c->accel = info->accel   ? (long)info->accel * GTA_TRAFFIC_ACCEL_UNIT
+                                 : GTA_TRAFFIC_ACCEL;
+        c->brake = info->braking ? (long)info->braking * GTA_TRAFFIC_BRAKE_UNIT
+                                 : GTA_TRAFFIC_BRAKE;
+    }
+    c->convoy = c->serial;
+    c->book_lx = -1;
+    c->book_ly = -1;
+    c->cell_x = (int)(x >> (FP + 5));
+    c->cell_y = (int)(y >> (FP + 5));
+    c->lane_bx = c->cell_x;
+    c->lane_by = c->cell_y;
+    c->appr_bx = c->cell_x;
+    c->appr_by = c->cell_y;
+    c->tx = x;
+    c->ty = y;
+    c->turn_radius = GTA_TURN_RADIUS;
+    c->since_turn = GTA_AFTER_TURN;
+    c->turn_from = face & 255;
+    c->allow_turn = 1;
+    c->cross_lock_x = -1;
+    c->cross_lock_y = -1;
+    c->lane_target = GTA_LANE_TARGET;
+    c->hold = GTA_HOLD_NONE;
+    return 1;
+}
+
+int gta_traffic_leave_wreck(gta_traffic *tr, int model, long x, long y,
+                            int face, int layer, int remap)
+{
+    int i;
+
+    /* THE PLAYER'S OWN CAR HAS TO LEAVE A WRECK TOO, and it is not in the
+     * fleet while he is driving it - so the burnt-out shell has to be put
+     * back. Everything else is gta_traffic_abandon()'s job; this only adds
+     * what makes it scrap rather than a parked car. */
+    if (!gta_traffic_abandon(tr, model, x, y, face, layer, remap,
+                             GTA_CAR_WRECKED))
+        return 0;
+
+    for (i = 0; i < tr->n; i++) {
+        gta_car *c = &tr->cars[i];
+        /* `done` MATTERS HERE. A car the player got into is marked done and
+         * is not swept out of the array until the next traffic tick, so it is
+         * still sitting at exactly these coordinates - it IS the car that just
+         * exploded. Marking that one instead of the new wreck left the wreck
+         * unflagged, and the fuse sweep then burnt and exploded it a second
+         * time on the next tick. */
+        if (c->done || !c->abandoned || c->wrecked)
+            continue;
+        if (c->x == x && c->y == y) {
+            c->wrecked  = 1;
+            c->dmg_bits = GTA_DELTA_DMG_MASK;
+            c->fuse     = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void gta_traffic_clear_walkers(gta_traffic *tr)
+{
+    tr->n_walk = 0;
+}
+
+int gta_traffic_add_walker(gta_traffic *tr, long x, long y, int layer)
+{
+    if (tr->n_walk >= GTA_MAX_WALKERS)
+        return 0;
+    tr->walk_x[tr->n_walk] = x;
+    tr->walk_y[tr->n_walk] = y;
+    tr->walk_layer[tr->n_walk] = layer;
+    tr->n_walk++;
     return 1;
 }
 
@@ -7412,7 +8223,9 @@ int gta_traffic_grab_car(gta_traffic *tr, long x, long y, int layer,
         gta_car *c = &tr->cars[i];
         long dx, dy, d;
 
-        if (c->done || c->layer != layer)
+        /* A BURNT-OUT WRECK IS NOT A CAR YOU CAN GET INTO. It is still
+         * solid and still in the way; it just has no seats left. */
+        if (c->done || c->wrecked || c->layer != layer)
             continue;
         dx = c->x - x; if (dx < 0) dx = -dx;
         dy = c->y - y; if (dy < 0) dy = -dy;
@@ -7451,6 +8264,18 @@ void gta_traffic_draw(gta_traffic *tr, gta_view *v)
          * lists, and -1 means the sprite's own paint. The field has existed
          * since traffic did; nothing could apply it until the renderer could
          * remap a sprite. */
+        if (c->wrecked) {
+            /* A WRECK IS ITS OWN SPRITE - the burnt-out shell for the class
+             * (gta_tiles_wreck_sprite), no paint, no dents: there is nothing
+             * left to dent. "nie zostaja wraki wybuchniete tylko auta
+             * wygladaja jak normalne po wybuchu." */
+            int ws = gta_tiles_wreck_sprite(tr->tiles, info->vtype);
+            if (ws >= 0) {
+                gta_render_add_sprite(v, c->x, c->y, c->layer, c->layer,
+                                      ws, gta_car_draw_angle(c));
+                continue;
+            }
+        }
         gta_render_add_sprite_dm(v, c->x, c->y, c->layer, c->layer,
                               info->sprite_index, gta_car_draw_angle(c),
                               c->remap >= 0 && c->remap < GTA_CAR_REMAPS

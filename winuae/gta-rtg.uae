@@ -62,3 +62,11 @@ sound_frequency=44100
 sound_interpol=none
 sound_filter=emulated
 sound_stereo_separation=10
+
+; Keep emulating without focus and minimised: the test rig launches the
+; window minimised so it never takes the keyboard or the mouse from whoever
+; is working at the machine, and reloads the game inside it afterwards.
+win32.inactive_pause=false
+win32.minimized_pause=false
+win32.inactive_nosound=false
+win32.minimized_nosound=false

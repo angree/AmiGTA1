@@ -435,6 +435,8 @@ static gta_peds peds;
 #define AUTODRIVE_MAX 64
 static struct { int op, t, thr, brk, st, hb; } adq[AUTODRIVE_MAX];
 static int adq_n, adq_i, adq_left;
+/* Set when Work:reload.txt was seen - see the poll in the tick loop. */
+static int g_reload;
 /* The fleet's odometer at the last five-second report; see the report itself. */
 static long traffic_moved_last;
 static gta_nav nav;
@@ -463,7 +465,7 @@ static gta_nav nav;
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.0.4"
+#define GTA_VERSION "v0.1.0"
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
 
 /* The renderer's own buffer, used ONLY when the picture is doubled: the
@@ -886,7 +888,19 @@ static void hud_player(const gta_player *p, unsigned char *chunky, int pitch)
     char line[24];
     char *q;
 
-    q = gta_hud_int(line, p->layer);
+    /* WHERE HE IS, IN BLOCKS, FIRST.
+     *
+     * Added because a screenshot of something wrong is not a bug report
+     * without it. Twice now a picture has arrived showing a car under a
+     * bridge, and answering it meant guessing at which of Liberty City's
+     * bridges from the shape of the girders. The map is 256x256 and every
+     * question about the map - is there a ramp here, what is on the layer
+     * above, which way does that slope go - starts with the block number. */
+    q = gta_hud_int(line, (int)(p->x >> 21));
+    *q++ = ',';
+    q = gta_hud_int(q, (int)(p->y >> 21));
+    *q++ = ' ';
+    q = gta_hud_int(q, p->layer);
     *q++ = ' ';
     *q++ = ground_letter[p->ground & 7];
     *q++ = ' ';
@@ -1342,22 +1356,36 @@ static void car_door_point(const gta_car_info *ci, long cx, long cy, int face,
          * (half_wid-2 walking in, half_wid-{4,8,12,14} sliding across), so
          * the door art and the ped are on one side by construction. */
         long out = (long)gta_car_world_wid(ci) / 2 + 5;
-        across = (across < 0) ? out : -out;
+        /* AND IT IS THE SAME SIDE FOR EVERY CAR. The table's rpy was read
+         * as the side for months and it is not one: it is -6 on model 0
+         * and +7 on model 1, for bodies 30 wide, so both hinges are INSIDE
+         * the body a few pixels either side of the centre line - a walk-to
+         * point, which is exactly what the original uses it for
+         * (the original: car + cos[rot]*rpx + cos[rot+90]*rpy, sign and
+         * all, and the ped overlaps the body while he walks up). Which
+         * flank he then gets in from is the enter sequence's POSITIVE
+         * lateral offset, the same on every model. Reading the sign as a
+         * side put him at the passenger door of every car whose hinge
+         * happened to sit left of centre - "ze zlej strony wsiadalismy" -
+         * and PROGRESS.md 112 could not see it because it tested one
+         * model (20, rpy +7). */
+        (void)across;
+        across = (ci->n_doors > 0) ? -out : out;
     }
 
     *dx = cx + (fx * along + rx * across) * 4;
     *dy = cy + (fy * along + ry * across) * 4;
 }
 
-/* WHICH FLANK THE DOOR IS ON, +1 for the body's right, -1 for its left - the
- * same reading of the table's rpy that car_door_point() settled on
- * (PROGRESS.md 112), in one place. A vehicle with no door record mounts from
- * its right. */
+/* WHICH FLANK THE DOOR IS ON, +1 for the body's right, -1 for its left.
+ * Every car's door is on the same flank (car_door_point() says why the
+ * table's rpy is not a side); a vehicle with no door record mounts from its
+ * right. */
 static int car_door_side(const gta_car_info *ci)
 {
-    if (ci->n_doors > 0)
-        return ci->doors[0].rpy < 0 ? 1 : -1;
-    return 1;
+    /* One side for every car - see car_door_point(). -1 is the flank the
+     * door art opens on (PROGRESS.md 112, model 20). */
+    return ci->n_doors > 0 ? -1 : 1;
 }
 
 /* A POINT NEAR THE DOOR, in the car's own frame: `along_off` world px from
@@ -2405,6 +2433,16 @@ int main(void)
             } else if (ev.type == AMIGAGFX_EV_KEY) {
                 int code = ev.code & 0x7F;
                 int held = (ev.code & 0x80) ? 0 : 1;
+                /* WHILE AN AUTODRIVE SCRIPT RUNS THE KEYBOARD IS DEAD, bar
+                 * ESC. The emulator window takes the focus when the harness
+                 * starts it, and the developer is at the same keyboard
+                 * writing to whoever is running the test: one RETURN from a
+                 * chat message became "no car within reach" before the
+                 * script had parked its car, and a TAB put the game in
+                 * camera mode in the middle of a filmed wreck. A scripted
+                 * run has to be a scripted run. */
+                if (adq_i < adq_n && code != KEY_ESC)
+                    continue;
                 switch (code) {
                 case KEY_UP:     up = held;    break;
                 case KEY_DOWN:   down = held;  break;
@@ -3369,6 +3407,33 @@ int main(void)
                                  (right ? 1 : 0) - (left ? 1 : 0),
                                  handbrake, road_);
                     if (veh.sliding) veh_slide_ticks++;
+                    /* AND THE CAR CLIMBS. Until now the layer under a driven
+                     * car was frozen at whatever the player was standing on
+                     * when he got in, because nothing but gta_player_update()
+                     * ever moved it - so a ramp led nowhere and every bridge
+                     * was something you drove UNDER. See gta_veh_layer().
+                     *
+                     * Resolved BEFORE the wall test, so the test runs on the
+                     * layer the car has arrived at. */
+                    {
+                        long nx0_, ny0_, nx1_, ny1_;
+                        int nz_;
+                        gta_veh_nose(&veh, wox0_, woy0_, wang0_,
+                                     &nx0_, &ny0_);
+                        gta_veh_nose(&veh, veh.ox, veh.oy, veh.ang16,
+                                     &nx1_, &ny1_);
+                        nz_ = gta_veh_layer(&nav, player.layer,
+                                       (int)(nx0_ >> 21), (int)(ny0_ >> 21),
+                                       (int)(nx1_ >> 21), (int)(ny1_ >> 21),
+                                       nx1_ - nx0_, ny1_ - ny0_);
+                        if (nz_ != player.layer) {
+                            printf("gta: car layer %d -> %d at block "
+                                   "(%d,%d)\n", player.layer, nz_,
+                                   (int)(veh.ox >> 21), (int)(veh.oy >> 21));
+                            fflush(stdout);
+                            player.layer = nz_;
+                        }
+                    }
                     /* THE WHOLE BODY, not the nose - see gta_veh_wall(). The
                      * nose test could not see a car reversing into a wall at
                      * all, and a bus is longer than the blocks it drives
@@ -3389,6 +3454,20 @@ int main(void)
                         int dmg = wdmg_ - 1;
                         if (dmg > 0) {
                             veh.damage += dmg;
+                            /* AND IT DENTS THE PANEL THAT TOOK IT. Only a
+                             * car-to-car ram used to do that, so a player who
+                             * drove into every building in Liberty City ended
+                             * up with a scratchless car and a damage number
+                             * nobody could see - "jak jechalem to nic sie nie
+                             * dzieje z rogami". The contact is in the
+                             * direction the car was going when the wall
+                             * stopped it, and veh.hit_vx is exactly that
+                             * vector. */
+                            veh.dmg_bits |= 1UL << gta_car_panel_delta(
+                                &tiles.cars[veh.model], veh.ox, veh.oy,
+                                gta_veh_angle(&veh),
+                                veh.ox + veh.hit_vx * 4,
+                                veh.oy + veh.hit_vy * 4);
                             printf("gta: wall hit at %d px/tick - "
                                    "damage %d\n", wdmg_, veh.damage);
                             fflush(stdout);
@@ -3595,8 +3674,45 @@ int main(void)
                                                player.layer,
                                                veh.len / 2, veh.wid / 2);
                     } else {
-                        gta_traffic_set_player(&traffic, 0, 0, 0, 0, 0, 0,
-                                               0, 0);
+                        /* ON FOOT HE IS STILL SOMETHING TO BRAKE FOR.
+                         *
+                         * This used to switch the player off the moment he
+                         * left the car, so the fleet could not see him at all:
+                         * traffic drove straight through a man standing in the
+                         * road and shoved him along the street - "po graczu
+                         * tez przejezdzaja nie przejmujac sie. nawet screena
+                         * nie moglem zrobic tak sie pchaja".
+                         *
+                         * The fleet reads this in two places and both are the
+                         * right answer for a pedestrian: gap_ahead() makes the
+                         * car behind him keep its distance, and body_on_sq()
+                         * stops anything driving into the square he is
+                         * standing in. His body box is the walker's own three
+                         * pixels, not a car's. */
+                        long pspd = (player.anim == GTA_ANIM_RUN
+                                  || player.anim == GTA_ANIM_WALK)
+                                  ? GTA_RUN_SPEED_FP : 0;
+                        gta_traffic_set_player(&traffic, 1,
+                                               player.x, player.y, pspd,
+                                               player.angle, player.layer,
+                                               3, 3);
+                    }
+                    /* AND EVERYBODY ON FOOT, so the fleet brakes for them.
+                     * Refreshed here rather than kept in step incrementally:
+                     * the pool is twelve and a rebuild costs nothing next to
+                     * getting it out of step. Somebody already lying in the
+                     * road is not in the list - a car does not stop for a body
+                     * and the original drives over it. */
+                    gta_traffic_clear_walkers(&traffic);
+                    {
+                        int wi_;
+                        for (wi_ = 0; wi_ < GTA_MAX_PEDS; wi_++) {
+                            const gta_ped *pp = &peds.p[wi_];
+                            if (!pp->alive || pp->down > 0)
+                                continue;
+                            gta_traffic_add_walker(&traffic, pp->x, pp->y,
+                                                   pp->layer);
+                        }
                     }
                     gta_traffic_set_view_blocks(&traffic,
                                             (render_w() / 2) / zoom_display + 1);
@@ -3636,10 +3752,17 @@ int main(void)
                         enter_anim = 0;
                         enter_driver = 0;
                         door_tick = -1;
-                        gta_traffic_set_player(&traffic, 0, 0, 0, 0, 0, 0, 0, 0);
                         gta_weapons_wreck_car(&weapons, wi, wx, wy, wface,
                                               player.layer, &peds, &traffic,
                                               &score, 1);
+                        /* AND THE SCRAP STAYS THERE. His car is not in the
+                         * fleet while he is driving it, so without this the
+                         * one car in the city he is guaranteed to be looking
+                         * at is the one that vanishes when it explodes. */
+                        if (opt_traffic)
+                            gta_traffic_leave_wreck(&traffic, veh.model,
+                                                    wx, wy, wface,
+                                                    player.layer, veh.remap);
                         printf("gta: your car blew up at (%ld,%ld)\n",
                                wx >> 16, wy >> 16);
                         fflush(stdout);
@@ -3687,6 +3810,25 @@ int main(void)
                  * check. This is the line that answers it: how many cars, how
                  * many moving, how far the whole fleet has travelled since the
                  * last report, and why the stopped ones are stopped. */
+                /* THE RELOAD FILE. Work:reload.txt, dropped by the host,
+                 * means "start again with what is in the drawer now": the
+                 * game deletes it and leaves with return code 5, and the run
+                 * script's `if warn` loop starts the binary again. That is
+                 * a new build and new scripts in the SAME emulator, without
+                 * the restart that takes the mouse and the keyboard off the
+                 * developer working beside it - which is what happened,
+                 * every couple of minutes, and was rightly objected to. */
+                if ((sim_ticks % 25) == 0 && !g_reload) {
+                    FILE *rf = fopen(GTA_DIR "reload.txt", "r");
+                    if (rf) {
+                        fclose(rf);
+                        remove(GTA_DIR "reload.txt");
+                        g_reload = 1;
+                        running = 0;
+                        log_line("gta: reload - leaving with RC 5 for the "
+                                 "run script to start the new build");
+                    }
+                }
                 if ((sim_ticks % 250) == 0) {
                     char ln[160];
                     long moved = traffic.stat_moved - traffic_moved_last;
@@ -4154,5 +4296,7 @@ int main(void)
     gta_map_free(&map);
     gta_tiles_free(&tiles);
     log_line("gta: clean exit");
-    return 0;
+    /* 5 is WARN to AmigaDOS: the run script's `if warn` restarts the game.
+     * A player's ESC returns 0 and the script falls through. */
+    return g_reload ? 5 : 0;
 }

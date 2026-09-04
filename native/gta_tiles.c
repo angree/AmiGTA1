@@ -547,6 +547,28 @@ int gta_tiles_sprite_base(const gta_tiles *t, int type)
     return base;
 }
 
+int gta_tiles_wreck_sprite(const gta_tiles *t, int vtype)
+{
+    /* Category 15 is named "wrecked_car" and category 16 "wbus" in the
+     * spec's order, and in every shipped style file it is 16 that holds the
+     * seven wrecks while 15 is empty. Take whichever has them. */
+    int cat = 16, base, n, off;
+    n = gta_tiles_sprite_count(t, cat);
+    if (n < 7) { cat = 15; n = gta_tiles_sprite_count(t, cat); }
+    if (n < 7) return -1;
+    base = gta_tiles_sprite_base(t, cat);
+    switch (vtype) {
+    case 3:  off = 2; break;        /* bike */
+    case 0:                          /* bus */
+    case 1: case 2:                  /* juggernaut */
+    case 8: case 9: off = 3; break;  /* train, tram: the long shell */
+    case 14: off = 4; break;         /* tank */
+    case 13: off = 6; break;         /* boat */
+    default: off = 0; break;         /* a car */
+    }
+    return base + off;
+}
+
 int gta_tiles_sprite_count(const gta_tiles *t, int type)
 {
     if (type < 0 || type >= GTA_TIL_SPRITE_TYPES) return 0;

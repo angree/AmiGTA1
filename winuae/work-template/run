@@ -8,22 +8,18 @@
 ; There is nothing to assign. The game finds its data through PROGDIR:, the
 ; drawer the executable itself was loaded from, so it works wherever you put
 ; it. Up to v0.0.1 every path was hard-coded to Work: and the README had to
-; tell you to assign Work: to the game drawer - that was a bug with a
-; workaround printed next to it, and people quite reasonably asked what the
-; work directory was supposed to be.
+; explain an assign; that is gone.
 ;
-; Stack: libnix gives a CLI process 4 KB by default. That is nowhere near
-; enough for a game that recurses through map and sprite loading; the OpenTTD
-; and OpenXcom ports both needed 1 MB for the same reason. The .info files
-; carry the same number for a Workbench double-click.
-;
-; There is one binary. Up to v0.0.3 there were three - gta-aga, gta-rtg240
-; and gta-rtg480 - which differed only in the screen size compiled into them.
-; The size and the display path are settings now: run `gtaprefs` (or edit
-; gta.prefs by hand; the words are in it) and start the same game either way.
-;
-; This file is the version-controlled template. tools/bin/deploy.sh copies it
-; to the emulator's shared folder (adding a CD for the unattended test rig)
-; and tools/bin/package.sh ships it as-is; edit it here, not there.
+; THE LOOP IS FOR THE TEST RIG, and it costs a player nothing. When the game
+; finds Work:reload.txt it deletes it and exits with return code 5 (WARN), and
+; this script starts it again - with whatever binary and scripts are in the
+; drawer NOW. That is how a build gets tested without the emulator being
+; restarted: restarting WinUAE takes the keyboard and the mouse away from
+; whoever is working at the same machine, every single time. A normal exit
+; (ESC) returns 0 and falls out of the loop.
 Stack 1000000
+lab again
 AmiGTA >gta.log
+if warn
+  skip again back
+endif

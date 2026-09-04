@@ -144,7 +144,12 @@ static void wreck_sweep(gta_weapons *w, gta_peds *peds, gta_traffic *tr,
     int i;
     for (i = 0; i < tr->n; i++) {
         gta_car *c = &tr->cars[i];
-        if (c->done || c->damage < GTA_CAR_WRECKED)
+        /* ALREADY BURNT IS NOT BURNING. A wreck keeps its hundred points of
+         * damage for ever - that is what makes it a wreck - so without this
+         * the sweep finds it again on the very next tick, lights the fuse
+         * again, and the same car explodes over and over: the log filled with
+         * "car 7 blew up" / "car 7 is a write-off" in an endless loop. */
+        if (c->done || c->wrecked || c->damage < GTA_CAR_WRECKED)
             continue;
         if (c->fuse == 0) {
             c->fuse = GTA_CAR_FUSE;
@@ -161,7 +166,20 @@ static void wreck_sweep(gta_weapons *w, gta_peds *peds, gta_traffic *tr,
                               c->layer, peds, tr, sc, 0);
         if (sc)
             gta_score_add(sc, 100);
-        c->done = 1;                    /* the fleet's tick sweeps it away */
+        /* AND THE WRECK STAYS. It used to be `c->done = 1` - deleted where it
+         * stood - so blowing a car up REMOVED it from the street instead of
+         * blocking the street with it. Now it sits there, burnt, solid and
+         * driverless, until it is well off screen; see GTA_WRECK_KEEP_BLOCKS.
+         *
+         * `abandoned` is what makes the traffic tick leave it alone: every
+         * rule that already skips a car nobody is driving skips this one, so
+         * there is no second kind of parked car to keep working. */
+        c->wrecked   = 1;
+        c->abandoned = 1;
+        c->speed     = 0;
+        c->knock     = 0;
+        c->fuse      = 0;
+        c->hold      = 0;
     }
 }
 

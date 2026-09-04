@@ -316,6 +316,15 @@ typedef struct {
 int gta_tiles_sprite_base(const gta_tiles *t, int type);
 int gta_tiles_sprite_count(const gta_tiles *t, int type);
 
+/* THE BURNT-OUT SHELL for a vehicle class (gta_car.h vtype), or -1. The
+ * style file keeps seven of them in one category: a car, a car on its roof,
+ * a bike, a bus, the tank, a scooter and the boat's debris - `gtadump
+ * spriteinfo` lists them as the seven "wbus" sprites from 954, and
+ * out/wcat.png is what they look like. They are not remaps of the car's own
+ * art and they are not in the car table, which is why a wreck was drawn as an
+ * ordinary dented car until v0.0.5. */
+int gta_tiles_wreck_sprite(const gta_tiles *t, int vtype);
+
 /* Returns 0 on success and prints the reason to stderr on failure. On failure
  * the struct is left safe to pass to gta_tiles_free(). */
 int  gta_tiles_load(const char *path, gta_tiles *t);

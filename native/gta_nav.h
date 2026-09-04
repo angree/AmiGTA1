@@ -33,6 +33,16 @@
 
 typedef struct {
     unsigned char *b;           /* NULL until gta_nav_build() succeeds */
+    /* THE MAP THE GRID WAS BUILT FROM, kept so that the few questions the
+     * byte cannot answer do not need a second parameter threaded through
+     * every caller.
+     *
+     * There is exactly one such question and it is ramps: the grid says
+     * "this cell is air", but the cell above the TOP of a ramp is where a
+     * car or a walker legitimately stands once it has climbed. That fact
+     * lives in the block's slope field, not in the byte. Read-only, and
+     * never followed when it is NULL. */
+    const gta_map *map;
 } gta_nav;
 
 /* Build the grid from a loaded map. Returns 0 on success, non-zero if the

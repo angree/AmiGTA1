@@ -114,6 +114,29 @@
 #define VEH_SNAP_NUDGE   74244L         /* 1.133 units in 16.16 */
 #define VEH_SNAP_SPEED   196608L        /* 3 world px a step */
 
+/* WHEN A COASTING CAR IS CONSIDERED STOPPED, and why this exists at all.
+ *
+ * Every tyre force in this model is proportional to the velocity it resists,
+ * so in the original's floats the velocity decays exponentially and ends up
+ * at 1e-20 - a number that moves a float position by nothing. In fixed point
+ * that force rounds to ZERO while the velocity is still a whole LSB or two,
+ * and what is left never decays: measured with `vehruler`, a saloon left to
+ * itself after a turn keeps v = (369,106) and omega = -1663 for ever and
+ * walks 6 px in thirty seconds. That is enough to carry a parked car into a
+ * wall while the player's hands are off the keyboard, which is what was
+ * reported: "bezwladne auto dalej sie lekko rusza mimo ze powinno stac. i w
+ * ten sposob np. wjezdza pomalu w solid blok."
+ *
+ * The thresholds are chosen to be under anything a player can see and well
+ * over the residue: one world pixel a SECOND of travel (the model steps at
+ * 23.333 Hz, so 65536/23) and about two degrees a second of rotation. A car
+ * genuinely rolling that slowly is indistinguishable from a stopped one, and
+ * a car that is being pushed gets a fresh impulse each tick that is orders of
+ * magnitude larger than this. Only applied with the engine and the brake both
+ * off, so it can never eat a control input. */
+#define VEH_REST_SPEED   2849L          /* 1 world px a second, per step */
+#define VEH_REST_OMEGA   4000L          /* ~2 degrees a second, per step */
+
 
 /* The three numbers that are the feel of the game, hard-coded in the original
  * exactly like this - the table's `back end slide value` and `handbrake slide
@@ -480,6 +503,24 @@ void gta_veh_step(gta_veh *v, int throttle, int brake, int steer,
     v->ox = v->x - UMUL(gta_sin16(v->ang16), v->com_y);
     v->oy = v->y + UMUL(gta_cos16(v->ang16), v->com_y);
 
+    /* ---- ...AND IT ACTUALLY COMES TO REST -------------------------------
+     *
+     * See VEH_REST_SPEED. Below this the tyre model can no longer take
+     * anything off in fixed point, so whatever is left would be carried for
+     * ever; the original's floats simply decayed past it. Zeroing here is the
+     * fixed-point equivalent of that decay, not a new rule. */
+    if (thrust == 0) {
+        long avx = v->vx < 0 ? -v->vx : v->vx;
+        long avy = v->vy < 0 ? -v->vy : v->vy;
+        long aw  = v->omega < 0 ? -v->omega : v->omega;
+        if (avx < VEH_REST_SPEED && avy < VEH_REST_SPEED
+            && aw < VEH_REST_OMEGA) {
+            v->vx = 0;
+            v->vy = 0;
+            v->omega = 0;
+        }
+    }
+
     /* ---- the wheel comes back to centre when it is let go --------------- */
     if (!steer) {
         d = ang_diff(v->steer16, v->ang16);
@@ -558,9 +599,12 @@ static const short veh_wall_samp[10][2] = {
     { 1000, -1000}, { 1000, 0}, { 1000, 1000}
 };
 
-/* Is any of the outline standing on ground a car may not be on? Ground type 2
- * is road and 3 is pavement (gta_nav.h); 5 is water and anything under 2 is a
- * building or the edge of the world - the same test the nose used. */
+/* May a car stand on this ground type? 2 is road and 3 is pavement
+ * (gta_nav.h); 5 is water and anything under 2 is a building or the edge of
+ * the world. Named because it is now asked at three layers rather than one. */
+#define veh_ground_ok(g)  ((g) >= 2 && (g) != 5)
+
+/* Is any of the outline standing on ground a car may not be on? */
 static int veh_body_blocked(const gta_nav *nav, int layer, long cx, long cy,
                             int ang, int hl, int hw)
 {
@@ -568,15 +612,57 @@ static int veh_body_blocked(const gta_nav *nav, int layer, long cx, long cy,
     long rx = gta_cos(ang), ry = gta_sin(ang);
     int i;
 
+    int bx[10], by[10], ramp = 0;
+
     for (i = 0; i < 10; i++) {
         long al = (long)hl * veh_wall_samp[i][0] / 1000;
         long si = (long)hw * veh_wall_samp[i][1] / 1000;
         long px = cx + (fx * al + rx * si) * 4;
         long py = cy + (fy * al + ry * si) * 4;
-        int g = gta_nav_ground(gta_nav_at_m(nav, (int)(px >> 21),
-                                            (int)(py >> 21), layer));
-        if (g < 2 || g == 5)
-            return 1;
+        bx[i] = (int)(px >> 21);
+        by[i] = (int)(py >> 21);
+        /* IS ANY PART OF THE CAR OVER A RAMP? The nav byte carries a slope
+         * bit, so this costs two indexed lookups a point and never touches
+         * the map. Only a DRIVABLE slope counts - the map is full of sloping
+         * roofs and walls, and a car is not on those. */
+        if (!ramp) {
+            unsigned char a = gta_nav_at_m(nav, bx[i], by[i], layer);
+            unsigned char b = gta_nav_at_m(nav, bx[i], by[i], layer - 1);
+            if ((gta_nav_sloped(a) && veh_ground_ok(gta_nav_ground(a)))
+             || (gta_nav_sloped(b) && veh_ground_ok(gta_nav_ground(b))))
+                ramp = 1;
+        }
+    }
+
+    for (i = 0; i < 10; i++) {
+        if (veh_ground_ok(gta_nav_ground(gta_nav_at_m(nav, bx[i], by[i],
+                                                      layer))))
+            continue;
+        /* A CAR ON A RAMP IS ON TWO LEVELS AT ONCE, and the collision has to
+         * say so or the car cannot get up at all.
+         *
+         * Climbing the ramp at (90,92) onto the bridge: the nose is over the
+         * bridge block, whose layer 2 is WATER, while the tail is still on
+         * the ramp, whose layer 3 is air. Test the whole body at either layer
+         * alone and something is always inside something - which is exactly
+         * what happened: `drivecar` had the car stop dead at the ramp top,
+         * speed 0.00, for the rest of the run. It never got up, so it went
+         * round and under. "dalej wjezdza sie pod most".
+         *
+         * So while ANY part of the car is over a drivable slope, every part
+         * of it may stand on the layer above or below as well. That is
+         * permissive, and it is confined to the 193 drivable ramp blocks in
+         * Liberty City - nowhere else in the map does it change anything, and
+         * a building is not drivable on any layer. */
+        if (ramp) {
+            if (veh_ground_ok(gta_nav_ground(gta_nav_at_m(nav, bx[i], by[i],
+                                                          layer - 1))))
+                continue;
+            if (veh_ground_ok(gta_nav_ground(gta_nav_at_m(nav, bx[i], by[i],
+                                                          layer + 1))))
+                continue;
+        }
+        return 1;
     }
     return 0;
 }
@@ -644,6 +730,133 @@ static int veh_unstick(gta_veh *v, const gta_nav *nav, int layer)
     return 1;
 }
 
+/* THE FLOOR UNDER EVERYTHING ELSE: no tick ends with the body in a wall.
+ *
+ * Called at the end of every wall resolve, on both the collided and the
+ * uncollided path. Clear body: remember this transform. Body inside
+ * something: push it out the way it always did, and if that did not work,
+ * put the car back where it last stood legally and stop it dead.
+ *
+ * The revert is the part that is new, and it is a guarantee rather than an
+ * improvement: whatever else is wrong - a stale layer, a shove from another
+ * car, a rotation nothing gated, a creep of a fraction of a pixel a tick -
+ * the car cannot end up inside the map. "po pierwsze to blokada powinna byc
+ * taka ze nawet z tym bledem nie wjezdza sie w tekstury/collision mapy". */
+static void veh_settle(gta_veh *v, const gta_nav *nav, int layer,
+                       int hl, int hw)
+{
+    if (!veh_body_blocked(nav, layer, v->ox, v->oy, gta_veh_angle(v),
+                          hl, hw)) {
+        v->safe_x   = v->x;
+        v->safe_y   = v->y;
+        v->safe_ox  = v->ox;
+        v->safe_oy  = v->oy;
+        v->safe_ang = v->ang16;
+        v->have_safe = 1;
+        return;
+    }
+
+    veh_unstick(v, nav, layer);
+    if (!veh_body_blocked(nav, layer, v->ox, v->oy, gta_veh_angle(v),
+                          hl, hw))
+        return;                          /* the push-out freed it */
+
+    /* Still in. Nothing about the current transform is usable, so use the
+     * last one that was. A car with no safe transform yet - spawned inside
+     * something on the first tick - is left to the push-out, which is what it
+     * was there for. */
+    if (!v->have_safe)
+        return;
+    v->x     = v->safe_x;
+    v->y     = v->safe_y;
+    v->ox    = v->safe_ox;
+    v->oy    = v->safe_oy;
+    v->ang16 = v->safe_ang;
+    v->vx = v->vy = 0;
+    v->omega = 0;
+}
+
+/* WHICH LAYER A DRIVEN CAR IS ON AFTER A STEP, and why the car needed this at
+ * all.
+ *
+ * Until now it did not have one: the wall test used `player.layer`, which is
+ * only ever changed by gta_player_update() - i.e. while the player is ON FOOT.
+ * Get into a car on the street and the car is nailed to that layer for as long
+ * as you drive it, so a ramp leads nowhere and every bridge in Liberty City is
+ * something you pass UNDER. The walker was fixed for exactly this in
+ * gta_player.c ("wchodze pod droge"); this is the same rule for the car.
+ *
+ * A RAMP IS THE ONLY THING THAT CHANGES LEVEL, deliberately. The walker also
+ * falls back to the layer either side for kerbs and steps; a car may not,
+ * because a two-tonne saloon quietly resolving itself onto a roof is a far
+ * worse failure than one that refuses to climb a kerb. Leaving a ramp block in
+ * its ascent direction goes up; entering one from its high side goes down;
+ * everything else keeps the layer it had, and the wall test decides whether
+ * the move happens at all.
+ *
+ * (fbx, fby) is the block the car was over, (bx, by) the one it is over now,
+ * and (dx, dy) the move - "up" only means something along a direction.
+ *
+ * THE CALLER PASSES THE NOSE, NOT THE CENTRE, and that is the difference
+ * between a car that climbs and one that stops dead at the top of the ramp.
+ * The block beyond a ramp top is often not drivable on the LOWER layer - at
+ * (90,92) it is water - so a car waiting for its centre to cross can never
+ * cross at all: the wall test refuses the move, the centre stays put, the
+ * layer never changes, and the car sits at the foot of the bridge for ever.
+ * Measured before this: `drivecar` at (90,84) heading south, speed 0.00 from
+ * tick 75 to the end of the run. The front of the car reaches the higher road
+ * first, so the front is what decides. */
+void gta_veh_nose(const gta_veh *v, long ox, long oy, long ang16,
+                  long *nx, long *ny)
+{
+    int a = (int)((ang16 >> 16) & 255);
+    long hl = v->len / 2;
+    /* The same conversion the outline test uses: Q14 sine times whole world
+     * pixels times four lands in 16.16. */
+    if (nx) *nx = ox + gta_sin(a) * hl * 4;
+    if (ny) *ny = oy - gta_cos(a) * hl * 4;
+}
+
+int gta_veh_layer(const void *navp, int layer,
+                  int fbx, int fby, int bx, int by, long dx, long dy)
+{
+    const gta_nav *nav = (const gta_nav *)navp;
+    int dir, up, g;
+
+    if (nav == NULL || nav->map == NULL) return layer;
+    if (dx == 0 && dy == 0) return layer;
+    if (fbx == bx && fby == by) return layer;
+
+    dir = gta_map_step_dir(dx, dy);
+
+    /* On a ramp, heading up it: the block ahead is a level higher. */
+    up = gta_map_slope_up_dir(nav->map, fbx, fby, layer);
+    if (up >= 0 && up == dir) {
+        g = gta_nav_ground(gta_nav_at_m(nav, bx, by, layer + 1));
+        if (g >= 2 && g != 5) return layer + 1;
+    }
+
+    /* Coming at a ramp from its high end: down one, onto the slope. */
+    up = gta_map_slope_up_dir(nav->map, bx, by, layer - 1);
+    if (up >= 0 && ((up + 128) & 255) == dir) {
+        g = gta_nav_ground(gta_nav_at_m(nav, bx, by, layer - 1));
+        if (g >= 2 && g != 5) return layer - 1;
+    }
+
+    return layer;
+}
+
+/* The wall test itself, for the harnesses. THE SAME FUNCTION THE GAME USES,
+ * exported rather than copied: gtadump had its own ten-point loop, and the
+ * moment a car could straddle a ramp the two disagreed and the harness
+ * reported four ticks "inside a wall" on a run the game was perfectly happy
+ * with. One rule, one place. */
+int gta_veh_body_blocked(const void *navp, int layer, long cx, long cy,
+                         int ang, int hl, int hw)
+{
+    return veh_body_blocked((const gta_nav *)navp, layer, cx, cy, ang, hl, hw);
+}
+
 int gta_veh_wall(gta_veh *v, const void *navp, int layer,
                  long x0, long y0, long ox0, long oy0, long ang0)
 {
@@ -655,7 +868,12 @@ int gta_veh_wall(gta_veh *v, const void *navp, int layer,
     int ang = gta_veh_angle(v);
     int hl = v->len / 2, hw = v->wid / 2;
     int hit = 0;
+    /* The velocity the car had BEFORE the world had its say. What the world
+     * removes from this is the impact - see gta_veh.hit_vx. */
+    long vx0 = v->vx, vy0 = v->vy;
 
+    v->hit_vx = 0;
+    v->hit_vy = 0;
     if (!nav)
         return 0;
 
@@ -698,10 +916,18 @@ int gta_veh_wall(gta_veh *v, const void *navp, int layer,
         /* Not colliding this tick - but it may already BE inside something
          * from an earlier one, and if it is, nothing above would ever notice.
          * This is the only place that can tell. */
-        if (veh_body_blocked(nav, layer, v->ox, v->oy,
-                             gta_veh_angle(v), hl, hw))
-            veh_unstick(v, nav, layer);
-        return 0;
+        veh_settle(v, nav, layer, hl, hw);
+        /* Not a collision this tick - but veh_settle() may still have had to
+         * put the car back and stop it, and that IS an impact. Same
+         * measurement as the collided path below. */
+        {
+            long iv;
+            v->hit_vx = vx0 - v->vx;
+            v->hit_vy = vy0 - v->vy;
+            iv = (v->hit_vx < 0 ? -v->hit_vx : v->hit_vx)
+               + (v->hit_vy < 0 ? -v->hit_vy : v->hit_vy);
+            return (int)(iv >> 16);
+        }
     }
 
     /* WEDGED: everything was refused and the car has not moved. A car nose-in
@@ -741,13 +967,20 @@ int gta_veh_wall(gta_veh *v, const void *navp, int layer,
     v->ox = ox0 + dx;  v->oy = oy0 + dy;
 
     /* AND IF IT IS STILL WEDGED after refusing both axes and the heading,
-     * push it out. Without this the three refusals repeat every tick and the
-     * car never moves again - "it sticks to buildings and jams". */
-    if (veh_body_blocked(nav, layer, v->ox, v->oy, gta_veh_angle(v), hl, hw))
-        veh_unstick(v, nav, layer);
+     * push it out - and if even that fails, put it back where it last stood
+     * legally. Without this the three refusals repeat every tick and the car
+     * never moves again - "it sticks to buildings and jams". */
+    veh_settle(v, nav, layer, hl, hw);
     {
-        long iv = (v->vx < 0 ? -v->vx : v->vx)
-                + (v->vy < 0 ? -v->vy : v->vy);
+        /* THE IMPACT IS WHAT THE WALL TOOK OFF, not what survived it. The
+         * other way round - which is what this used to return - reports a
+         * head-on collision as harmless, because a head-on collision is
+         * exactly the case where nothing survives. */
+        long iv;
+        v->hit_vx = vx0 - v->vx;
+        v->hit_vy = vy0 - v->vy;
+        iv = (v->hit_vx < 0 ? -v->hit_vx : v->hit_vx)
+           + (v->hit_vy < 0 ? -v->hit_vy : v->hit_vy);
         return (int)(iv >> 16);
     }
 }

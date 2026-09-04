@@ -50,7 +50,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.0.4
+TEXT = """AmiGTA v0.1.0
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -83,7 +83,7 @@ WHAT IS IN THIS ARCHIVE
   gtabake       The converter. Runs ON THE AMIGA. It reads the game's own
                 style001.gry and writes the tile set the engine loads, and
                 with -sfx it converts the sound bank too - see WHAT IS NOT
-                IN v0.0.4 for why you do not need that yet.
+                IN v0.1.0 for why you do not need that yet.
 
   run           Startup script. Sets the stack and starts the game.
 
@@ -243,7 +243,7 @@ It opens a small window on Workbench with three choices:
               mixes in software. Auto picks Paula where a real chipset
               exists and AHI where one does not.
 
-              NOTHING PLAYS YET. v0.0.4 has no sound at all; the setting
+              NOTHING PLAYS YET. v0.1.0 has no sound at all; the setting
               is read and reported in gta.log and nothing more. It is here
               because the choice has to be settled before the sound layer
               is written, not after.
@@ -295,15 +295,28 @@ can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
 
 ===========================================================================
-WHAT IS NOT IN v0.0.4
+NEW SINCE v0.0.4
+===========================================================================
+
+  * Traffic steers instead of sliding. A car blocked off a junction
+    changes lane through a proper S-curve, after checking the new lane
+    three blocks ahead; with nowhere to go it turns round; knocked off
+    its lane by you it steers back onto it. Nothing snaps sideways any
+    more, and nothing turns round on the spot.
+  * Cars climb every ramp and bridge in Liberty City, and are drawn ON
+    the ramp instead of under it.
+  * A wrecked car stays as a burnt-out shell.
+  * The fleet stops for a person in the road - including you.
+  * Cars leant on by other cars rotate with the tyres dragging, rather
+    than being shoved bodily.
+  * You get into a car on the driver's side, on every model.
+  * A parked car cannot be walked into a wall by rounding error.
+
+===========================================================================
+WHAT IS NOT IN v0.1.0
 ===========================================================================
 
   * No crates to pick weapons up from - you start with all five.
-  * Cars take damage from crashes and from anything you shoot them
-    with, wear the dents, and at a hundred points they burn for a
-    moment and explode - taking whatever is parked next to them with
-    them. Your own car does the same, and puts you out on the road
-    first.
   * No missions, no police, no wanted level. The score counts, the
     wanted level does not exist yet.
   * Tyre marks, blood and oil are not drawn.

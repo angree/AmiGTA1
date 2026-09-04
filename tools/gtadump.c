@@ -664,6 +664,343 @@ static int cmd_lights(const char *mapPath, int bx, int by, int w, int h, int z)
  * whose neighbour sits a layer HIGHER is the way up. If that agrees with the
  * letter Carnage3D uses, good; if it does not, the map wins.
  */
+/* EVERY RAMP IN THE MAP, AND WHETHER A CAR CAN ACTUALLY GET UP IT.
+ *
+ * `car_ramp.txt` proves one ramp works. That is not the same question as the
+ * one the developer keeps asking - "dalej wjezdza sie pod most" - which is
+ * about the map as a whole. This walks every ramp TOP, asks gta_veh_layer()
+ * exactly what the game asks it, and prints the ones that do not lead up.
+ *
+ *   build/host/gtadump rampcheck <nyc.cmp>
+ */
+/* DRIVE A CAR UP EVERY RAMP IN LIBERTY CITY, ONE AT A TIME.
+ *
+ * `rampcheck` asks gta_veh_layer() a question about the map. This asks the
+ * GAME: it puts a car at the foot of each ramp, holds the throttle down, and
+ * reports whether it arrived on the layer above. That is the difference
+ * between "the rule says it should work" and "it works", and the gap between
+ * those two is where the real bug was - the ramp at (90,92) passed rampcheck
+ * and stopped the car dead at the top, because the block beyond it is water
+ * on the lower layer and the car was waiting for its CENTRE to cross.
+ *
+ *   build/host/gtadump rampdrive <nyc.cmp> <style.til>
+ *
+ * One line per ramp that does NOT lead the car up, then a count. The pass
+ * condition is zero failures.
+ */
+static int cmd_rampdrive(const char *mapPath, const char *tilesPath)
+{
+    gta_map mp;
+    gta_tiles ti;
+    gta_nav nav;
+    int bx, by, z;
+    long tried = 0, ok = 0;
+
+    if (gta_map_load(mapPath, &mp) != 0)
+        return 1;
+    if (gta_tiles_load(tilesPath, &ti) != 0) { gta_map_free(&mp); return 1; }
+    if (gta_nav_build(&nav, &mp) != 0) {
+        gta_tiles_free(&ti); gta_map_free(&mp); return 1;
+    }
+
+    printf("%-11s %-4s  %s\n", "ramp top", "up", "what the car did");
+
+    for (by = 0; by < GTA_MAP_DIM; by++)
+    for (bx = 0; bx < GTA_MAP_DIM; bx++)
+    for (z = 0; z < GTA_MAP_LAYERS; z++) {
+        int dir, nx, ny, sx, sy, ddx, ddy, n, t, got, layer, arrived = 0;
+        gta_veh v;
+        int gme;
+
+        if (!gta_map_slope_is_top(&mp, bx, by, z)) continue;
+        dir = gta_map_slope_up_dir(&mp, bx, by, z);
+        if (dir < 0) continue;
+        gme = gta_nav_ground(gta_nav_at(&nav, bx, by, z));
+        if (gme < 2 || gme == 5) continue;          /* scenery, not a ramp */
+
+        /* Which way is up, as a block step. */
+        ddx = (dir == 64) ? 1 : (dir == 192) ? -1 : 0;
+        ddy = (dir == 128) ? 1 : (dir == 0) ? -1 : 0;
+
+        /* Only the ramps that have somewhere to arrive - the others are
+         * answered by `rampcheck` and are not a driving question. */
+        nx = bx + ddx; ny = by + ddy;
+        {
+            int ga = gta_nav_ground(gta_nav_at(&nav, nx, ny, z + 1));
+            if (ga < 2 || ga == 5) continue;
+        }
+
+        /* Walk back down the ramp to its foot, then four blocks of run-up. */
+        sx = bx; sy = by;
+        for (n = 0; n < 16; n++) {
+            int px = sx - ddx, py = sy - ddy;
+            if (gta_map_slope_up_dir(&mp, px, py, z) != dir) break;
+            sx = px; sy = py;
+        }
+        for (n = 0; n < 4; n++) {
+            int px = sx - ddx, py = sy - ddy;
+            int g = gta_nav_ground(gta_nav_at(&nav, px, py, z));
+            if (g < 2 || g == 5) break;
+            sx = px; sy = py;
+        }
+
+        tried++;
+        gta_veh_init(&v, &ti, 0,
+                     ((long)sx << 21) + (16L << 16),
+                     ((long)sy << 21) + (16L << 16), dir);
+        layer = z;
+        for (t = 0; t < 400; t++) {
+            long wx0 = v.x, wy0 = v.y, wox0 = v.ox, woy0 = v.oy;
+            long wang0 = v.ang16, n0x, n0y, n1x, n1y;
+            gta_veh_step(&v, 1, 0, 0, 0, 0);
+            gta_veh_nose(&v, wox0, woy0, wang0, &n0x, &n0y);
+            gta_veh_nose(&v, v.ox, v.oy, v.ang16, &n1x, &n1y);
+            got = gta_veh_layer(&nav, layer,
+                                (int)(n0x >> 21), (int)(n0y >> 21),
+                                (int)(n1x >> 21), (int)(n1y >> 21),
+                                n1x - n0x, n1y - n0y);
+            layer = got;
+            gta_veh_wall(&v, &nav, layer, wx0, wy0, wox0, woy0, wang0);
+            if (layer > z) { arrived = t + 1; break; }
+        }
+
+        if (arrived) { ok++; continue; }
+        printf("(%3d,%3d)   %-4d  started (%d,%d), gave up at (%ld,%ld) "
+               "layer %d\n", bx, by, dir, sx, sy,
+               v.ox >> 21, v.oy >> 21, layer);
+    }
+
+    printf("\n%ld ramps with a road above them, %ld drove up, %ld did not.\n",
+           tried, ok, tried - ok);
+
+    gta_nav_free(&nav);
+    gta_tiles_free(&ti);
+    gta_map_free(&mp);
+    return 0;
+}
+
+static int cmd_rampcheck(const char *mapPath)
+{
+    gta_map mp;
+    gta_nav nav;
+    int bx, by, z;
+    long tops = 0, up = 0;
+
+    if (gta_map_load(mapPath, &mp) != 0)
+        return 1;
+    if (gta_nav_build(&nav, &mp) != 0) { gta_map_free(&mp); return 1; }
+
+    printf("%-11s %-5s %-4s  %-8s %-8s  %s\n",
+           "ramp top", "layer", "up", "ahead@z", "ahead@z+1", "verdict");
+
+    for (by = 0; by < GTA_MAP_DIM; by++)
+    for (bx = 0; bx < GTA_MAP_DIM; bx++)
+    for (z = 0; z < GTA_MAP_LAYERS; z++) {
+        int dir, nx, ny, got, g0, g1;
+        long dx, dy;
+
+        if (!gta_map_slope_is_top(&mp, bx, by, z)) continue;
+        dir = gta_map_slope_up_dir(&mp, bx, by, z);
+        if (dir < 0) continue;
+        /* ONLY RAMPS A CAR COULD BE ON. Most of the map's 1496 "slope tops"
+         * are sloping roofs and walls with no drivable surface at all; a car
+         * cannot be standing on one, so whether it leads anywhere is not a
+         * question about driving. */
+        {
+            int gme = gta_nav_ground(gta_nav_at(&nav, bx, by, z));
+            if (gme < 2 || gme == 5) continue;
+        }
+        tops++;
+
+        /* One block along the ascent, and the move that gets there. */
+        nx = bx; ny = by; dx = 0; dy = 0;
+        if (dir == 0)        { ny = by - 1; dy = -0x10000L; }
+        else if (dir == 64)  { nx = bx + 1; dx =  0x10000L; }
+        else if (dir == 128) { ny = by + 1; dy =  0x10000L; }
+        else                 { nx = bx - 1; dx = -0x10000L; }
+
+        got = gta_veh_layer(&nav, z, bx, by, nx, ny, dx, dy);
+        g0 = gta_nav_ground(gta_nav_at(&nav, nx, ny, z));
+        g1 = gta_nav_ground(gta_nav_at(&nav, nx, ny, z + 1));
+        if (got == z + 1) {
+            up++;
+            if (getenv("GTA_RAMPS_UP") != 0)
+                printf("(%3d,%3d)   %-5d %-4d  %-8d %-8d  LEADS UP to %d\n",
+                       bx, by, z, dir, g0, g1, got);
+            continue;
+        }
+
+        printf("(%3d,%3d)   %-5d %-4d  %-8d %-8d  STAYS ON %d\n",
+               bx, by, z, dir, g0, g1, got);
+    }
+
+    printf("\n%ld ramp tops, %ld lead a car up, %ld do not.\n",
+           tops, up, tops - up);
+    printf("ahead@z / ahead@z+1 are the nav ground types one block along the\n"
+           "ascent: 2 road, 3 pavement, 0 nothing. A ramp top whose ahead@z+1\n"
+           "is 0 has no road above it to arrive on - it is a slope in the\n"
+           "scenery, not a way onto a bridge.\n");
+
+    gta_nav_free(&nav);
+    gta_map_free(&mp);
+    return 0;
+}
+
+/* WHERE IS A FLAT BLOCK'S LID - top of its cube or bottom? The renderer says
+ * top, proved on the elevated railway; the truss bridge at (25..32,44..47)
+ * looked like a counter-example. This counts the whole map instead of arguing
+ * from one column. For every flat block that carries a lid:
+ *
+ *   A  the block ABOVE has a walkable type and no lid of its own - somebody
+ *      stands at height z+1, and the only lid that can be there is this one
+ *      at the TOP of its cube.
+ *   C  the block ITSELF has a walkable type and the block below has no lid -
+ *      somebody stands at height z, and only this lid at the BOTTOM of the
+ *      cube could be the floor.
+ *   B  both the block itself is walkable and the block below has a lid: a
+ *      decal on a real surface, and both models draw the same thing.
+ *
+ * A model the map was built for leaves the other letter near zero. */
+/* THE STEERING CONTROLLER ON ITS OWN - step 1 of the steering plan.
+ *
+ * One car, one line, no map and no fleet, so a convergence fault cannot hide
+ * behind traffic. Two runs, both with the line y = 0 running east:
+ *
+ *   A  the lane case: 12 px off the line, heading 30 degrees (21 steps) away
+ *      from it, at cruise. It must reach the line and stay there, and it
+ *      must not cross it by more than a pixel - a controller that overshoots
+ *      weaves down the street for ever.
+ *   B  the U-turn case: on the line but pointing the wrong way (128 steps),
+ *      at cornering speed. It must come round, and the swing across the line
+ *      must fit a two-lane carriageway (64 px).
+ *
+ * The numbers printed are what a later change has to keep.
+ */
+static int cmd_steertest(void)
+{
+    static const struct { const char *name; int face; long off_px; long speed;
+                          int ticks; int max_settle; long max_cross; }
+    runs[2] = {
+        /* THE 4 PX ALLOWANCE IS THE TURN RATE, NOT A LOOSE TEST. The car
+         * arrives at the line still rotated about 23 steps out and can
+         * only shed 2.5 steps a tick (v/R at cruise), so it travels a few
+         * pixels past while it straightens. Measured 3 px, and raising
+         * the lookahead does not move it (K 24/32/40/48 all give 3): it
+         * is the physics, and a real car does the same. What matters is
+         * that it is a single damped overshoot - the run holds within a
+         * pixel of the line for the next 500 ticks. */
+        { "lane   (12 px off, 30 degrees away, cruise)",
+          21,  12, (long)GTA_SPEED_CRUISE * GTA_SPEED_UNIT, 300, 100,  4 },
+        { "U-turn (on the line, pointing the wrong way, tight)",
+          128,  0, (long)GTA_SPEED_TURN_TIGHT * GTA_SPEED_UNIT, 600, 300, 64 },
+    };
+    int r, bad = 0;
+
+    for (r = 0; r < 2; r++) {
+        gta_car c;
+        int t, slow, settled = -1;
+        long worst_cross = 0, worst_over = 0, last_off = 0;
+        int last_face = -1, face_settled = -1;
+
+        memset(&c, 0, sizeof c);
+        c.x = 0;
+        c.y = runs[r].off_px << 16;         /* the line is y = 0 */
+        c.face = runs[r].face;
+        c.face16 = (long)runs[r].face << 16;
+        c.speed = runs[r].speed;
+        gta_traffic_set_line(&c, 1, 0, 64); /* y = 0, driving east */
+
+        printf("steertest: %s\n", runs[r].name);
+        for (t = 0; t < runs[r].ticks; t++) {
+            long off;
+            gta_traffic_steer_step(&c, &slow);
+            off = c.y >> 16;
+            /* How far it strays to the far side, and how far it swings. */
+            if (off < 0 && -off > worst_over)  worst_over = -off;
+            if (off > worst_cross) worst_cross = off;
+            if (off < 0 && -off > worst_cross) worst_cross = -off;
+            if (settled < 0 && off <= 1 && off >= -1) settled = t;
+            if (settled >= 0 && face_settled < 0 &&
+                c.face == 64) face_settled = t;
+            if (t < 8 || (t % 25) == 0)
+                printf("   t%-3d off %4ld  face %3d  slow %d\n",
+                       t, off, c.face, slow);
+            last_off = off;
+            last_face = c.face;
+        }
+        printf("   settled on the line at t%d, heading east at t%d; "
+               "final off %ld face %d; worst swing %ld px, "
+               "worst past the line %ld px\n",
+               settled, face_settled, last_off, last_face,
+               worst_cross, worst_over);
+        if (settled < 0 || settled > runs[r].max_settle) {
+            printf("   FAILED: not on the line within %d ticks\n",
+                   runs[r].max_settle);
+            bad = 1;
+        }
+        if (worst_over > runs[r].max_cross) {
+            printf("   FAILED: went %ld px past the line, allowed %ld\n",
+                   worst_over, runs[r].max_cross);
+            bad = 1;
+        }
+        if (last_face != 64) {
+            printf("   FAILED: ended heading %d, wanted 64\n", last_face);
+            bad = 1;
+        }
+    }
+    printf("steertest: %s\n", bad ? "*** FAILED ***" : "PASSED");
+    return bad;
+}
+
+static int cmd_flatscan(const char *mapPath)
+{
+    gta_map mp;
+    int bx, by, z;
+    long n = 0, a = 0, b = 0, c = 0, o = 0;
+
+    if (gta_map_load(mapPath, &mp) != 0)
+        return 1;
+
+    for (by = 0; by < GTA_MAP_DIM; by++)
+    for (bx = 0; bx < GTA_MAP_DIM; bx++)
+    for (z = 0; z < GTA_MAP_LAYERS; z++) {
+        gta_block me, up, dn;
+        int g_me, g_up, lid_dn;
+
+        if (!gta_map_block(&mp, bx, by, z, &me)) continue;
+        if (!gta_block_is_flat(&me) || !me.faces[GTA_FACE_LID]) continue;
+        if (gta_block_slope(&me)) continue;
+        n++;
+        g_me = gta_block_ground_type(&me);
+        g_up = (z + 1 < GTA_MAP_LAYERS && gta_map_block(&mp, bx, by, z + 1, &up))
+             ? gta_block_ground_type(&up) : 0;
+        lid_dn = (z > 0 && gta_map_block(&mp, bx, by, z - 1, &dn))
+               ? (dn.faces[GTA_FACE_LID] != 0) : 0;
+        if (z + 1 < GTA_MAP_LAYERS && gta_map_block(&mp, bx, by, z + 1, &up)
+            && g_up >= 2 && g_up != 5 && !up.faces[GTA_FACE_LID]) {
+            a++;
+            if (getenv("GTA_FLAT_A") != 0)
+                printf("A (%3d,%3d) z%d lid %d, above type %d\n",
+                       bx, by, z, me.faces[GTA_FACE_LID], g_up);
+        } else if (g_me >= 2 && g_me != 5 && !lid_dn) {
+            c++;
+            if (getenv("GTA_FLAT_C") != 0)
+                printf("C (%3d,%3d) z%d lid %d, own type %d, nothing below\n",
+                       bx, by, z, me.faces[GTA_FACE_LID], g_me);
+        } else if (g_me >= 2 && g_me != 5 && lid_dn) {
+            b++;
+        } else {
+            o++;
+        }
+    }
+
+    printf("%ld flat blocks with a lid: A (surface ON TOP of it) %ld, "
+           "C (it IS the floor, nothing below) %ld, B (decal on a real "
+           "lid) %ld, other %ld\n", n, a, c, b, o);
+    gta_map_free(&mp);
+    return 0;
+}
+
 static int cmd_slopes(const char *mapPath, int want)
 {
     gta_map mp;
@@ -1709,6 +2046,37 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
     long moving_sum = 0, moving_ticks = 0, hold_hist[GTA_HOLD_COUNT];
     int stopped_for[GTA_MAX_CARS], worst_wait = 0, gate_shown = 0;
     char out[512];
+    /* STEP 0 OF THE STEERING PLAN: IS THE BUS REALLY OFF ITS LANE?
+     *
+     * "widze ze tez autobus jedzie po srodku drogi a nie powinien w ogole.
+     * to nie jest dozwolona sciezka." Two questions, per vehicle class,
+     * because a bus is 20 world px wide in a 32 px lane and looks wrong
+     * when it is right:
+     *
+     *   cls_off  how far the car's cross coordinate is from the lane line
+     *            it is currently aiming at, in px: 0-2, 3-6, 7-12, 13+.
+     *            A car on its line lives in the first bin.
+     *   cls_bad  car-ticks whose OWN BLOCK does not carry the car's
+     *            heading in its arrows - the "not an allowed path" the
+     *            developer named. This is about the map's own permission,
+     *            not about lanes.
+     *
+     * Class index: 0 bus, 1 bike, 2 car, 3 everything else. */
+    long cls_off[4][4], cls_bad[4], cls_ticks[4];
+    unsigned long cls_bad_first[4];
+    int cls_bad_x[4], cls_bad_y[4], cls_bad_a[4];
+    /* ...AND THE SAME QUESTION ASKED OF THE WHOLE BODY, which is what the
+     * eye actually judges. The centre of a bus can sit dead on its lane
+     * line while the body hangs over the lane beside it: a bus is 20 world
+     * px wide and 60 long in a 32 px lane, so it only has six pixels of
+     * clearance and none at all through a corner. `cls_wide` counts
+     * car-ticks with a BODY CORNER on a block that does not carry the
+     * car's heading; `cls_turn` counts the corner ticks that are excluded
+     * from the lane histogram, because a long vehicle mid-corner is off
+     * every lane by construction and that is where a bus looks worst. */
+    long cls_wide[4], cls_wide_turn[4], cls_turn[4];
+    unsigned long cls_wide_first[4];
+    int cls_wide_x[4], cls_wide_y[4], cls_wide_a[4];
 
     if (gta_map_load(mapPath, &mp) != 0)
         return 1;
@@ -1722,6 +2090,14 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
     if (zoom > 0)
         gta_render_set_zoom(&view, zoom);
 
+    for (i = 0; i < 4; i++) {
+        int b;
+        for (b = 0; b < 4; b++) cls_off[i][b] = 0;
+        cls_bad[i] = 0; cls_ticks[i] = 0; cls_bad_first[i] = 0;
+        cls_bad_x[i] = -1; cls_bad_y[i] = -1; cls_bad_a[i] = -1;
+        cls_wide[i] = 0; cls_wide_turn[i] = 0; cls_turn[i] = 0; cls_wide_first[i] = 0;
+        cls_wide_x[i] = -1; cls_wide_y[i] = -1; cls_wide_a[i] = -1;
+    }
     for (i = 0; i < GTA_MAX_CARS; i++) stopped_for[i] = 0;
     for (i = 0; i < GTA_HOLD_COUNT; i++) hold_hist[i] = 0;
     for (i = 0; i < GTA_HOLD_COUNT; i++) sib_hold[i] = 0;
@@ -2002,6 +2378,112 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
             if (tr.cars[i].speed == 0 && tr.cars[i].hold >= 0 &&
                 tr.cars[i].hold < GTA_HOLD_COUNT)
                 hold_hist[tr.cars[i].hold]++;
+        /* THE LANE AND THE ARROWS, PER CLASS - step 0 of the steering plan.
+         * A car mid-corner is skipped: it is meant to be off the line and
+         * across the arrows of the block it is cutting through. */
+        for (i = 0; i < tr.n; i++) {
+            const gta_car *c = &tr.cars[i];
+            int vt, ci, cbx, cby, off, d, bin, ok;
+            gta_block blk;
+
+            if (c->done || c->abandoned || c->knock > 0)
+                continue;
+            vt = ti.cars[c->model].vtype;
+            ci = vt == 0 ? 0 : vt == 3 ? 1 : vt == 4 ? 2 : 3;
+            /* Where it is and how far off its line, computed first so the
+             * body test below can report them. */
+            cbx = (int)(c->x >> (16 + 5));
+            cby = (int)(c->y >> (16 + 5));
+            off = (int)((((c->angle & 127) == 64 ? c->y : c->x) >> 16) & 31);
+
+            /* THE WHOLE BODY AGAINST THE ARROWS - four corners, in the
+             * car's own frame, through the same Q14 rotation the fleet
+             * uses. Runs for a turning car too: that is the case a long
+             * vehicle cannot help failing, and seeing how much it fails
+             * by is the point. */
+            {
+                const gta_car_info *bi = &ti.cars[c->model];
+                long hl = gta_car_world_len(bi) / 2;
+                long hw = gta_car_world_wid(bi) / 2;
+                long fx = gta_sin(c->face), fy = -gta_cos(c->face);
+                int k;
+                for (k = 0; k < 4; k++) {
+                    long al = (k < 2 ? hl : -hl), ac = ((k & 1) ? hw : -hw);
+                    long wx = c->x + ((al * fx - ac * fy) << 2);
+                    long wy = c->y + ((al * fy + ac * fx) << 2);
+                    int qx = (int)(wx >> (16 + 5)), qy = (int)(wy >> (16 + 5));
+                    gta_block qb;
+                    int qok = 0;
+                    if (gta_map_block(&mp, qx, qy, c->layer, &qb)) {
+                        switch (c->angle) {
+                        case 0:   qok = gta_block_dir_north(&qb); break;
+                        case 64:  qok = gta_block_dir_east(&qb);  break;
+                        case 128: qok = gta_block_dir_south(&qb); break;
+                        default:  qok = gta_block_dir_west(&qb);  break;
+                        }
+                    }
+                    if (!qok) {
+                        /* Split straight from mid-corner: a long vehicle
+                         * on a 29 px radius MUST sweep other blocks, and
+                         * that is a corner-geometry question. A body over
+                         * the arrows on STRAIGHT road is the lane
+                         * question, and it is the one the developer saw. */
+                        int slot = (c->turn != 0) ? 1 : 0;
+                        if (cls_wide[ci] == 0 && slot == 0) {
+                            cls_wide_first[ci] = c->serial;
+                            cls_wide_x[ci] = qx;
+                            cls_wide_y[ci] = qy;
+                            cls_wide_a[ci] = c->angle;
+                        }
+                        /* WHAT STATE IS IT IN? A body over the arrows on
+                         * straight road is either a slewed heading (the
+                         * walk-back after a knock), a lane change under
+                         * way, or something the lane line got wrong. The
+                         * first ten of each class say which. */
+                        if (slot == 0 && cls_wide[ci] < 10 &&
+                            getenv("GTA_BODY") != 0)
+                            printf("  BODY car %lu %s at (%d,%d) heading %d "
+                                   "face %d recover %d swap %d off %d "
+                                   "target %d\n", c->serial,
+                                   ci == 0 ? "bus" : ci == 1 ? "bike" :
+                                   ci == 2 ? "car" : "other",
+                                   cbx, cby, c->angle, c->face, c->recover,
+                                   c->swap, off, c->lane_target);
+                        if (slot == 0) cls_wide[ci]++;
+                        else           cls_wide_turn[ci]++;
+                        break;          /* one tick, not one per corner */
+                    }
+                }
+            }
+
+            if (c->turn != 0) { cls_turn[ci]++; continue; }
+            cls_ticks[ci]++;
+
+            /* The cross axis: on an east-west road the lane line is a y. */
+            d = off - c->lane_target;
+            if (d < 0) d = -d;
+            bin = d <= 2 ? 0 : d <= 6 ? 1 : d <= 12 ? 2 : 3;
+            cls_off[ci][bin]++;
+
+            ok = 0;
+            if (gta_map_block(&mp, cbx, cby, c->layer, &blk)) {
+                switch (c->angle) {
+                case 0:   ok = gta_block_dir_north(&blk); break;
+                case 64:  ok = gta_block_dir_east(&blk);  break;
+                case 128: ok = gta_block_dir_south(&blk); break;
+                default:  ok = gta_block_dir_west(&blk);  break;
+                }
+            }
+            if (!ok) {
+                if (cls_bad[ci] == 0) {
+                    cls_bad_first[ci] = c->serial;
+                    cls_bad_x[ci] = cbx;
+                    cls_bad_y[ci] = cby;
+                    cls_bad_a[ci] = c->angle;
+                }
+                cls_bad[ci]++;
+            }
+        }
         for (i = 0; i < tr.n && i < nbefore; i++) {
             long dx = tr.cars[i].x - px[i], dy = tr.cars[i].y - py[i];
             if (dx < 0) dx = -dx;
@@ -2314,6 +2796,45 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
            "no room to turn %ld, dead end %ld, road ahead %ld, gap %ld\n",
            hold_hist[1], hold_hist[2], hold_hist[3], hold_hist[4],
            hold_hist[5], hold_hist[6], hold_hist[7]);
+    /* THE LATERAL MANOEUVRES. A U-turn on an open street is a bug, so this
+     * line reading 0 on the ordinary seeds is the test, not the exception. */
+    printf("drive: LANE CHANGES %ld (given up: %ld lane taken, %ld on the "
+           "clock), U-TURNS %ld\n",
+           tr.stat_lane_swaps, tr.stat_lane_swap_aborted,
+           tr.stat_lane_swap_timeout, tr.stat_uturns);
+    /* THE LANE AND THE ARROWS, PER CLASS - step 0 of the steering plan. */
+    {
+        static const char *cn[4] = { "bus", "bike", "car", "other" };
+        int ci;
+        printf("drive: ON THE LANE, by class (car-ticks, corners and knocks "
+               "excluded) - px off the lane line it is aiming at\n");
+        for (ci = 0; ci < 4; ci++) {
+            long n = cls_ticks[ci];
+            if (n == 0) continue;
+            printf("       %-5s %7ld ticks: 0-2 %3ld%%  3-6 %3ld%%  "
+                   "7-12 %3ld%%  13+ %3ld%%   not an allowed path %ld",
+                   cn[ci], n,
+                   (cls_off[ci][0] * 100) / n, (cls_off[ci][1] * 100) / n,
+                   (cls_off[ci][2] * 100) / n, (cls_off[ci][3] * 100) / n,
+                   cls_bad[ci]);
+            if (cls_bad[ci])
+                printf(" (first: car %lu at (%d,%d) heading %d)",
+                       cls_bad_first[ci], cls_bad_x[ci], cls_bad_y[ci],
+                       cls_bad_a[ci]);
+            printf("\n");
+            printf("             ...and the WHOLE BODY over the arrows: "
+                   "%ld of %ld ticks ON STRAIGHT ROAD (%ld%%), %ld of %ld "
+                   "mid-corner (%ld%%)",
+                   cls_wide[ci], n, (cls_wide[ci] * 100) / n,
+                   cls_wide_turn[ci], cls_turn[ci],
+                   cls_turn[ci] ? (cls_wide_turn[ci] * 100) / cls_turn[ci] : 0);
+            if (cls_wide[ci])
+                printf(" (first straight: car %lu, corner on (%d,%d) "
+                       "heading %d)", cls_wide_first[ci], cls_wide_x[ci],
+                       cls_wide_y[ci], cls_wide_a[ci]);
+            printf("\n");
+        }
+    }
     printf("drive: flow - %ld%% of the fleet moving on average, longest a car "
            "stood still %d ticks (%d.%d s)\n",
            moving_ticks ? (moving_sum * 100) / moving_ticks : 0,
@@ -4338,31 +4859,20 @@ static int cmd_ramsweep(const char *tilesPath, int speed)
  *
  * Ten points, not four: a bus is 60 px long and a block is 32, so two corners
  * can straddle a wall block entirely without either of them being in it. */
-static const int WALL_SAMP[10][2] = {   /* along, across; thousandths */
-    {-1000, -1000}, {-1000, 0}, {-1000, 1000},
-    { -333, -1000}, { -333, 1000},
-    {  333, -1000}, {  333, 1000},
-    { 1000, -1000}, { 1000, 0}, { 1000, 1000}
-};
+/* The table itself lives in gta_vehphys.c now, with the test that reads it.
+ * It is described here because this is where the reasoning was written down.*/
 
+/* THE GAME'S OWN WALL TEST, not a copy of it.
+ *
+ * This used to be a second ten-point loop here, and it drifted the moment the
+ * game learned that a car straddling a ramp stands on two layers at once: the
+ * harness reported four ticks "inside a wall" on a run the game was perfectly
+ * happy with. It returns 0 or 1 now rather than a count of bad points, which
+ * is all any caller here actually branched on. */
 static int body_in_wall(const gta_nav *nav, int layer, long cx, long cy,
                         int ang, int hl, int hw)
 {
-    long fx = gta_sin(ang), fy = -gta_cos(ang);
-    long rx = gta_cos(ang), ry = gta_sin(ang);
-    int i, bad = 0;
-
-    for (i = 0; i < 10; i++) {
-        long al = (long)hl * WALL_SAMP[i][0] / 1000;
-        long si = (long)hw * WALL_SAMP[i][1] / 1000;
-        long px = cx + (fx * al + rx * si) * 4;
-        long py = cy + (fy * al + ry * si) * 4;
-        int g = gta_nav_ground(gta_nav_at(nav, (int)(px >> 21),
-                                          (int)(py >> 21), layer));
-        if (g < 2 || g == 5)
-            bad++;
-    }
-    return bad;
+    return gta_veh_body_blocked(nav, layer, cx, cy, ang, hl, hw);
 }
 
 
@@ -4761,6 +5271,10 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
     unsigned char *canvas;
     const int CW = 512, CH = 512, PXB = 4;
     int ox, oy, have_nav = 0, tick = 0, placed = 0;
+    /* THE LAYER THE CAR IS ON, which used to be the constant 2 everywhere in
+     * this loop. A car climbs ramps now (gta_veh_layer), and a harness that
+     * cannot follow it up one is measuring a game nobody plays. */
+    int car_layer = 2, layer_changes = 0;
     long wall_ticks = 0, wall_worst = 0, wall_points = 0;
     long wedged_ticks = 0, wedged_run = 0, wedged_worst = 0;
     long prev_x = 0, prev_y = 0;
@@ -4845,10 +5359,26 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                 wx0 = v.x; wy0 = v.y; wox0 = v.ox; woy0 = v.oy;
                 wang0 = v.ang16;
                 gta_veh_step(&v, thr, brk, st, hb, 0);
-                if (have_nav)
-                    v.damage += gta_veh_wall(&v, &nav, 2,
+                if (have_nav) {
+                    long nx0, ny0, nx1, ny1;
+                    int nz;
+                    gta_veh_nose(&v, wox0, woy0, wang0, &nx0, &ny0);
+                    gta_veh_nose(&v, v.ox, v.oy, v.ang16, &nx1, &ny1);
+                    nz = gta_veh_layer(&nav, car_layer,
+                                 (int)(nx0 >> 21), (int)(ny0 >> 21),
+                                 (int)(nx1 >> 21), (int)(ny1 >> 21),
+                                 nx1 - nx0, ny1 - ny0);
+                    if (nz != car_layer) {
+                        printf("drivecar: layer %d -> %d at block (%d,%d) "
+                               "tick %d\n", car_layer, nz,
+                               (int)(v.ox >> 21), (int)(v.oy >> 21), tick);
+                        car_layer = nz;
+                        layer_changes++;
+                    }
+                    v.damage += gta_veh_wall(&v, &nav, car_layer,
                                              wx0, wy0, wox0, woy0, wang0) > 1
                                 ? 1 : 0;
+                }
                 tick++;
                 if (with_traffic && have_nav) {
                     long rvx, rvy, ryaw, rpx, rpy, sp_, sq_;
@@ -4861,7 +5391,8 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                         long nx_ = v.ox, ny_ = v.oy, na_ = v.ang16;
                         if (gta_traffic_sweep_box(&tr, wox0, woy0, wang0,
                                                   &nx_, &ny_, &na_,
-                                                  v.len / 2, v.wid / 2, 2)) {
+                                                  v.len / 2, v.wid / 2,
+                                                  car_layer)) {
                             v.x += nx_ - v.ox;
                             v.y += ny_ - v.oy;
                             v.ox = nx_; v.oy = ny_; v.ang16 = na_;
@@ -4871,11 +5402,12 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                     sq_ = v.vy < 0 ? -v.vy : v.vy;
                     gta_traffic_set_player(&tr, 1, v.x, v.y,
                         sp_ > sq_ ? sp_ : sq_,
-                        gta_veh_angle(&v), 2, v.len / 2, v.wid / 2);
+                        gta_veh_angle(&v), car_layer,
+                        v.len / 2, v.wid / 2);
                     gta_traffic_tick(&tr, &mp, v.x, v.y);
                     gta_peds_tick(&pd, &mp, v.x, v.y);
                     gta_peds_ram(&pd, v.x, v.y, gta_veh_angle(&v),
-                                 v.len / 2, v.wid / 2, 2,
+                                 v.len / 2, v.wid / 2, car_layer,
                                  sp_ > sq_ ? sp_ + sq_ / 2 : sq_ + sp_ / 2);
                     {
                         int pi_;
@@ -4925,7 +5457,11 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                 prev_x = v.ox >> 16;
                 prev_y = v.oy >> 16;
                 if (have_nav) {
-                    int inw = body_in_wall(&nav, 2, v.ox, v.oy,
+                    /* ON THE CAR'S OWN LAYER. It used to be the constant 2,
+                     * and the moment a car could climb onto a bridge that
+                     * counted the water under it as a wall - 334 ticks of
+                     * "BODY IN WALL" on a run that was going perfectly. */
+                    int inw = body_in_wall(&nav, car_layer, v.ox, v.oy,
                                            gta_veh_angle(&v),
                                            v.len / 2, v.wid / 2);
                     if (inw) {
@@ -5012,6 +5548,18 @@ int main(int argc, char **argv)
 
     if (argc >= 3 && strcmp(argv[1], "spriteinfo") == 0)
         return cmd_spriteinfo(argv[2]);
+
+    if (argc >= 4 && strcmp(argv[1], "rampdrive") == 0)
+        return cmd_rampdrive(argv[2], argv[3]);
+
+    if (argc >= 3 && strcmp(argv[1], "rampcheck") == 0)
+        return cmd_rampcheck(argv[2]);
+
+    if (argc >= 2 && strcmp(argv[1], "steertest") == 0)
+        return cmd_steertest();
+
+    if (argc >= 3 && strcmp(argv[1], "flatscan") == 0)
+        return cmd_flatscan(argv[2]);
 
     if (argc >= 3 && strcmp(argv[1], "slopes") == 0)
         return cmd_slopes(argv[2], argc >= 4 ? atoi(argv[3]) : 24);

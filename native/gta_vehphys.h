@@ -78,6 +78,40 @@ typedef struct {
      * eased back out; see gta_veh_wall(). */
     int  wall_stuck;
 
+    /* THE LAST TRANSFORM THAT WAS ENTIRELY OUTSIDE THE GEOMETRY.
+     *
+     * The wall resolve refuses a move that would put the body inside a
+     * building, and veh_unstick() pushes one back out that already is. Both
+     * are best-effort: a shove from another car, a rotation nothing gated, a
+     * layer that was wrong for a tick - any of those can leave the car in a
+     * wall, and once it is in, "push it towards the centre of the car" can
+     * push it further into the next block along. The developer watched a car
+     * creep into a solid block a fraction of a pixel at a time.
+     *
+     * So there is a floor under all of it: the last position, geometric
+     * centre and heading at which the whole outline was clear. If a tick ends
+     * with the body inside something and the push-out could not free it, the
+     * car goes back to this and stops. It is at most one tick old, so the
+     * revert is a fraction of a pixel - it reads as "the wall stopped me",
+     * not as a jump. */
+    long safe_x, safe_y, safe_ox, safe_oy, safe_ang;
+    int  have_safe;
+
+    /* WHAT THE WORLD TOOK OFF THE CAR in the last gta_veh_wall() - the
+     * velocity that was cancelled by a wall, in 16.16 per step.
+     *
+     * The impact speed is what the collision REMOVED, and it has to be
+     * measured before the resolve rather than after. gta_veh_wall() used to
+     * report what was LEFT, so a car driven straight into a building had its
+     * only velocity component zeroed and reported an impact of nothing: the
+     * damage never went up and no panel was ever dented by a wall. "auto
+     * gracza przestalo przyjmowac obrazenia ... jak jechalem to nic sie nie
+     * dzieje z rogami."
+     *
+     * The direction is also the direction of the contact, which is what says
+     * WHICH panel to dent. */
+    long hit_vx, hit_vy;
+
     /* what the rest of the port reads: the car's geometric centre, which is
      * the centre of mass shifted back along the body by the com offset. The
      * original keeps both for the same reason - the art is drawn about the
@@ -166,6 +200,29 @@ void gta_veh_step(gta_veh *v, int throttle, int brake, int steer,
  *
  * `nav` is a `const gta_nav *`, declared void here so this header does not
  * have to drag gta_nav.h in behind it. */
+/* WHICH LAYER THE CAR IS ON after a step, given the block it came from, the
+ * block it is over now and the move between them. Ramps, and nothing else,
+ * change the answer; see the note on the definition. Call it BEFORE
+ * gta_veh_wall(), so the wall test runs on the layer the car has arrived at
+ * rather than the one it left. `nav` is a `const gta_nav *`. */
+int gta_veh_layer(const void *nav, int layer,
+                  int fbx, int fby, int bx, int by, long dx, long dy);
+
+/* PASS gta_veh_layer() THE BLOCKS UNDER THE NOSE, not under the centre. The
+ * front of a car reaches the higher road first, and a car that waits for its
+ * middle to get there never gets there at all - see the note on the
+ * definition. This is where the nose is, in world 16.16, for a geometric
+ * centre and a heading; the game and the harnesses both need it and neither
+ * should be doing the trigonometry itself. */
+void gta_veh_nose(const gta_veh *v, long ox, long oy, long ang16,
+                  long *nx, long *ny);
+
+/* Is any of the car's ten-point outline standing where a car may not?
+ * Exported for the harnesses so they measure the game's own rule rather than
+ * a copy of it. Non-zero means blocked. */
+int gta_veh_body_blocked(const void *nav, int layer, long cx, long cy,
+                         int ang, int hl, int hw);
+
 int gta_veh_wall(gta_veh *v, const void *nav, int layer,
                  long x0, long y0, long ox0, long oy0, long ang0);
 

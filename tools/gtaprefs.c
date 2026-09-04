@@ -56,7 +56,7 @@
  * nothing - the string is never read by any code, which is the whole
  * point of a version cookie. */
 static const char verstag[] __attribute__((used)) =
-    "$VER: gtaprefs 0.0.4 (03.09.2026)";
+    "$VER: gtaprefs 0.1.0 (04.09.2026)";
 
 /* The settings live beside the executable, exactly like the game's own data.
  * PROGDIR: is the drawer this binary was loaded from and AmigaOS sets it for

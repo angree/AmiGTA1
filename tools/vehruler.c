@@ -465,6 +465,104 @@ int main(int argc, char **argv)
                (t % TICKS_PER_SEC) * 2, dist,
                dist / PX_PER_BLOCK, (dist % PX_PER_BLOCK) * 100 / PX_PER_BLOCK);
 
+        /* 3b. DOES IT ACTUALLY STOP?
+         *
+         * "bezwladne auto dalej sie lekko rusza mimo ze powinno stac. i w ten
+         * sposob np. wjezdza pomalu w solid blok." Test 3 above stops
+         * measuring at 0.2 px/tick, so a car that never reaches ZERO looks
+         * like a car that stopped. The tyre force is proportional to the
+         * velocity it is resisting, so in fixed point it rounds to nothing
+         * long before the velocity does, and what is left creeps forever.
+         *
+         * Thirty seconds with every control released, from the moment the
+         * coast test gave up. A car at rest moves 0 px. */
+        {
+            long rx0 = v.x, ry0 = v.y, crept;
+            int still = 0;
+            for (t = 0; t < 30 * TICKS_PER_SEC; t++) {
+                gta_veh_step(&v, 0, 0, 0, 0, 0);
+                if (v.vx == 0 && v.vy == 0 && v.omega == 0) { still = t + 1; break; }
+            }
+            crept = isqrt_l(((v.x - rx0) >> 16) * ((v.x - rx0) >> 16)
+                          + ((v.y - ry0) >> 16) * ((v.y - ry0) >> 16));
+            printf("then, hands off for 30 s: crept %ld px, "
+                   "v (%ld,%ld) omega %ld - %s\n",
+                   crept, v.vx, v.vy, v.omega,
+                   still ? "AT REST" : "*** STILL MOVING ***");
+        }
+
+        /* 3c. THE SAME, FROM EVERY HEADING AND AFTER A TURN.
+         *
+         * Straight down the +x axis is the one case where one velocity
+         * component is exactly zero to begin with, so it is the one case that
+         * proves the least. A car that has been turned carries velocity in
+         * both axes and a residual omega, and each of those decays through
+         * its own rounding. */
+        hdr("comes to rest? every 32nd heading, after a turn");
+        {
+            int a, worst_a = -1, moving = 0;
+            long worst = 0;
+            for (a = 0; a < 256; a += 8) {
+                long rx0, ry0, crept;
+                gta_veh_init(&v, &ti, model, 0, 0, a);
+                for (t = 0; t < 200; t++) gta_veh_step(&v, 1, 0, 0, 0, 0);
+                for (t = 0; t < 40; t++)  gta_veh_step(&v, 1, 0, 1, 0, 0);
+                /* hands off, and let it roll to whatever it rolls to */
+                for (t = 0; t < 3000; t++) {
+                    gta_veh_step(&v, 0, 0, 0, 0, 0);
+                    if (speed_of(&v) < 13107) break;
+                }
+                rx0 = v.x; ry0 = v.y;
+                for (t = 0; t < 30 * TICKS_PER_SEC; t++)
+                    gta_veh_step(&v, 0, 0, 0, 0, 0);
+                crept = isqrt_l(((v.x - rx0) >> 16) * ((v.x - rx0) >> 16)
+                              + ((v.y - ry0) >> 16) * ((v.y - ry0) >> 16));
+                /* THE VERDICT IS THE FINAL STATE, NOT THE DISTANCE. A car
+                 * that rolls two more pixels and then stops dead is a car
+                 * that stopped; a car left with any velocity at all has not,
+                 * and will still be moving next year. */
+                if (v.vx || v.vy || v.omega) {
+                    moving++;
+                    printf("  heading %3d: STILL MOVING - v (%ld,%ld) "
+                           "omega %ld after %ld px\n",
+                           a, v.vx, v.vy, v.omega, crept);
+                }
+                if (crept > worst) { worst = crept; worst_a = a; }
+            }
+            printf("last roll before it settled: %ld px (heading %d); "
+                   "%d of 32 headings never stopped%s\n",
+                   worst, worst_a, moving,
+                   moving ? "   *** IT NEVER STOPS ***" : "   - all at rest");
+        }
+
+        /* 3d. WHERE THE TYRES GIVE UP.
+         *
+         * The force each tyre makes is proportional to the velocity it is
+         * resisting, so below some speed it rounds to nothing and the car
+         * coasts forever. That speed is a property of this model's adhesion
+         * coefficients, and it is the number any rest threshold has to clear.
+         * Found by bisection: the largest velocity a no-input step leaves
+         * completely unchanged. */
+        hdr("the speed below which the tyres take nothing off");
+        {
+            long lo = 0, hi = 1L << 20;     /* 16 px a step, far above it */
+            while (lo < hi) {
+                long mid = lo + (hi - lo + 1) / 2, before, after;
+                gta_veh_init(&v, &ti, model, 0, 0, 0);
+                v.vx = mid; v.vy = 0; v.omega = 0;
+                before = speed_of(&v);
+                /* The model steps at 23.333 Hz, so several ticks may pass
+                 * before one of them does any work at all. */
+                for (t = 0; t < 3; t++) gta_veh_step(&v, 0, 0, 0, 0, 0);
+                after = speed_of(&v);
+                if (after >= before) lo = mid; else hi = mid - 1;
+            }
+            printf("stalls at or below %ld.%02ld px/step "
+                   "(%ld.%02ld px a second)\n",
+                   WHOLE(lo), FRAC2(lo),
+                   WHOLE(lo * STEPS_PER_SEC), FRAC2(lo * STEPS_PER_SEC));
+        }
+
         /* 4. THE STEADY CIRCLE at three speeds. Wheel hard over, throttle
          * modulated to hold the target speed, radius read off the bounding
          * box of one full lap - no trigonometry and no assumption about

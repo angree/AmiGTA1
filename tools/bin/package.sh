@@ -8,9 +8,9 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.0.4.zip    the game, the settings editor, the tile converter,
+#   AmiGTA-v0.1.0.zip    the game, the settings editor, the tile converter,
 #                        icons, run
-#   AmiGTA-v0.0.4.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.1.0.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -44,7 +44,7 @@ DIST=/mnt/c/temp/amiga_gta/dist
 # instead of three. gta-aga / gta-rtg240 / gta-rtg480 were the same program
 # built with different screen sizes; the size is a setting in gtaprefs now, so
 # the archive carries `AmiGTA` and nothing else has to be chosen by icon.
-VER=v0.0.4
+VER=v0.1.0
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory

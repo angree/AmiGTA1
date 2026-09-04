@@ -357,7 +357,41 @@
  * a permanent slow drag sideways - and the original's is 4 of its 64 pixels,
  * which is 2 of our 32. */
 #define GTA_LANE_TARGET  16             /* world px into the block: the centre */
-#define GTA_LANE_BAND     2             /* dead band, and the step per tick */
+#define GTA_LANE_BAND     2             /* dead band either side of the line */
+#define GTA_LANE_STEP     1             /* the slide per tick, in px - see the
+                                         * keeper for why it is not the band */
+
+/* --- THE STEERING CONTROLLER (gta_car.line_*, steer_along_line) ----------
+ *
+ * HOW FAR AHEAD IT AIMS, in world px: the pursuit point sits this far along
+ * the line from the car's own projection onto it. Short and the car
+ * over-steers and weaves; long and it cuts corners into the line lazily.
+ * Scaled with speed - a car covers L in L/v ticks whatever it is doing - and
+ * clamped to a sane band: 24 px is three quarters of a block, 64 px is two.
+ * GTA_PURSUIT_K is px of lookahead per whole px/tick of speed. */
+#define GTA_PURSUIT_K    24
+#define GTA_PURSUIT_MIN  24
+#define GTA_PURSUIT_MAX  64
+
+/* THE TURN RATE, AND IT IS PHYSICS RATHER THAN A KNOB. A car at speed v with
+ * turning radius R turns at v/R radians per tick; in this port's 256-step
+ * circle that is v * (256 / 2pi) / R = v * 40.74 / R steps. The constant is
+ * 40.74 * 64 = 2608 so that `(speed >> 6) * GTA_STEER_W` lands in 16.16
+ * steps per tick without overflowing a 32-bit multiply on the 68020.
+ *
+ * The floor lets a car that is barely rolling still creep its heading round -
+ * without it a car stopped against something could never steer out. The
+ * ceiling is the same clamp a knocked car's spin uses, so a steered car can
+ * never out-turn a rammed one. */
+#define GTA_STEER_W      2608L
+#define GTA_STEER_W_MIN  (1L << 14)     /* a quarter step a tick */
+#define GTA_STEER_W_MAX  (3L << 16)     /* 3 steps a tick, 4.2 degrees */
+
+/* HOW WRONG THE HEADING HAS TO BE before the controller holds the car down to
+ * cornering speed, in whole steps of 256. 16 is 22 degrees: a car easing onto
+ * its lane is well inside it and keeps its speed; a car coming back from a
+ * shove, or turning round, is outside it and slows down first. */
+#define GTA_STEER_SLOW   16
 
 /* HOW LONG A CAR STAYS LOOSE AFTER BEING HIT, and how fast it settles.
  *
@@ -447,14 +481,20 @@
  * ("baczki"); komega has had its own damping and clamp since, so the reason
  * for 25 is gone and 75 restores rest-speed as the normal exit. */
 #define GTA_KNOCK_TICKS   75
-/* How long the drawn heading takes to come back to the road's after a knock.
- * A second at 50 Hz - the car is seen to straighten out rather than clicking
- * straight, which is what made the rotation look like it was not happening. */
-#define GTA_RECOVER_TICKS 50
-/* Degrees-ish per tick of that recovery, in 16.16 of the 256-step circle:
- * 1.5 steps a tick clears a 45-degree slew in about twenty ticks. */
-#define GTA_RECOVER_STEP  98304L            /* 0.8 s at 50 Hz */
-#define GTA_KNOCK_DAMP    246           /* Q8, per tick, on kvx/kvy */
+/* GTA_RECOVER_TICKS and GTA_RECOVER_STEP were here: a timer and a rate that
+ * walked the drawn heading back to the compass after a knock, while the old
+ * lane keeper slid the body sideways at a quarter rate. Both are gone with
+ * the steering controller (PROGRESS.md 130) - a shunted car keeps the
+ * heading the collision gave it and turns back onto its lane line at v/R,
+ * which is one mechanism instead of two and is an arc instead of a diagonal.
+ * Named here because the numbers are quoted in older entries. */
+#define GTA_KNOCK_DAMP    246           /* Q8, per tick, on the ROLLING share
+                                         * of kvx/kvy - along the car's axis */
+/* ...AND ON THE LATERAL SHARE, across the axis, where the tyres are: 200/256
+ * loses a fifth a tick, so a car dragged sideways is still within three
+ * ticks. That is the "duzy drag (bo opony hamuja)" a pushed car needs: the
+ * player leaning on a flank moves it little, leaning on a nose rolls it. */
+#define GTA_KNOCK_SIDE_DAMP 200
 #define GTA_KNOCK_SPIN    235           /* Q8, per tick, on komega - the
                                          * original does not damp angular
                                          * velocity at all in the rigid body;
@@ -1055,11 +1095,82 @@
 #define GTA_SANE_STEP      10
 
 /* A car is a write-off at a hundred points of damage, and burns this long
- * before it explodes - the original's own fuse. */
+ * before it explodes.
+ *
+ * EIGHTY TICKS, NOT FORTY. Forty is 0.8 s at the 50 Hz tick, and the
+ * developer's verdict on it was that it "does not give you time to get away".
+ * A burning car is a warning, and a warning you cannot act on is just a
+ * delayed explosion; 1.6 s is two or three running strides.
+ *
+ * AND THEN 120: "wydluz czas palenia sie auta jeszcze o 50%" after playing
+ * with the eighty. 2.4 s. */
 #define GTA_CAR_WRECKED    100
-#define GTA_CAR_FUSE        40
+#define GTA_CAR_FUSE       120
+
+/* HOW FAR FROM THE CAMERA A WRECK IS SWEPT UP, in blocks, and why this one
+ * number does NOT follow the zoom the way the ordinary despawn radius does.
+ *
+ * An ordinary car is traffic: it is generated around the view and retired
+ * around the view, so its radius has to track how much city is on screen or
+ * cars pop in and out where the player can see it. A wreck is a THING THE
+ * PLAYER MADE. It has to still be there when he comes back round the block,
+ * and it has to go away eventually or a long session fills the fleet with
+ * scrap. Tying that to the zoom would mean a wreck vanishing because the
+ * player pressed the zoom key, which is the opposite of a landmark.
+ *
+ * Twenty blocks is about two screens at the shipped zoom - "one screen's
+ * length from the wreck to the edge of the screen", as it was asked for -
+ * and it is a constant. */
+#define GTA_WRECK_KEEP_BLOCKS 20
 
 #define GTA_HOLD_COUNT     9
+
+/* How many people in the road the fleet will look at in one tick. More than
+ * the pedestrian pool holds, so a full crowd always fits. */
+#define GTA_MAX_WALKERS   16
+
+/* HOW LONG A CAR STANDS BEHIND SOMETHING BEFORE IT TRIES THE NEXT LANE, and
+ * how far it is allowed to slide sideways to get there.
+ *
+ * A car held by the gap on open road has nothing to wait for: whatever is in
+ * front is parked, wrecked, or somebody standing in the street, and none of
+ * those is going to move. The original's traffic goes round. Two seconds is
+ * long enough that a normal queue at a light never triggers it - a light
+ * cycles faster than that - and short enough that a blocked street clears
+ * while the player is still looking at it.
+ *
+ * The move itself is a target one block to the side; the lane keeper that
+ * already exists steers the car over. It is only offered when that block is
+ * road, carries the car's own direction (so it is the next lane of the same
+ * carriageway and not oncoming traffic), and has nobody in it. */
+#define GTA_LANE_SWAP_WAIT  100
+#define GTA_LANE_SWAP_COOL  150
+
+/* HOW LONG A LANE CHANGE MAY TAKE before it is abandoned. A change is a line
+ * and a controller rather than a path, so nothing makes it finish on its own:
+ * a car held by something else half way across would keep the other lane's
+ * line indefinitely and sit between the two. Two seconds is far longer than
+ * the manoeuvre needs at any speed a fleet car drives at - and it also
+ * covers a U-turn, which uses the same state and is a half circle at
+ * cornering speed: measured at 74 ticks in `gtadump steertest`. */
+#define GTA_LANE_SWAP_MAX   200
+
+/* HOW FAR DOWN THE NEW LANE IT LOOKS before pulling into it, in blocks. A
+ * lane that is clear alongside and blocked a bus length on is not a way
+ * past anything: filmed with both lanes blocked, a car changed into one,
+ * met the obstruction, changed back, and would have weaved between the two
+ * for ever - every change legal by the beside-test alone. It is also what
+ * makes turning round reachable, because the U-turn is what a car does
+ * when neither lane will have it. */
+#define GTA_LANE_SWAP_LOOK  3
+
+/* HOW MANY BLOCKS LEFT THE U-TURN LOOKS for the oncoming carriageway. Not
+ * one: Liberty City's main streets are two lanes each way, so from the
+ * inner lane the other side is TWO blocks away, and a test that looked only
+ * at the block next door refused a U-turn on precisely the roads that are
+ * wide enough for one. Three is a three-lane carriageway and further than
+ * any road in the shipped maps. */
+#define GTA_UTURN_SCAN      3
 
 typedef struct {
     long x, y;              /* 16.16 world pixels, same units as the camera */
@@ -1232,6 +1343,55 @@ typedef struct {
      * "when we get out the car disappears". */
     unsigned char abandoned;
 
+    /* BURNT OUT. What is left after the fuse above runs down: the car stays
+     * exactly where it died, wearing every damage panel, solid, in the way,
+     * and not going anywhere ever again.
+     *
+     * It used to be deleted at the moment of the explosion - "nie zostaja
+     * wraki wybuchniete tylko auta znikaja po wybuchu" - which made a car bomb
+     * a way of REMOVING traffic rather than blocking a street with it. A wreck
+     * is `abandoned` too, so everything that already skips a driverless car
+     * skips this one; `wrecked` is what stops the player getting into it and
+     * what gets it swept up at GTA_WRECK_KEEP_BLOCKS instead of the ordinary
+     * radius. */
+    unsigned char wrecked;
+
+    /* GOING ROUND WHAT IS IN THE WAY - see GTA_LANE_SWAP_WAIT.
+     *
+     * `swap_wait` counts ticks standing still behind something that will not
+     * move. When it runs out and the next lane of the car's own carriageway
+     * is empty, the car is GIVEN THAT LANE'S LINE (gta_car.lane_*) and drives
+     * onto it under the ordinary controller - the manoeuvre is one decision,
+     * not a path. It used to be a sideways slide, 1 px a tick for 32 ticks,
+     * and the developer's verdict was "auta przesuwaja sie na pasach ...
+     * nierealistycznie zamiast zakrecic poprawnie i przejechac".
+     *
+     * `swap` is now a STATE, not a countdown: 1 while a change is under way.
+     * It matters for two things - the line is not re-read from the block
+     * underneath while it stands (the car is deliberately between lanes), and
+     * the lane beside is re-checked every tick so a change into a lane
+     * somebody has just taken is abandoned rather than driven into.
+     * `swap_bx/by` is the block that was aimed at, `swap_ticks` a timeout,
+     * and (swap_sdx,swap_sdy) the way it went - one of them is zero, because
+     * a lane is always across the direction of travel.
+     *
+     * `swap_cool` stops a car that has just changed lane from immediately
+     * changing back, which is what a pair of blocked lanes would otherwise
+     * produce: two cars weaving side to side for ever. */
+    int  swap_wait;
+    int  swap;
+    int  swap_sdx, swap_sdy;
+    int  swap_bx, swap_by;
+    int  swap_ticks;
+    int  swap_cool;
+    /* WHAT gap_ahead() FOUND IN FRONT, this tick: 0 nothing, 1 somebody on
+     * foot (or the player's car standing still), 2 a fleet car standing
+     * still, 3 something moving. The lane change keys on 1 and 2, because
+     * those are the two things waiting cannot fix; the hold labels cannot
+     * be used for that - a car stopped behind a man on a junction block is
+     * stamped GTA_HOLD_BOX by the box logic that ran before the gap did. */
+    int  lead_kind;
+
     /* KNOCKED LOOSE BY A COLLISION.
      *
      * An AI car normally has no velocity VECTOR at all - it has a scalar
@@ -1246,9 +1406,11 @@ typedef struct {
      * `face` alone is 256 steps to the circle, and a spin quantised to 1.4
      * degrees a tick looks like a stutter rather than a spin. */
     int  knock;             /* ticks left loose, 0 = on the rails */
-    /* Ticks left walking the DRAWN heading back to the compass one after a
-     * knock. Without it the heading snapped the moment the car went back on
-     * the rails and the whole rotation was over in a click. */
+    /* KEPT AS A ZERO. The walk-back it counted is gone - the steering
+     * controller brings a knocked car's heading round as part of driving
+     * it back onto its lane - but the field is still written to 0 in two
+     * places and read by the state bitmap the instruments print, and
+     * removing it buys nothing. */
     int  recover;
     long kvx, kvy;          /* 16.16 world px per tick */
     long komega;            /* 16.16 of the 256-step circle, per tick */
@@ -1395,6 +1557,37 @@ typedef struct {
      * cannot have the bug because it never looks at the neighbouring blocks at
      * all - a lane's position is a constant that belongs to the car. */
     int  lane_target;
+
+    /* THE LINE THE CAR IS DRIVING ALONG, and the whole of its lateral
+     * intention.
+     *
+     * Every sideways move used to be its own mechanism, and none of them was
+     * a car turning its wheels: lane keeping SLID the body across, a lane
+     * change slid it a pixel a tick for a block, the walk-back after a knock
+     * turned the heading and slid at a quarter rate, and a corner PLACED the
+     * car on a circle. The developer's verdict: "auta przesuwaja sie na
+     * pasach ... nierealistycznie zamiast zakrecic poprawnie i przejechac".
+     *
+     * So there is one intention - a LINE - and one controller that steers
+     * onto it (steer_along_line). Giving a car a different line is the whole
+     * of "take that lane": it works out how to get there itself, from
+     * wherever it is and however it got there, which is what the developer
+     * asked for ("to nie moze byc zaprogramowane na twardo bo auto moze
+     * puknac moze przesunac moze miec pas nagle zajety").
+     *
+     *   lane_axis  0: the line is x = lane_off, a north-south road.
+     *              1: the line is y = lane_off, an east-west road.
+     *   lane_off   the line's position on the cross axis, 16.16 world px,
+     *              ABSOLUTE - block * 32 + lane_target, not an offset within
+     *              a block. A line belongs to the STREET, not to whatever
+     *              block the car happens to be in.
+     *   lane_dir   0/64/128/192, which way along the line the car drives.
+     *              A U-turn is this reversed and nothing else.
+     *   lane_set   0 until somebody has given the car a line. */
+    int  lane_axis;
+    long lane_off;
+    int  lane_dir;
+    int  lane_set;
 
     /* WHERE IT IS GOING. `path` is the route from gta_route.h, `path_i` the
      * node being driven at, and `dest_x/dest_y` the destination the route was
@@ -1673,6 +1866,10 @@ typedef struct {
     int           occ_n;
     long          stat_occ_refused;   /* entries refused because a cell was 1 */
     long          stat_knocked;       /* cars knocked loose by a collision */
+    long          stat_leaned;        /* ...and set rolling by a lean (ticks) */
+    long          stat_lane_swap_aborted;  /* changes given up: lane taken */
+    long          stat_lane_swap_timeout;  /* ...and given up on the clock */
+    long          stat_uturns;        /* cars that turned round - uturn_try */
     long          stat_fleet_hits;    /* of those, traffic hitting traffic */
     long          stat_knock_ended;   /* and how many settled back onto rails */
 
@@ -1693,7 +1890,13 @@ typedef struct {
      * correct". A car put down ON its lane needs no correction at all, so this
      * number going down IS the fix, and nothing else measures it - flow,
      * overlaps and reversals are all perfectly happy with a car crabbing
-     * across a lane. */
+     * across a lane.
+     *
+     * ZERO SINCE 130, BY CONSTRUCTION. The sideways drag it counted no
+     * longer exists: a car off its lane steers back onto it. The counter
+     * stays because the instruments print it and a NON-zero would mean the
+     * slide had come back from somewhere; SLIDE AFTER A CORNER is the
+     * measurement that still has work to do. */
     long stat_lane_fix;
 
     /* ...and how much of it was applied within GTA_AFTER_TURN ticks of a car
@@ -2082,11 +2285,31 @@ typedef struct {
     int  pl_face;           /* 0..255 */
     int  pl_layer;
     int  pl_hl, pl_hw;      /* world px half-extents */
+
+    /* PEOPLE IN THE ROAD - see gta_traffic_add_walker(). Sixteen is more than
+     * the ped pool holds, so a full crowd always fits and there is never a
+     * question of which pedestrian was dropped. */
+    int  n_walk;
+    long walk_x[GTA_MAX_WALKERS], walk_y[GTA_MAX_WALKERS];
+    int  walk_layer[GTA_MAX_WALKERS];
+
+    /* Lane changes taken to get round something standing in the road - see
+     * GTA_LANE_SWAP_WAIT. A number, so "do they go round?" has an answer. */
+    long stat_lane_swaps;
+
     int  stat_moving, stat_stopped;     /* cars, this tick */
     long stat_hold[GTA_HOLD_COUNT];     /* why the stopped ones are stopped */
 } gta_traffic;
 
 extern unsigned long gta_traffic_trace_serial;  /* host diagnostics, 0 = off */
+
+/* THE STEERING CONTROLLER, EXPOSED FOR ITS OWN TEST. `gtadump steertest`
+ * drives one car with nothing else running - no map, no fleet, no junctions -
+ * so that a convergence fault cannot hide behind traffic. Give the car a
+ * line (gta_traffic_set_line) and step it (gta_traffic_steer_step, which
+ * steers and then moves at the car's own speed). Not used by the game. */
+void gta_traffic_set_line(gta_car *c, int axis, long off, int dir);
+void gta_traffic_steer_step(gta_car *c, int *slow);
 void gta_traffic_init(gta_traffic *tr, const gta_tiles *t, unsigned long seed);
 
 /* How much city the player can see, as a half-width in blocks. The fleet is
@@ -2097,6 +2320,23 @@ void gta_traffic_set_view_blocks(gta_traffic *tr, int blocks);
 /* Give the traffic the navigation grid. Until this is called the fleet has no
  * routes and does not move. */
 void gta_traffic_set_nav(gta_traffic *tr, const gta_nav *nav);
+
+/* PEOPLE IN THE ROAD, refreshed by the caller every tick.
+ *
+ * Traffic braked for other traffic and for the player's car and for nothing
+ * else, so a pedestrian crossing in front of a bus was simply run down -
+ * "auta jak widza ze jest auto przed nimi czy przechodzien powinny stawac a
+ * pchaja sie jak pojebane".
+ *
+ * They arrive as bare positions rather than through gta_peds.h on purpose:
+ * this module has no business knowing what a pedestrian is, only that there
+ * is something soft standing at (x,y) on layer z. The same channel will do
+ * for a policeman on foot when there is one.
+ *
+ * Clear once a tick, add whoever is upright, and the follow rule and the
+ * square reservation both see them. */
+void gta_traffic_clear_walkers(gta_traffic *tr);
+int  gta_traffic_add_walker(gta_traffic *tr, long x, long y, int layer);
 
 /* Is the light green for a car on (bx,by) travelling along the x axis?
  * Exposed for the tests, which have to be able to tell a car waiting at a red
@@ -2170,6 +2410,14 @@ int gta_traffic_grab_car(gta_traffic *tr, long x, long y, int layer,
  * GTA_MAX_CARS that does not happen in practice. */
 int gta_traffic_abandon(gta_traffic *tr, int model, long x, long y, int face,
                         int layer, int remap, int damage);
+
+/* The same, but what it leaves is a BURNT-OUT WRECK - every panel dented,
+ * nobody able to get into it, and swept up on the wreck's own fixed radius
+ * rather than the traffic one. The player's car is not in the fleet while he
+ * is driving it, so when it blows up this is what puts the scrap back on the
+ * street instead of the car simply disappearing. */
+int gta_traffic_leave_wreck(gta_traffic *tr, int model, long x, long y,
+                            int face, int layer, int remap);
 
 /* THE RAM - the player's car against the fleet, one tick's worth.
  *

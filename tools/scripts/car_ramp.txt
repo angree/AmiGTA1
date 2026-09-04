@@ -1,0 +1,27 @@
+# car_ramp.txt - DRIVE UP THE RAMP, NOT UNDER THE BRIDGE.
+#
+# The car's half of walk_ramp.txt, and it exists because the car did not have
+# the walker's fix: the layer under a driven car was frozen at whatever the
+# player was standing on when he got in, so a ramp led nowhere and every
+# bridge in Liberty City was something you drove UNDER. Reported with a
+# screenshot: "tu sie wjezdza pod most zamiast na most".
+#
+# Row 44 carries a real ramp: blocks x=11..18 on layer 2, slope values 33..40,
+# the "E" group in ascending order, so it climbs eastward. Block (19,44) - just
+# past the top - has ROAD on layer 2 AND on layer 3: the street below and the
+# road on the bridge above.
+#
+#   build/host/gtadump drivecar <nyc.cmp> build/data/style001.til 0 \
+#       tools/scripts/car_ramp.txt out/car_ramp.bmp
+#
+# READ THE LOG. The pass condition is a "drivecar: layer 2 -> 3" line while the
+# car is around x=18..19, and no BODY IN WALL ticks. A car that ends the run
+# still on layer 2 is a car that drove under the bridge.
+start 9 44 64
+
+# Straight up it, hands off the wheel. Eight blocks of slope and then the
+# bridge; the road snap keeps it pointing east.
+run 400 1 0 0 0
+
+# And let it roll to a stop up there.
+run 100 0 0 0 0

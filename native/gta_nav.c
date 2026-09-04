@@ -50,6 +50,7 @@ int gta_nav_build(gta_nav *nav, const gta_map *m)
     nav->b = (unsigned char *)malloc((size_t)GTA_NAV_BYTES);
     if (!nav->b)
         return 1;
+    nav->map = m;
 
     /* The walk order is z innermost because that is how the map stores a
      * column: one column lookup then six blocks out of it. Doing it the other
@@ -66,6 +67,7 @@ void gta_nav_free(gta_nav *nav)
 {
     free(nav->b);
     nav->b = NULL;
+    nav->map = NULL;
 }
 
 void gta_nav_update(gta_nav *nav, const gta_map *m, int bx, int by, int bz)

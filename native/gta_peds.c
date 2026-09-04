@@ -148,6 +148,31 @@ static int free_slot(gta_peds *ps)
     return oldest;
 }
 
+/* A SLOT, EVEN IF SOMEBODY HAS TO GIVE ONE UP.
+ *
+ * free_slot() recycles corpses and nothing else, which is right for the
+ * spawner - a street full of living people should not thin itself out. It is
+ * wrong for the carjack: the driver you have just dragged out of a car is the
+ * one person on screen the player is definitely looking at, and losing him to
+ * "ped pool full" makes the whole manoeuvre look like it did not happen -
+ * "w aucie wsiadamy i jedziemy, brakuje tego jakby nie bylo kierowcy".
+ *
+ * So this falls back to the living pedestrian who has been out of sight the
+ * longest. Somebody the player cannot see leaves the world; somebody he is
+ * watching arrives in it. */
+static int free_slot_forced(gta_peds *ps)
+{
+    int i, worst = -1, worst_off = -1;
+    int slot = free_slot(ps);
+    if (slot >= 0)
+        return slot;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].alive && ps->p[i].offscreen > worst_off) {
+            worst = i; worst_off = ps->p[i].offscreen;
+        }
+    return worst;
+}
+
 /* THE SPAWNER, the original's. One attempt: a point on one
  * edge of the view rect grown by a block, the edge ahead of the player,
  * uniformly along it, a little way into its block; pavement only; nobody
@@ -218,9 +243,15 @@ static int spawn_one(gta_peds *ps, int cbx, int cby)
 static const signed char pull_along[GTA_PULL_STATES] = { -1, -1, -2, -3, -4, -4 };
 static const signed char pull_lat[GTA_PULL_STATES]   = { -3,  0,  2,  2,  2,  2 };
 
+/* THE SAME FLANK AS THE JACKER: -1 for every car, the side the door art
+ * opens on. This used to read the door record's rpy sign as a side, exactly
+ * as gta_main.c's car_door_side() did, and that sign is not a side - it is a
+ * hinge offset a few pixels either way of the centre line (model 0 is -6,
+ * model 1 is +7). On those cars the victim was pulled out of the passenger
+ * door while the player got in at the driver's, on opposite flanks. */
 static int door_side(const gta_car_info *ci)
 {
-    return ci->n_doors > 0 ? (ci->doors[0].rpy < 0 ? 1 : -1) : 1;
+    return ci->n_doors > 0 ? -1 : 1;
 }
 
 static void pull_place(const gta_peds *ps, gta_ped *p)
@@ -241,7 +272,9 @@ int gta_peds_pull(gta_peds *ps, long cx, long cy, int face, int model,
                   int layer, int remap)
 {
     const gta_car_info *ci = &ps->tiles->cars[model];
-    int i = free_slot(ps);
+    /* FORCED: the man coming out of the car takes precedence over a walker
+     * the player cannot see. See free_slot_forced(). */
+    int i = free_slot_forced(ps);
     gta_ped *p;
 
     if (i < 0)

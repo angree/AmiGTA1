@@ -219,3 +219,62 @@ void gta_map_describe(const gta_map *m, FILE *out)
             occupied, (long)GTA_MAP_DIM * GTA_MAP_DIM * GTA_MAP_LAYERS,
             max_height);
 }
+
+/* --- ramps ---------------------------------------------------------------
+ *
+ * See gta_map.h for what the slope field holds and how the direction was
+ * settled. These moved out of gta_player.c when the driven car needed them
+ * too; the code is that file's, unchanged.
+ */
+int gta_map_slope_up_dir(const gta_map *m, int bx, int by, int z)
+{
+    gta_block b;
+    int s;
+
+    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM)
+        return -1;
+    if (z < 0 || z >= GTA_MAP_LAYERS)
+        return -1;
+    if (!gta_map_block(m, bx, by, z, &b))
+        return -1;
+
+    s = gta_block_slope(&b);
+    if (s == 0)  return -1;
+    if (s <= 2)  return 0;      /* 26 degrees, north */
+    if (s <= 4)  return 128;
+    if (s <= 6)  return 192;
+    if (s <= 8)  return 64;
+    if (s <= 16) return 0;      /* 7 degrees, eight steps */
+    if (s <= 24) return 128;
+    if (s <= 32) return 192;
+    if (s <= 40) return 64;
+    if (s == 41) return 0;      /* 45 degrees */
+    if (s == 42) return 128;
+    if (s == 43) return 192;
+    if (s == 44) return 64;
+    return -1;
+}
+
+int gta_map_slope_is_top(const gta_map *m, int bx, int by, int z)
+{
+    gta_block b;
+    int s;
+
+    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM) return 0;
+    if (z < 0 || z >= GTA_MAP_LAYERS) return 0;
+    if (!gta_map_block(m, bx, by, z, &b)) return 0;
+
+    s = gta_block_slope(&b);
+    if (s == 2 || s == 4 || s == 6 || s == 8)       return 1;  /* 26 degrees */
+    if (s == 16 || s == 24 || s == 32 || s == 40)   return 1;  /* 7 degrees  */
+    if (s >= 41 && s <= 44)                         return 1;  /* 45, one block */
+    return 0;
+}
+
+int gta_map_step_dir(long dx, long dy)
+{
+    long ax = dx < 0 ? -dx : dx;
+    long ay = dy < 0 ? -dy : dy;
+    if (ax >= ay) return dx >= 0 ? 64 : 192;
+    return dy >= 0 ? 128 : 0;
+}

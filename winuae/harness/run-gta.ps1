@@ -96,7 +96,11 @@ if (Test-Path $ini) {
   $txt = [regex]::Replace($txt, '(?m)^MainPosY=.*$', 'MainPosY=60')
   Set-Content $ini $txt -Encoding ASCII -NoNewline
 }
-Start-Process -FilePath $exe -ArgumentList '-log', '-f', $Config -WorkingDirectory $wd
+# MINIMISED, so the window never takes the keyboard and the mouse away from
+# whoever is working at the machine. The configs carry win32.minimized_pause=
+# false, so the guest keeps running. And this is meant to be started ONCE:
+# after that, reload-gta.ps1 restarts the game inside the running emulator.
+Start-Process -FilePath $exe -ArgumentList '-log', '-f', $Config -WorkingDirectory $wd -WindowStyle Minimized
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 while ((Get-Date) -lt $deadline) {
