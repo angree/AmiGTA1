@@ -1,0 +1,20 @@
+# car_coputurn.txt - GET WANTED, DRIVE, DOUBLE BACK: DO THE PURSUERS TURN?
+park 0 0 -26 0
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+run 150 1 0 0 0
+run 250 1 0 0 0
+run 40 1 0 1 0
+run 40 1 0 1 0
+run 40 1 0 1 0
+run 300 1 0 0 0
+film 4
+run 200 1 0 0 0
+film 4
+run 100 0 1 0 0
+wait 300
+film 4

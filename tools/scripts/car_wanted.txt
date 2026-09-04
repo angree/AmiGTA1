@@ -1,0 +1,20 @@
+# wanted.txt - RUN THREE MEN OVER, WATCH THE HEADS COME UP.
+# A car parked ahead, the player gets in, three men stand in the road
+# ahead of it, and the car drives through them at speed. Each is a
+# run-over (+50) and a murder (+100): the first alone is level 0 -> 1,
+# the second 1 -> 2, the third 2 -> 4.
+park 0 0 -40 0
+wait 20
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+dump
+run 90 1 0 0 0
+film 6
+run 60 1 0 0 0
+film 6
+wait 30
+dump

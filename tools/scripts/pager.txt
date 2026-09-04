@@ -1,0 +1,8 @@
+# pager.txt - THE OPENING BRIEF ON THE PAGER, THEN A CARD IN THE BIG FONT.
+wait 60
+film 2
+wait 250
+film 2
+hurt 100
+wait 40
+film 2

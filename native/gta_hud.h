@@ -41,4 +41,19 @@ char *gta_hud_int(char *buf, long value);
  * it against the right-hand edge. */
 int gta_hud_width(const char *s);
 
+/* ONE COP'S HEAD - the wanted level's unit. The original draws its own HUD
+ * sprite; the style file we can read carries none, so this is a seven-by-
+ * eight glyph of ours - cap, peak, face - in the same ink and on the same
+ * plate as the text. GTA_HUD_COP_W is its width, plate included, so a row
+ * of them can be centred. */
+#define GTA_HUD_COP_W 9
+
+/* The same text, every glyph pixel drawn `scale` times over - "BUSTED!"
+ * across the middle of the screen. Width via gta_hud_width_big(). */
+void gta_hud_text_big(unsigned char *dst, int pitch, int w, int h,
+                      int x, int y, const char *s, int scale);
+int  gta_hud_width_big(const char *s, int scale);
+#define GTA_HUD_COP_H 10
+void gta_hud_cop(unsigned char *dst, int pitch, int w, int h, int x, int y);
+
 #endif /* GTA_HUD_H */

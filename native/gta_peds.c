@@ -130,6 +130,33 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->fall = 0;
     p->panic = 0;
     p->burn = p->burn_frame = p->burn_tick = 0;
+    p->cop = 0;
+    p->arrest = 0;
+    p->cop_cool = 0;
+    p->shoot_req = 0;
+    p->shoot_angle = 0;
+    p->execute = 0;
+    p->post = 0;
+    p->cross_axis_x = 0;
+}
+
+/* The traffic hint of the block under (x,y) on layer z - 1 is a light.
+ * The nav byte has no room for it (bit 7 is the slope), so this goes to
+ * the map through the pointer the grid keeps. Asked rarely: only for a
+ * ped standing idle, one tick in eleven. */
+static int hint_at(const gta_peds *ps, long x, long y, int z)
+{
+    gta_block b;
+    int bx = (int)(x >> 21), by = (int)(y >> 21);
+    if (!ps->nav || !ps->nav->map) return 0;
+    if (!gta_map_block(ps->nav->map, bx, by, z, &b)) return 0;
+    return gta_block_traffic_hint(&b);
+}
+
+void gta_peds_set_lights(gta_peds *ps, int (*fn)(void *, int, int, int), void *ctx)
+{
+    ps->light_green = fn;
+    ps->light_ctx = ctx;
 }
 
 static int free_slot(gta_peds *ps)
@@ -268,8 +295,19 @@ static void pull_place(const gta_peds *ps, gta_ped *p)
     p->y = p->pull_cy + (fy * along + ry * across) * 4;
 }
 
+static int gta_peds_pull_i(gta_peds *ps, long cx, long cy, int face, int model,
+                           int layer, int remap);
+
 int gta_peds_pull(gta_peds *ps, long cx, long cy, int face, int model,
                   int layer, int remap)
+{
+    int r = gta_peds_pull_i(ps, cx, cy, face, model, layer, remap);
+    ps->last_index = r;
+    return r >= 0;
+}
+
+static int gta_peds_pull_i(gta_peds *ps, long cx, long cy, int face, int model,
+                           int layer, int remap)
 {
     const gta_car_info *ci = &ps->tiles->cars[model];
     /* FORCED: the man coming out of the car takes precedence over a walker
@@ -278,7 +316,7 @@ int gta_peds_pull(gta_peds *ps, long cx, long cy, int face, int model,
     gta_ped *p;
 
     if (i < 0)
-        return 0;
+        return -1;
     p = &ps->p[i];
     ped_reset(ps, p, cx, cy, layer, (face + door_side(ci) * 64) & 255, remap);
     p->speed = 0;
@@ -290,7 +328,7 @@ int gta_peds_pull(gta_peds *ps, long cx, long cy, int face, int model,
     p->pull_model = model;
     pull_place(ps, p);
     ps->stat_spawned++;
-    return 1;
+    return i;
 }
 
 int gta_peds_drop(gta_peds *ps, long x, long y, int layer, int angle,
@@ -583,6 +621,7 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
             }
             if (--p->burn == 0) {
                 p->corpse = 1;
+                if (p->cop) ps->stat_cops_killed++;
                 p->speed = 0;
                 p->tx = p->ty = 0;
                 ps->stat_killed++;
@@ -608,6 +647,7 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 p->shot_tick = 0;
                 if (++p->shot_step >= GTA_SHOT_STATES) {
                     p->corpse = 1;
+                if (p->cop) ps->stat_cops_killed++;
                     p->speed = 0;
                     p->down = 0;
                     p->tx = p->ty = 0;
@@ -656,6 +696,93 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
             /* ON A ROAD: the flee mode, straight away from where he
              * stepped on, at a run. Ours: it ends when he is back on
              * pavement a block from that point. */
+            if (p->cop) {
+                /* THE COP ON FOOT. Straight at the player, running when he
+                 * is more than three blocks off, walking when close; the
+                 * arrest is contact within GTA_COP_ARREST_PX. A player in a
+                 * car is reached at the car: contact with the body of the
+                 * car counts, and the game side pulls him out. A cop left
+                 * far behind gives up (retired by distance like anyone). */
+                long dx = (ps->pl_x - p->x) >> 16, dy = (ps->pl_y - p->y) >> 16;
+                long d;
+                if (dx < 0) dx = -dx;
+                if (dy < 0) dy = -dy;
+                d = dx > dy ? dx : dy;
+                p->mode = GTA_PED_MODE_COP;
+                if (p->post && d > 192) {
+                    /* AT HIS POST: stands, faces the way he was put. */
+                    p->speed = 0;
+                    p->arrest = 0;
+                    corner_ahead = 0;
+                    continue;
+                }
+                if (p->cop_cool > 0) p->cop_cool--;
+                if (ps->cop_shoot && ps->pl_layer == p->layer && d <= 96) {
+                    /* SHOOT, DO NOT ARREST: the original's role 0x1f/0x20.
+                     * Within three blocks he stands and fires the pistol
+                     * at the player every 15 ticks (the AI cooldown), and
+                     * at level 4 a player he still reaches is executed. */
+                    p->angle = angle_to(p->x, p->y, ps->pl_x, ps->pl_y);
+                    p->speed = d > 40 ? 2 : 0;
+                    p->arrest = 0;
+                    if (p->cop_cool == 0 && d > 8) {
+                        p->shoot_req = 1;
+                        p->shoot_angle = p->angle;
+                        p->cop_cool = 15;
+                        ps->stat_cop_shots++;
+                    }
+                    if (ps->cop_shoot >= 2 && d <= GTA_COP_ARREST_PX)
+                        p->execute = 1;
+                } else
+                if (ps->pl_layer == p->layer &&
+                    d <= (ps->pl_in_car ? GTA_COP_ARREST_PX + 12 : GTA_COP_ARREST_PX)) {
+                    if (!p->arrest) {
+                        p->arrest = 1;
+                        printf("gta: police - the cop has him, %ld px away\n", d);
+                        fflush(stdout);
+                    }
+                    p->speed = 0;
+                } else {
+                    p->angle = angle_to(p->x, p->y, ps->pl_x, ps->pl_y);
+                    p->speed = d > 96 ? 3 : 2;
+                    p->arrest = 0;
+                }
+                corner_ahead = 0;
+            } else
+            if (p->mode == GTA_PED_MODE_CROSS) {
+                /* AT THE LIGHTS. Standing at the kerb until the cars along
+                 * his own line have the green (then the ones across his
+                 * path are stopped), then over at a run, slowing in the
+                 * last six pixels, done within four of the far kerb. */
+                long dx = (p->tx - p->x) >> 16, dy = (p->ty - p->y) >> 16;
+                long d = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy)
+                       ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
+                if (p->sub == GTA_PED_SUB_STAND) {
+                    int bx = (int)(p->x >> 21), by = (int)(p->y >> 21);
+                    if (ps->light_green &&
+                        ps->light_green(ps->light_ctx, bx, by, p->cross_axis_x)) {
+                        p->sub = GTA_PED_SUB_JOG;
+                        p->speed = 4;
+                        ps->stat_crossings++;
+                        printf("gta: ped %d sets off across at (%ld,%ld) to (%ld,%ld)\n",
+                               i, p->x >> 16, p->y >> 16, p->tx >> 16, p->ty >> 16);
+                    }
+                } else {
+                    p->angle = angle_to(p->x, p->y, p->tx, p->ty);
+                    p->speed = d > 6 ? 4 : 2;
+                    if (d <= 4) {
+                        p->mode = GTA_PED_MODE_IDLE;
+                        p->sub = GTA_PED_SUB_WANDER;
+                        p->speed = 1;
+                        p->timer = 0;
+                        p->tx = p->ty = 0;
+                        p->angle = snap_cardinal(p->angle);
+                        ps->stat_crossed++;
+                        printf("gta: ped %d crossed\n", i);
+                    }
+                }
+                corner_ahead = 0;
+            } else
             if (here == GTA_GROUND_ROAD && p->mode != GTA_PED_MODE_FLEE) {
                 p->mode = GTA_PED_MODE_FLEE;
                 p->gx = p->x; p->gy = p->y;
@@ -677,6 +804,41 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                         p->flee_aim = 0;
                         if (dgx || dgy)
                             p->angle = angle_to(p->gx, p->gy, p->x, p->y);
+                    }
+                }
+            }
+
+            /* A LIT CROSSING. A ped idle on a block the map marks as a
+             * light tries, one tick in eleven, one of the four ways in
+             * turn: the next block that way must be a light too (the
+             * road at the stop line) and there must be pavement within
+             * eight blocks beyond it. Then he waits at the kerb. */
+            if (p->mode == GTA_PED_MODE_IDLE && p->tx == 0 && !p->down &&
+                (rng_next(ps) % 11) == 0 &&
+                hint_at(ps, p->x, p->y, p->layer) == 1) {
+                static const int sx[4] = { 0, 1, 0, -1 }, sy[4] = { -1, 0, 1, 0 };
+                int d = ps->cross_rr & 3;
+                int bx = (int)(p->x >> 21), by = (int)(p->y >> 21);
+                ps->cross_rr = (ps->cross_rr + 1) & 3;
+                if (hint_at(ps, (long)(bx + sx[d]) << 21, (long)(by + sy[d]) << 21,
+                            p->layer) == 1 &&
+                    ground_at(ps, (long)(bx + sx[d]) << 21,
+                              (long)(by + sy[d]) << 21, p->layer) == GTA_GROUND_ROAD) {
+                    int k, found = 0;
+                    for (k = 2; k <= 8 && !found; k++) {
+                        int g = ground_at(ps, (long)(bx + sx[d] * k) << 21,
+                                          (long)(by + sy[d] * k) << 21, p->layer);
+                        if (g == GTA_GROUND_PAVEMENT) found = k;
+                        else if (g != GTA_GROUND_ROAD) break;
+                    }
+                    if (found) {
+                        p->mode = GTA_PED_MODE_CROSS;
+                        p->sub = GTA_PED_SUB_STAND;
+                        p->speed = 0;
+                        p->cross_axis_x = sx[d] != 0;
+                        p->tx = (((long)(bx + sx[d] * found) * 32 + 16) << 16);
+                        p->ty = (((long)(by + sy[d] * found) * 32 + 16) << 16);
+                        p->angle = (d * 64) & 255;
                     }
                 }
             }
@@ -781,7 +943,8 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 else if (there == GTA_GROUND_FIELD && here != GTA_GROUND_FIELD)
                     blocked = 1;
                 else if (there == GTA_GROUND_ROAD && here != GTA_GROUND_ROAD
-                         && p->mode != GTA_PED_MODE_FLEE) {
+                         && p->mode != GTA_PED_MODE_FLEE && !p->cop
+                         && p->mode != GTA_PED_MODE_CROSS) {
                     /* the original's block-and-a-half rule: a road is
                      * stepped onto only with pavement 48 px beyond */
                     long fx, fy;
@@ -792,6 +955,21 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 if (blocked && p->mode == GTA_PED_MODE_FLEE) {
                     /* a wall in the flee: turn 90 and keep running */
                     p->angle = (p->angle + 64) & 255;
+                } else if (blocked && p->cop) {
+                    /* Round the obstacle, and try the other way next. */
+                    p->angle = (p->angle + (p->stuck & 1 ? 48 : -48)) & 255;
+                    p->stuck++;
+                } else if (blocked && p->mode == GTA_PED_MODE_CROSS) {
+                    /* Something in the way on the crossing: back to the
+                     * ordinary walk, not to a walk target of (0,0). */
+                    printf("gta: ped %d crossing abandoned at (%ld,%ld): ground %d ahead\n",
+                           i, p->x >> 16, p->y >> 16, there);
+                    p->mode = GTA_PED_MODE_IDLE;
+                    p->sub = GTA_PED_SUB_WANDER;
+                    p->speed = 1;
+                    p->timer = FRAMES(3);
+                    p->tx = p->ty = 0;
+                    p->angle = (p->angle + 128) & 255;
                 } else if (blocked) {
                     /* the original: 135 degrees round, and the gait is
                      * re-rolled three frames later */
@@ -863,6 +1041,7 @@ int gta_peds_ram(gta_peds *ps, long px, long py, int pface, int phl, int phw,
                  * belong with objects and the wanted level. */
                 if (!p->down) {
                     p->corpse = 1;
+                if (p->cop) ps->stat_cops_killed++;
                     p->speed = 0;
                     p->tx = p->ty = 0;
                     ps->stat_killed++;
@@ -870,6 +1049,7 @@ int gta_peds_ram(gta_peds *ps, long px, long py, int pface, int phl, int phw,
                     hits++;
                 } else {
                     p->corpse = 1;      /* run over while lying: dead too */
+                if (p->cop) ps->stat_cops_killed++;
                 }
             } else if (!p->down) {
                 /* SHOVED - the original's 0x92: along his own heading, a
@@ -1082,6 +1262,123 @@ void gta_peds_burn(gta_peds *ps, int i, long fx, long fy)
         p->angle = angle_to(fx, fy, p->x, p->y);
 }
 
+/* ---- the police on foot ------------------------------------------------ */
+
+void gta_peds_set_player(gta_peds *ps, long x, long y, int layer, int in_car)
+{
+    ps->pl_x = x;
+    ps->pl_y = y;
+    ps->pl_layer = layer;
+    ps->pl_in_car = in_car;
+}
+
+int gta_peds_spawn_cop(gta_peds *ps, long x, long y, int layer, int angle)
+{
+    int i = free_slot(ps);
+    if (i < 0)
+        i = free_slot_forced(ps);
+    if (i < 0) { ps->last_index = -1; return 0; }
+    ped_reset(ps, &ps->p[i], x, y, layer, angle, 0);
+    ps->p[i].cop = 1;
+    ps->p[i].mode = GTA_PED_MODE_COP;
+    ps->p[i].speed = 2;
+    ps->stat_spawned++;
+    ps->stat_cops_out++;
+    ps->last_index = i;
+    return 1;
+}
+
+void gta_peds_post_last_cop(gta_peds *ps)
+{
+    if (ps->last_index >= 0 && ps->last_index < GTA_MAX_PEDS)
+        ps->p[ps->last_index].post = 1;
+}
+
+int gta_peds_knock_off(gta_peds *ps, long x, long y, int layer, int angle, int remap)
+{
+    int i = free_slot_forced(ps);
+    gta_ped *p;
+    if (i < 0) { ps->last_index = -1; return 0; }
+    p = &ps->p[i];
+    ped_reset(ps, p, x, y, layer, angle, remap);
+    p->fall = GTA_FALL_TICKS;
+    p->speed = 0;
+    p->tx = p->ty = 0;
+    ps->stat_spawned++;
+    ps->stat_punched++;
+    ps->last_index = i;
+    return 1;
+}
+
+void gta_peds_set_cop_shoot(gta_peds *ps, int mode)
+{
+    ps->cop_shoot = mode;
+}
+
+int gta_peds_cop_shot(gta_peds *ps, long *x, long *y, int *layer, int *angle)
+{
+    int i;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        gta_ped *p = &ps->p[i];
+        if (!p->alive || p->corpse || !p->cop || !p->shoot_req) continue;
+        p->shoot_req = 0;
+        *x = p->x; *y = p->y; *layer = p->layer; *angle = p->shoot_angle;
+        return i;
+    }
+    return -1;
+}
+
+int gta_peds_cop_execute(gta_peds *ps)
+{
+    int i, hit = 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        gta_ped *p = &ps->p[i];
+        if (p->alive && p->cop && !p->corpse && p->execute) { p->execute = 0; hit = 1; }
+    }
+    return hit;
+}
+
+void gta_peds_make_cop(gta_peds *ps, int i)
+{
+    gta_ped *p;
+    if (i < 0 || i >= GTA_MAX_PEDS) return;
+    p = &ps->p[i];
+    p->cop = 1;
+    p->remap = 0;
+    p->mode = GTA_PED_MODE_COP;
+    ps->stat_cops_out++;
+}
+
+int gta_peds_cop_event(gta_peds *ps)
+{
+    int i, hit = 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        gta_ped *p = &ps->p[i];
+        if (p->alive && p->cop && !p->corpse && p->arrest) {
+            p->arrest = 0;
+            hit = 1;
+        }
+    }
+    return hit;
+}
+
+void gta_peds_clear_cops(gta_peds *ps)
+{
+    int i;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].alive && ps->p[i].cop && !ps->p[i].corpse)
+            ps->p[i].alive = 0;
+}
+
+int gta_peds_cops_out(const gta_peds *ps)
+{
+    int i, n = 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].alive && ps->p[i].cop && !ps->p[i].corpse)
+            n++;
+    return n;
+}
+
 void gta_peds_kill(gta_peds *ps, int i)
 {
     gta_ped *p;
@@ -1091,6 +1388,7 @@ void gta_peds_kill(gta_peds *ps, int i)
     if (!p->alive || p->corpse)
         return;
     p->corpse = 1;
+                if (p->cop) ps->stat_cops_killed++;
     p->burn = 0;
     p->speed = 0;
     p->down = 0;

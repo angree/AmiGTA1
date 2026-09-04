@@ -1,0 +1,21 @@
+# rbfilm.txt - LEVEL 3, THEN DRIVE INTO THE ROADBLOCK ON THE NORTH EXIT.
+park 0 0 -26 0
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+ped 3 -230 128
+ped -3 -270 128
+wait 5
+run 150 1 0 0 0
+run 60 0 1 0 0
+wait 250
+run 200 1 0 0 0
+film 3
+run 120 1 0 0 0
+film 3
+run 100 1 0 0 0
+film 3
+run 60 0 1 0 0
+film 3

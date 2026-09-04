@@ -31,6 +31,7 @@
 
 #include "amiga_gfx.h"
 #include "amiga_uclock.h"
+#include "amiga_watchdog.h"
 #include "gta_map.h"
 #include "gta_tiles.h"
 #include "gta_render.h"
@@ -41,6 +42,9 @@
 #include "gta_peds.h"
 #include "gta_weapon.h"
 #include "gta_score.h"
+#include "gta_pickup.h"
+#include "gta_font.h"
+#include "gta_text.h"
 #include "gta_prefs.h"
 #include "gta_sfx.h"
 
@@ -138,6 +142,11 @@ static int g_scale2x = 0;
 
 #define TILES_PATH GTA_DIR "GTADATA/style001.til"
 #define MAP_PATH   GTA_DIR "GTADATA/nyc.cmp"
+#define INI_PATH   GTA_DIR "GTADATA/mission.ini"
+#define FXT_PATH   GTA_DIR "GTADATA/english.fxt"
+#define FONT_PAGER GTA_DIR "GTADATA/pager1.fon"
+#define FONT_SCORE GTA_DIR "GTADATA/score1.fon"
+#define FONT_BIG   GTA_DIR "GTADATA/big1.fon"
 /* THE SOUND BANK IS OPTIONAL, and that is not laziness.
  *
  * Nothing plays it yet, the shipped archive has no game data at all, and a
@@ -364,6 +373,7 @@ static unsigned long prof_t0;
 static int opt_overlay = 0;
 static int opt_traffic = 1;
 static int opt_fleet   = -1;
+static int opt_lights  = -1;    /* -1 = the module's default (on) */
 static int opt_catchup = MAX_CATCHUP;
 /* How many frames each startup benchmark averages over. 60 is the number
  * every recorded figure in the notes was taken with, so it is the default
@@ -423,6 +433,46 @@ static int opt_audio = GTA_AUDIO_AUTO;
 static gta_traffic traffic;
 static gta_peds peds;
 
+/* The pedestrians ask the traffic module about the lights through this. */
+static int ped_light_green(void *ctx, int bx, int by, int along_x)
+{
+    return gta_traffic_light_green((const gta_traffic *)ctx, bx, by, along_x);
+}
+static gta_pickups pickups;
+
+/* THE ORIGINAL'S FONTS AND TEXTS (Phase 5 item 7, the first piece). The
+ * pager font draws the briefs along the bottom, the score font the score,
+ * the big font the cards. Each is optional: when a file is missing the
+ * port's own 3x5 font draws that part, as before. */
+static gta_font pager_font, score_font, big_font;
+static int have_pager, have_score_font, have_big;
+static gta_text texts;
+/* THE PAGER: one line of text along the bottom, shown for pager_ticks
+ * ticks. The original scrolls the brief through a pager; this shows as
+ * much of it as fits, then the rest, a page every PAGER_PAGE_TICKS. */
+static char pager_text[400];
+static int  pager_ticks, pager_page;
+#define PAGER_PAGE_TICKS 200
+
+static void pager_show(const char *s)
+{
+    int i;
+    for (i = 0; s[i] && i < (int)sizeof pager_text - 1; i++)
+        pager_text[i] = s[i];
+    pager_text[i] = 0;
+    pager_ticks = 1;
+    pager_page = 0;
+}
+
+/* The brief with numeric key `key` from the texts, if there is one. */
+static void pager_brief(int key)
+{
+    const char *s = gta_text_get(&texts, key);
+    if (s) pager_show(s);
+    else printf("gta: pager - no text %d\n", key);
+}
+static int jail_free;           /* the get-out-of-jail-free card */
+
 /* THE SELF-DRIVING TEST - autodrive.txt beside the binary, read at startup.
  * Host input synthesis is banned, so this is how an agent verifies that
  * entering a car and driving it works at all: the file is a queue of
@@ -465,7 +515,7 @@ static gta_nav nav;
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.1.0"
+#define GTA_VERSION "v0.2.0"
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
 
 /* The renderer's own buffer, used ONLY when the picture is doubled: the
@@ -846,6 +896,23 @@ static const char *const weapon_name[5] = {
     "FIST", "PISTOL", "MG", "ROCKET", "FLAME"
 };
 
+/* BUSTED - the original's 50-frame card. While it stands the player has no
+ * control; when it ends he is put down outside the nearest police station
+ * on foot, with his weapons gone and the multiplier halved. */
+static int bust_timer;
+#define BUST_TICKS 150
+/* WHAT THE CARD SAYS: 1 BUSTED, 2 WASTED, 3 GAME OVER. */
+static int card_kind;
+static const char *const card_text[4] = { "", "BUSTED", "WASTED", "GAME OVER" };
+
+/* THE PLAYER'S LIFE. Health 100, four lives at the start as the original
+ * gives; armour is the pickup's three hits; a burning player loses a point
+ * a tick for a hundred ticks. Nothing heals but the hospital. */
+static int player_health = 100;
+static int player_armour;
+static int player_lives = 4;
+static int player_burning;
+
 static void hud_score(unsigned char *chunky, int pitch)
 {
     char line[24];
@@ -854,6 +921,17 @@ static void hud_score(unsigned char *chunky, int pitch)
 
     p = gta_hud_int(line, score.score);
     *p = 0;
+    if (have_score_font) {
+        /* score1.fon: the ten digits, '0' first - the font's characters
+         * start at '!', so the digits are drawn through a copy offset by
+         * '0' - '!'. */
+        char digits[24];
+        int k;
+        for (k = 0; line[k]; k++) digits[k] = (char)(line[k] - '0' + '!');
+        digits[k] = 0;
+        gta_font_draw(&score_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                      right - gta_font_width(&score_font, digits), 1, digits);
+    } else
     gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
                  right - gta_hud_width(line), 2, line);
 
@@ -872,7 +950,122 @@ static void hud_score(unsigned char *chunky, int pitch)
         *p = 0;
     }
     gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
-                 right - gta_hud_width(line), 10, line);
+                 right - gta_hud_width(line), have_score_font ? 14 : 10, line);
+
+    /* The third line: lives and health (ours - the original hides the
+     * health and shows the lives with a small glyph). */
+    p = line;
+    *p++ = 'L'; *p++ = 'I'; *p++ = 'V'; *p++ = 'E'; *p++ = 'S'; *p++ = ' ';
+    p = gta_hud_int(p, player_lives);
+    *p++ = ' '; *p++ = 'H'; *p++ = 'P'; *p++ = ' ';
+    p = gta_hud_int(p, player_health);
+    if (player_armour > 0) { *p++ = ' '; *p++ = 'A'; p = gta_hud_int(p, player_armour); }
+    *p = 0;
+    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                 right - gta_hud_width(line), have_score_font ? 22 : 18, line);
+
+    /* THE PAGER LINE, along the bottom, in the original's pager font. A
+     * page is what fits in the width; the text advances a page every
+     * PAGER_PAGE_TICKS and goes away after the last. */
+    if (pager_ticks > 0 && pager_text[0]) {
+        int pw = render_w() - 8;
+        int start = 0, page = 0, len = 0, k;
+        /* find the start of the current page by measuring words */
+        while (pager_text[start] && page < pager_page) {
+            int e = start, last = start;
+            while (pager_text[e]) {
+                int q = e;
+                char save;
+                while (pager_text[q] && pager_text[q] != ' ') q++;
+                save = pager_text[q]; pager_text[q] = 0;
+                if ((have_pager ? gta_font_width(&pager_font, pager_text + start)
+                                : gta_hud_width(pager_text + start)) > pw) {
+                    pager_text[q] = save;
+                    break;
+                }
+                pager_text[q] = save;
+                last = q;
+                if (!pager_text[q]) { last = q; break; }
+                e = q + 1;
+            }
+            if (last == start) break;
+            start = last;
+            while (pager_text[start] == ' ') start++;
+            page++;
+        }
+        if (!pager_text[start]) {
+            pager_ticks = 0;            /* past the end: gone */
+        } else {
+            char line2[200];
+            int e = start, last = start;
+            while (pager_text[e]) {
+                int q = e;
+                char save;
+                while (pager_text[q] && pager_text[q] != ' ') q++;
+                save = pager_text[q]; pager_text[q] = 0;
+                if ((have_pager ? gta_font_width(&pager_font, pager_text + start)
+                                : gta_hud_width(pager_text + start)) > pw) {
+                    pager_text[q] = save;
+                    break;
+                }
+                pager_text[q] = save;
+                last = q;
+                if (!pager_text[q]) break;
+                e = q + 1;
+            }
+            len = last - start;
+            if (len <= 0) len = 1;
+            if (len > (int)sizeof line2 - 1) len = (int)sizeof line2 - 1;
+            for (k = 0; k < len; k++) line2[k] = pager_text[start + k];
+            line2[len] = 0;
+            {
+                int y = SCREEN_H - (have_pager ? pager_font.height : 7) - 3;
+                int x = present_x() + 4;
+                /* a dark plate under it, the height of the font */
+                int by;
+                for (by = y - 2; by < SCREEN_H; by++) {
+                    unsigned char *d = chunky + (long)by * pitch;
+                    int bx;
+                    for (bx = present_x(); bx < present_x() + render_w(); bx++) d[bx] = 0;
+                }
+                if (have_pager)
+                    gta_font_draw(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H, x, y, line2);
+                else
+                    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, x, y, line2);
+            }
+            if (++pager_ticks > PAGER_PAGE_TICKS) {
+                pager_ticks = 1;
+                pager_page++;
+            }
+        }
+    }
+
+    if (bust_timer > 0) {
+        const char *t = card_text[card_kind & 3];
+        int bw = have_big ? gta_font_width(&big_font, t) : gta_hud_width_big(t, 4);
+        if (have_big)
+            gta_font_draw(&big_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                          present_x() + (render_w() - bw) / 2,
+                          SCREEN_H / 2 - big_font.height / 2, t);
+        else
+            gta_hud_text_big(chunky, pitch, SCREEN_W, SCREEN_H,
+                             present_x() + (render_w() - bw) / 2,
+                             SCREEN_H / 2 - 12, t, 4);
+    }
+
+    /* THE WANTED LEVEL: that many heads across the top middle, each one
+     * flashing every other frame, as the original's are. Nothing at level
+     * 0 - an empty row would be a readout of nothing. */
+    if (score.level > 0) {
+        static int flash;
+        int n = score.level, k;
+        int x = present_x() + render_w() / 2
+              - (n * GTA_HUD_COP_W - 1) / 2;
+        if ((++flash & 2) == 0)
+            for (k = 0; k < n; k++)
+                gta_hud_cop(chunky, pitch, SCREEN_W, SCREEN_H,
+                            x + k * GTA_HUD_COP_W, 2);
+    }
 }
 
 /* The player's own line, under the frame rate. Only the walking mode draws it.
@@ -1498,6 +1691,8 @@ int main(void)
     /* GETTING IN AND OUT IS A STATE, not an instant. 0 = neither, 1 = getting
      * in, 2 = getting out; the rest is what has to survive the animation. */
     int enter_anim = 0, enter_step = 0, enter_tick = 0;
+    int enter_cop = 0;              /* the car being entered is a cop car */
+    long cops_killed_seen = 0;
     int enter_model = 0, enter_face = 0, enter_remap = -1, enter_damage = 0;
     /* A BIKE IS MOUNTED, NOT ENTERED: four frames, no door, and the rider
      * stays visible on top. Decided once from the vehicle class when the
@@ -1695,6 +1890,7 @@ int main(void)
                 if (strcmp(word, "overlay") == 0)      opt_overlay = (int)val;
                 else if (strcmp(word, "traffic") == 0) opt_traffic = (int)val;
                 else if (strcmp(word, "fleet") == 0)   opt_fleet   = (int)val;
+                else if (strcmp(word, "lights") == 0)  opt_lights  = (int)val;
                 else if (strcmp(word, "catchup") == 0) opt_catchup = (int)val;
                 else if (strcmp(word, "benchframes") == 0) opt_benchf = (int)val;
                 else if (strcmp(word, "width") == 0)   opt_width   = (int)val;
@@ -1766,6 +1962,16 @@ int main(void)
      * from 6-bit VGA to 8-bit by gta_style_load on the host. The screen's copy
      * of it is set by open_display(); this is the HUD's. */
     gta_hud_init(tiles.palette);
+    have_pager      = gta_font_load(&pager_font, FONT_PAGER, tiles.palette) == 0;
+    have_score_font = gta_font_load(&score_font, FONT_SCORE, tiles.palette) == 0;
+    have_big        = gta_font_load(&big_font,   FONT_BIG,   tiles.palette) == 0;
+    gta_text_load(&texts, FXT_PATH);
+    printf("gta: fonts - pager %s (%d px), score %s, big %s; %d texts\n",
+           have_pager ? "yes" : "no", pager_font.height,
+           have_score_font ? "yes" : "no", have_big ? "yes" : "no", texts.n);
+    fflush(stdout);
+    /* THE LEVEL'S OPENING BRIEF - the first MOBILE_BRIEF of the script,
+     * 1001: "Answer the South Park phones to get jobs..." */
     hud_t0 = amiga_uclock_us();
 
     /* open_display() has already bound these - see the note on it for why
@@ -1817,8 +2023,25 @@ int main(void)
      * so it is a printed warning and not a refusal to start. */
     if (gta_nav_build(&nav, &map) == 0) {
         gta_traffic_set_nav(&traffic, &nav);
+        gta_traffic_police_start(&traffic, &map);
+        gta_traffic_lights_scan(&traffic, &map);
+        printf("gta: map - %d districts, %d roadblock lists\n", map.n_districts,
+               map.n_routes - map.n_police_routes);
+        gta_peds_set_lights(&peds, ped_light_green, &traffic);
+        if (opt_lights >= 0) traffic.opt_lights = opt_lights;
+        /* THE CRATES, from the level script, and with them the original's
+         * start: fists, and a crate nearby. Without the file the old
+         * loadout stands (the pistol and a crate's worth of everything). */
+        if (gta_pickups_load(&pickups, INI_PATH, 1, &nav, &tiles) > 0) {
+            int k_;
+            weapon = 0;
+            for (k_ = 1; k_ < GTA_WEAPON_COUNT; k_++) ammo[k_] = 0;
+            printf("gta: you start with your fists - the weapons are in the crates\n");
+            fflush(stdout);
+        }
         gta_peds_set_nav(&peds, &nav);
         gta_weapons_init(&weapons, &tiles);
+        gta_weapons_set_pickups(&weapons, &pickups);
         gta_score_init(&score);
         printf("gta: navigation grid %ld KB\n", (long)(GTA_NAV_BYTES / 1024));
     } else {
@@ -2357,6 +2580,27 @@ int main(void)
                      * leaning on a wall costs nothing on purpose. */
                     adq[adq_n].op = 12; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "brief %d", &a) == 1) {
+                    /* A TEST FIXTURE: show text `a` on the pager. */
+                    adq[adq_n].op = 16; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "hurt %d", &a) == 1) {
+                    /* A TEST FIXTURE: take `a` points of health. */
+                    adq[adq_n].op = 15; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "crate %d %d %d %d", &a, &b, &c, &d) == 4) {
+                    /* A TEST FIXTURE: a crate of kind c with d in it at
+                     * (dx,dy) from the player. */
+                    adq[adq_n].op = 14; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq[adq_n].hb = d; adq_n++;
+                } else if (sscanf(ln, "copcar %d %d %d", &a, &b, &c) == 3) {
+                    /* A TEST FIXTURE: a police car with its driver, on
+                     * patrol, at (dx,dy) from the player facing c. For the
+                     * carjack of a cop car and the lights. */
+                    adq[adq_n].op = 13; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq_n++;
                 } else if (strncmp(ln, "jump", 4) == 0) {
                     adq[adq_n].op = 7; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "dump", 4) == 0) {
@@ -2423,10 +2667,14 @@ int main(void)
     frames = 0;
     t0 = amiga_uclock_us();
     prof_t0 = t0;
+    amiga_watchdog_start();
+    pager_brief(1001);          /* the opening brief, now that frames count */
 
     while (running) {
         int dx = 0, dy = 0, speed;
 
+        amiga_wd_tick();
+        amiga_wd_set(AMIGA_WD_PHASE_INPUT);
         while (amigagfx_poll(&ev)) {
             if (ev.type == AMIGAGFX_EV_QUIT) {
                 running = 0;
@@ -2665,7 +2913,14 @@ int main(void)
                 dt = (unsigned long)(SIM_US * opt_catchup);
             sim_accum += ((unsigned long)dt * (unsigned long)game_speed) / 100UL;
 
+            amiga_wd_set(AMIGA_WD_PHASE_SIM);
             while (sim_accum >= (unsigned long)SIM_US && ticks < opt_catchup) {
+                if (bust_timer > 0) {
+                    up = down = left = right = 0;
+                    handbrake = 0;
+                    fire_held = 0;
+                    enter_req = 0;
+                }
                 /* The autodrive queue stands in for the keyboard. */
                 if (adq_i < adq_n) {
                     switch (adq[adq_i].op) {
@@ -2734,6 +2989,50 @@ int main(void)
                         break;
                     case 6: player.angle = adq[adq_i].thr & 255; break;
                     case 7: jump_req = 1; break;
+                    case 16:
+                        pager_brief(adq[adq_i].thr);
+                        break;
+                    case 15:
+                        player_health -= adq[adq_i].thr;
+                        printf("gta: hurt fixture - health %d\n", player_health);
+                        fflush(stdout);
+                        break;
+                    case 14:
+                        if (gta_pickups_add(&pickups,
+                                player.x + ((long)adq[adq_i].thr << 16),
+                                player.y + ((long)adq[adq_i].brk << 16),
+                                player.layer, adq[adq_i].st, adq[adq_i].hb))
+                            printf("gta: crate fixture - kind %d x%d at (%ld,%ld)\n",
+                                   adq[adq_i].st, adq[adq_i].hb,
+                                   (player.x >> 16) + adq[adq_i].thr,
+                                   (player.y >> 16) + adq[adq_i].brk);
+                        fflush(stdout);
+                        break;
+                    case 13: {
+                        int cm = gta_traffic_cop_model(&traffic);
+                        if (cm < 0 || !gta_traffic_abandon(&traffic, cm,
+                                player.x + ((long)adq[adq_i].thr << 16),
+                                player.y + ((long)adq[adq_i].brk << 16),
+                                adq[adq_i].st & 255, player.layer, 0, 0)) {
+                            printf("gta: copcar - fleet full or no model\n");
+                        } else {
+                            int fi;
+                            for (fi = 0; fi < traffic.n; fi++)
+                                if (traffic.cars[fi].serial == traffic.next_serial) {
+                                    traffic.cars[fi].abandoned = 0;
+                                    traffic.cars[fi].cop = 1;
+                                    traffic.cars[fi].top = 0;   /* stays put for the test */
+                                    traffic.cars[fi].want_route = 1;
+                                }
+                            printf("gta: copcar parked WITH ITS COP at"
+                                   " (%ld,%ld) facing %d\n",
+                                   (player.x >> 16) + adq[adq_i].thr,
+                                   (player.y >> 16) + adq[adq_i].brk,
+                                   adq[adq_i].st & 255);
+                        }
+                        fflush(stdout);
+                        break;
+                    }
                     case 8:
                         if (!gta_traffic_abandon(&traffic, adq[adq_i].thr,
                                 player.x + ((long)adq[adq_i].brk << 16),
@@ -2855,6 +3154,7 @@ int main(void)
                             const gta_car_info *ci_ = &tiles.cars[m_];
                             long dx_, dy_;
 
+                            enter_cop = gta_traffic_last_grab_cop(&traffic);
                             car_door_point(ci_, cx_, cy_, f_, &dx_, &dy_);
                             /* THE WRONG FLANK: HE GOES OVER THE CAR.
                              *
@@ -3181,14 +3481,30 @@ int main(void)
                     if (enter_anim == 1 && enter_driver
                         && (enter_bike || door_tick >= 20)) {
                         enter_driver = 0;
-                        if (gta_peds_pull(&peds, enter_cx, enter_cy,
+                        if (enter_bike
+                            ? gta_peds_knock_off(&peds,
+                                  enter_cx + (long)gta_cos(enter_face) * 12 * 4,
+                                  enter_cy + (long)gta_sin(enter_face) * 12 * 4,
+                                  player.layer, (enter_face + 64) & 255, -1)
+                            : gta_peds_pull(&peds, enter_cx, enter_cy,
                                           enter_face, enter_model,
                                           player.layer, -1)) {
                             /* Taking a car OFF SOMEBODY scores; a parked one is
                              * worth nothing, in the original as here. */
                             long a = gta_score_event(&score, GTA_SCORE_TYPE_CAR, 0);
+                            gta_score_crime(&score, GTA_CRIME_CARJACK);
+                            if (enter_cop) {
+                                /* A POLICE CAR TAKEN: its driver is a cop
+                                 * and comes after him on foot, and the
+                                 * level is exactly 1 if it was 0. */
+                                gta_peds_make_cop(&peds, peds.last_index);
+                                gta_score_force_level(&score, 1);
+                                printf("gta: police - the player took a cop"
+                                       " car; its cop is on foot\n");
+                            }
                             printf("gta: dragged the driver out - %ld points"
-                                   " (score %ld)\n", a, score.score);
+                                   " (score %ld, heat %d)\n", a, score.score,
+                                   score.heat);
                         } else {
                             printf("gta: driver lost - ped pool full\n");
                         }
@@ -3536,6 +3852,21 @@ int main(void)
                             veh.vy += rvy;
                             veh.ang16 = (veh.ang16 + ryaw) & 0xFFFFFFL;
                         }
+                        /* "SHUNTS 'N' BUMPS": two points of heat per car
+                         * hit, and only when the player is driving at speed
+                         * - the original exempts anything inside its
+                         * -5..11 band, which is the same five units that
+                         * decide whether a run-over kills. Nudging a parked
+                         * car is not a crime. */
+                        if (nhit > 0) {
+                            long avx = veh.vx < 0 ? -veh.vx : veh.vx;
+                            long avy = veh.vy < 0 ? -veh.vy : veh.vy;
+                            if (avx >= 5L * 32768L || avy >= 5L * 32768L) {
+                                int k;
+                                for (k = 0; k < nhit; k++)
+                                    gta_score_crime(&score, GTA_CRIME_SHUNT);
+                            }
+                        }
                         /* The overlap that is left after the impulse is undone
                          * by moving the body, and BOTH centres move together -
                          * the car has not rotated, so the centre of mass and
@@ -3663,6 +3994,140 @@ int main(void)
                  * this cars vanish and pop into existence in plain sight the
                  * moment the camera pulls back. */
                 if (opt_traffic) {
+                    gta_traffic_set_wanted(&traffic, score.level,
+                                           in_car || enter_anim == 2);
+                    gta_peds_set_player(&peds, in_car ? veh.ox : player.x,
+                                        in_car ? veh.oy : player.y,
+                                        player.layer, in_car);
+                    {
+                        long cx_, cy_;
+                        int cl_, ca_;
+                        if (gta_traffic_cop_out(&traffic, &cx_, &cy_, &cl_, &ca_)) {
+                            if (gta_peds_spawn_cop(&peds, cx_, cy_, cl_, ca_))
+                                printf("gta: police - a cop is on foot at"
+                                       " (%ld,%ld), %d out\n", cx_ >> 16, cy_ >> 16,
+                                       gta_peds_cops_out(&peds));
+                            else
+                                printf("gta: police - no room for the cop\n");
+                            fflush(stdout);
+                        }
+                    }
+                    if (peds.stat_cops_killed != cops_killed_seen) {
+                        /* A COP KILLED: a hundred more heat on top of the
+                         * murder, and every car standing with its driver
+                         * out gives up. */
+                        long k_ = peds.stat_cops_killed - cops_killed_seen;
+                        cops_killed_seen = peds.stat_cops_killed;
+                        while (k_-- > 0)
+                            gta_score_crime(&score, GTA_CRIME_MURDER);
+                        gta_traffic_cops_give_up(&traffic);
+                        printf("gta: police - a cop was killed\n");
+                        fflush(stdout);
+                    }
+                    {
+                        long rx_, ry_;
+                        int rl_, ra_;
+                        while (gta_traffic_roadblock_cop(&traffic, &rx_, &ry_, &rl_, &ra_))
+                            if (gta_peds_spawn_cop(&peds, rx_, ry_, rl_, ra_))
+                                gta_peds_post_last_cop(&peds);
+                    }
+                    if (bust_timer == 0 && score.level > 0 && peds.cop_shoot == 0 &&
+                        gta_peds_cop_event(&peds)) {
+                        /* BUSTED. The original: the jingle, the card, the
+                         * multiplier halved (never below 1), armour, speed
+                         * and every weapon gone, heat and level zero, and
+                         * the player put down at the nearest police station
+                         * on foot. Score and lives untouched. */
+                        int k;
+                        bust_timer = BUST_TICKS;
+                        card_kind = 1;
+                        if (jail_free)
+                            jail_free = 0;      /* the card is spent instead */
+                        else if (score.multiplier > 1)
+                            score.multiplier /= 2;
+                        for (k = 1; k < GTA_WEAPON_COUNT; k++) ammo[k] = 0;
+                        weapon = 0;
+                        fire_held = 0;
+                        printf("gta: BUSTED - multiplier %d, weapons gone,"
+                               " crimes this life:", score.multiplier);
+                        for (k = 0; k < GTA_CRIME_COUNT; k++)
+                            if (score.crimes[k]) printf(" %d x%ld", k, score.crimes[k]);
+                        printf("\n");
+                        fflush(stdout);
+                        gta_score_clear_heat(&score);
+                        gta_score_new_life(&score);
+                    }
+                    if (bust_timer > 0 && --bust_timer == 0) {
+                        /* The card is over: out of the car, and to the
+                         * station. */
+                        int best = -1, k;
+                        long bd = 0;
+                        long fx_ = in_car ? veh.ox : player.x;
+                        long fy_ = in_car ? veh.oy : player.y;
+                        if (in_car) {
+                            int a_ = gta_veh_angle(&veh);
+                            if (!gta_traffic_abandon(&traffic, veh.model, veh.ox,
+                                                     veh.oy, a_, player.layer,
+                                                     veh.remap, veh.damage))
+                                printf("gta: fleet full, car lost\n");
+                            in_car = 0;
+                            enter_anim = 0;
+                            enter_driver = 0;
+                            door_tick = -1;
+                            player.anim = GTA_ANIM_STAND;
+                            player.frame = 0;
+                        }
+                        const gta_map_loc *loc_ = card_kind == 2 ? map.hospital : map.police;
+                        int nloc_ = card_kind == 2 ? map.n_hospital : map.n_police;
+                        if (card_kind == 2) {
+                            player_lives--;
+                            player_health = 100;
+                            player_armour = 0;
+                            if (player_lives < 0) {
+                                /* GAME OVER: the level starts again. */
+                                player_lives = 4;
+                                gta_score_init(&score);
+                                printf("gta: GAME OVER - the level starts again\n");
+                            }
+                        }
+                        for (k = 0; k < nloc_; k++) {
+                            long dx_ = ((long)loc_[k].x << 21) - fx_;
+                            long dy_ = ((long)loc_[k].y << 21) - fy_;
+                            long d_;
+                            if (dx_ < 0) dx_ = -dx_;
+                            if (dy_ < 0) dy_ = -dy_;
+                            d_ = dx_ > dy_ ? dx_ : dy_;
+                            if (best < 0 || d_ < bd) { best = k; bd = d_; }
+                        }
+                        if (best >= 0) {
+                            /* A pavement block within three of the station,
+                             * on whichever layer has one. */
+                            int sx = loc_[best].x, sy = loc_[best].y;
+                            int r_, ex, ey, z_, found = 0;
+                            for (r_ = 0; r_ <= 3 && !found; r_++)
+                                for (ey = -r_; ey <= r_ && !found; ey++)
+                                    for (ex = -r_; ex <= r_ && !found; ex++)
+                                        for (z_ = 0; z_ < GTA_MAP_LAYERS && !found; z_++) {
+                                            int g_ = gta_nav_ground(gta_nav_at_m(&nav, sx + ex, sy + ey, z_));
+                                            if (g_ == GTA_GROUND_PAVEMENT) {
+                                                player.x = ((long)(sx + ex) << 21) + (16L << 16);
+                                                player.y = ((long)(sy + ey) << 21) + (16L << 16);
+                                                player.layer = z_;
+                                                found = 1;
+                                            }
+                                        }
+                            printf("gta: %s - put down at the %s (%d,%d)%s\n",
+                                   card_text[card_kind & 3],
+                                   card_kind == 2 ? "hospital" : "police station",
+                                   sx, sy, found ? "" : " - no pavement, left in place");
+                        } else {
+                            printf("gta: %s - no %s on this map\n", card_text[card_kind & 3],
+                                   card_kind == 2 ? "hospital" : "police station");
+                        }
+                        gta_peds_clear_cops(&peds);
+                        walk_mode = 1;
+                        fflush(stdout);
+                    }
                     /* ...and while he is getting OUT the car is still his,
                      * still solid, and not yet in the fleet. */
                     if (in_car || enter_anim == 2) {
@@ -3716,7 +4181,9 @@ int main(void)
                     }
                     gta_traffic_set_view_blocks(&traffic,
                                             (render_w() / 2) / zoom_display + 1);
+                    amiga_wd_set(AMIGA_WD_PHASE_TRAFFIC);
                     gta_traffic_tick(&traffic, &map, view.cam_x, view.cam_y);
+                    amiga_wd_set(AMIGA_WD_PHASE_SIM);
                 }
                 /* The spawner puts people on the edge of the view ahead of
                  * the player: it needs the view in blocks and his heading
@@ -3771,10 +4238,108 @@ int main(void)
                 gta_score_tick(&score);
                 hud_weapon = weapon;
                 hud_ammo = ammo[weapon >= 0 && weapon < 5 ? weapon : 0];
+                amiga_wd_set(AMIGA_WD_PHASE_PEDS);
                 gta_peds_tick(&peds, &map, view.cam_x, view.cam_y);
                 /* The bullets fly after the people have moved, in the
                  * original's order: peds, cars, then the block. */
+                amiga_wd_set(AMIGA_WD_PHASE_WEAPONS);
                 gta_weapons_tick(&weapons, &nav, &peds, &traffic, &tiles, &score);
+                amiga_wd_set(AMIGA_WD_PHASE_PLAYER);
+                if (pickups.n > 0 && bust_timer == 0) {
+                    long px_ = in_car ? veh.ox : player.x;
+                    long py_ = in_car ? veh.oy : player.y;
+                    int kind_, amount_;
+                    gta_pickups_open_at(&pickups, px_, py_, player.layer,
+                                        in_car ? 22 : 10);
+                    if (gta_pickups_take(&pickups, px_, py_, player.layer,
+                                         in_car ? 22 : 10, &kind_, &amount_)) {
+                        static const char *const kind_name[16] = {
+                            "?", "pistol", "machine gun", "rocket", "flame",
+                            "?", "speed", "speed", "speed", "bribe", "armour",
+                            "multiplier", "jail free", "life", "kill frenzy", "life" };
+                        printf("gta: picked up %s %d\n",
+                               kind_ >= 0 && kind_ < 16 ? kind_name[kind_] : "?",
+                               amount_);
+                        if (kind_ >= 1 && kind_ <= 4) {
+                            /* The original: += amount capped at 99, 100+
+                             * means infinite for (amount-100) ticks, and the
+                             * picked weapon is selected. No infinite yet:
+                             * it is 99 rounds. */
+                            int a_ = amount_ >= 100 ? 99 : amount_;
+                            if (a_ == 0) a_ = kind_ == 3 ? 5 : kind_ == 4 ? 10 : 20;
+                            ammo[kind_] += a_;
+                            if (ammo[kind_] > 99) ammo[kind_] = 99;
+                            weapon = kind_;
+                        } else if (kind_ == GTA_PICKUP_BRIBE) {
+                            gta_score_clear_heat(&score);
+                        } else if (kind_ == GTA_PICKUP_MULTIPLIER) {
+                            score.multiplier++;
+                        } else if (kind_ == GTA_PICKUP_JAILFREE) {
+                            jail_free = 1;
+                        } else if (kind_ == GTA_PICKUP_ARMOUR) {
+                            player_armour = 3;
+                        } else if (kind_ == GTA_PICKUP_LIFE || kind_ == 15) {
+                            player_lives++;
+                        } else {
+                            /* armour, speed, life, kill frenzy: not yet -
+                             * nothing reads them. Taken all the same. */
+                        }
+                        fflush(stdout);
+                    }
+                }
+                /* THE PLAYER AS A TARGET, AND THE COPS' ORDERS. */
+                {
+                    int hb_, hc_, bl_, bu_;
+                    int armed_ = fire_held && weapon > 0;
+                    long sx_, sy_;
+                    int sl_, sa_, si_;
+                    gta_weapons_set_player(&weapons,
+                                           in_car ? veh.ox : player.x,
+                                           in_car ? veh.oy : player.y,
+                                           player.layer, in_car,
+                                           veh.len / 2, veh.wid / 2);
+                    gta_peds_set_cop_shoot(&peds, score.level >= 4 ? 2
+                                           : (armed_ || score.level >= 3) ? 1 : 0);
+                    while ((si_ = gta_peds_cop_shot(&peds, &sx_, &sy_, &sl_, &sa_)) >= 0)
+                        gta_weapons_fire(&weapons, 1, sx_, sy_, sl_, sa_, 0, si_);
+                    gta_weapons_player_damage(&weapons, &hb_, &hc_, &bl_, &bu_);
+                    if (bust_timer == 0) {
+                        int k_;
+                        for (k_ = 0; k_ < hb_; k_++) {
+                            if (player_armour > 0) player_armour--;
+                            else player_health -= 10;
+                        }
+                        if (hc_ > 0 && in_car) veh.damage += 5 * hc_;
+                        if (bl_ > 0) player_health = 0;
+                        if (bu_ > 0 && player_burning < 100) player_burning = 100;
+                        if (player_burning > 0) { player_burning--; player_health--; }
+                        if (gta_peds_cop_execute(&peds)) player_health = 0;
+                        if (hb_ || hc_ || bl_) {
+                            printf("gta: player hit - bullets %d, on the car %d,"
+                                   " blast %d; health %d armour %d\n",
+                                   hb_, hc_, bl_, player_health, player_armour);
+                            fflush(stdout);
+                        }
+                        if (player_health <= 0) {
+                            /* WASTED. The original: the card, weapons gone,
+                             * heat and level zero, a life taken, and the
+                             * respawn at the nearest hospital with health
+                             * 100; multiplier and score untouched. At no
+                             * lives it is the game over; the port starts
+                             * the level again. */
+                            player_health = 0;
+                            player_burning = 0;
+                            bust_timer = BUST_TICKS;
+                            card_kind = 2;
+                            for (k_ = 1; k_ < GTA_WEAPON_COUNT; k_++) ammo[k_] = 0;
+                            weapon = 0;
+                            fire_held = 0;
+                            gta_score_clear_heat(&score);
+                            printf("gta: WASTED - lives left %d\n", player_lives - 1);
+                            fflush(stdout);
+                        }
+                    }
+                }
                 if (in_car) {
                     long avx = veh.vx < 0 ? -veh.vx : veh.vx;
                     long avy = veh.vy < 0 ? -veh.vy : veh.vy;
@@ -3787,13 +4352,21 @@ int main(void)
                     if (ph) {
                         int k;
                         long award = 0;
-                        for (k = 0; k < ph; k++)
+                        for (k = 0; k < ph; k++) {
                             award = gta_score_event(&score,
                                         GTA_SCORE_TYPE_CIVILIAN,
                                         GTA_SCORE_REASON_RUNOVER);
+                            /* The original files the hit AND the death: a
+                             * man run over at speed is dead, and the two
+                             * reports together are what make one run-over
+                             * a level on its own (150 of 151). */
+                            gta_score_crime(&score, GTA_CRIME_RUNOVER);
+                            gta_score_crime(&score, GTA_CRIME_MURDER);
+                        }
                         printf("gta: ran over %d - %ld so far, %ld points"
-                               " (score %ld)\n", ph, peds.stat_runover,
-                               award, score.score);
+                               " (score %ld, heat %d)\n", ph,
+                               peds.stat_runover, award, score.score,
+                               score.heat);
                         fflush(stdout);
                     }
                 }
@@ -3853,6 +4426,14 @@ int main(void)
                     /* snprintf, never sprintf - see the toolchain notes; the
                      * one that is broken on this libc is the one without a
                      * size. */
+                    printf("gta: police - wanted %d, %d chasing, %d on patrol,"
+                           " sent %ld made %ld released %ld\n",
+                           score.level, traffic.n_cop_chasing,
+                           traffic.n_cop_patrol, traffic.stat_cops_sent,
+                           traffic.stat_cops_made, traffic.stat_cops_released);
+                    gta_traffic_police_report(&traffic);
+                    printf("gta: peds at the lights - %ld set off, %ld crossed\n",
+                           peds.stat_crossings, peds.stat_crossed);
                     snprintf(ln, sizeof ln,
                              "gta: traffic %d/%d moving, %ld blocks in 5s, "
                              "held queue %ld light %ld box %ld merge %ld "
@@ -4102,6 +4683,7 @@ int main(void)
          * at it from above" possible. */
         /* The splats are ground marks: under everybody. */
         gta_weapons_draw_ground(&weapons, &view);
+        gta_pickups_draw(&pickups, &view, 12);
         gta_peds_draw(&peds, &view);
         /* THE CAR BEING ENTERED IS STILL A CAR.
          *
@@ -4222,8 +4804,10 @@ int main(void)
             unsigned long c0 = bench_blit_us, pb;
 
             mode_apply(&view);
+            amiga_wd_set(AMIGA_WD_PHASE_RENDER);
             gta_render_frame(&view);
             pb = amiga_uclock_us();
+            amiga_wd_set(AMIGA_WD_PHASE_PRESENT);
             present_frame(&view, &player, walk_mode);
             prof_ren_us += pb - pa;
             prof_pre_us += amiga_uclock_us() - pb;
@@ -4273,6 +4857,7 @@ int main(void)
          * which matters because amiga_uclock_us() is 32 bits and turns over
          * every 71 minutes - a session longer than that would otherwise
          * freeze here for the rest of the wrap. */
+        amiga_wd_set(AMIGA_WD_PHASE_CAP);
         if (frame_cap) {
             while ((unsigned long)(amiga_uclock_us() - frame_t0)
                        < (unsigned long)FRAME_CAP_US)
@@ -4281,6 +4866,7 @@ int main(void)
         frame_t0 = amiga_uclock_us();
     }
 
+    amiga_watchdog_stop();
     t1 = amiga_uclock_us();
     if (frames > 0)
         log_fps("gta: interactive", frames, t1 - t0);

@@ -114,6 +114,13 @@ int gta_route_wander(const gta_nav *nav, int sx, int sy, int z, int ban,
 int gta_route_find(const gta_nav *nav, int sx, int sy, int z,
                    int tx, int ty, int ban, gta_route_node *out, int max);
 
+/* The same search for a PURSUER: the two-step no-doubling-back rule is
+ * lifted, so a cop on one carriageway can route to the other through a
+ * single crossover - the very loop the rule exists to refuse traffic. The
+ * start-cell ban still holds. */
+int gta_route_find_chase(const gta_nav *nav, int sx, int sy, int z,
+                         int tx, int ty, int ban, gta_route_node *out, int max);
+
 /* Pick somewhere to drive to: a road block `min`..`max` blocks away from
  * (bx,by) on layer z, chosen with the caller's own random number generator so
  * the host and the Amiga agree. Returns 0 if nothing suitable was found.

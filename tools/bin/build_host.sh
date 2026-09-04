@@ -33,7 +33,7 @@ cd "$ROOT"
 mkdir -p build/host out
 
 WARN="-Wall -Wextra -std=c89 -pedantic -Wno-overlength-strings"
-SRC_COMMON="native/gta_style.c native/gta_map.c native/gta_tiles.c native/gta_render.c native/gta_hud.c native/gta_trig.c native/gta_player.c native/gta_car.c native/gta_nav.c native/gta_route.c native/gta_traffic.c native/gta_vehphys.c native/gta_peds.c native/gta_weapon.c native/gta_score.c native/gta_sfx.c"
+SRC_COMMON="native/gta_style.c native/gta_map.c native/gta_tiles.c native/gta_render.c native/gta_hud.c native/gta_trig.c native/gta_player.c native/gta_car.c native/gta_nav.c native/gta_route.c native/gta_traffic.c native/gta_vehphys.c native/gta_peds.c native/gta_weapon.c native/gta_pickup.c native/gta_font.c native/gta_text.c native/gta_score.c native/gta_sfx.c"
 
 echo "--- gtadump (release) ---"
 gcc -O2 $WARN -o build/host/gtadump tools/gtadump.c $SRC_COMMON

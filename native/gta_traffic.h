@@ -42,6 +42,7 @@
  * layer, so the fleet is deliberately smaller than that budget - the player
  * and, later, pedestrians need room in the same list. */
 #define GTA_MAX_CARS 20
+#define GTA_MAX_LIGHTS 512
 
 /* THE FLEET FOLLOWS THE CAMERA.
  *
@@ -1356,6 +1357,18 @@ typedef struct {
      * radius. */
     unsigned char wrecked;
 
+    /* THE POLICE (Phase 5 item 5(c)). 0 = a civilian; 1 = a patrol car,
+     * model GTA_COP_MODEL, driving the streets like any other until it is
+     * wanted; 2 = DISPATCHED - routed to the player's block, re-asked every
+     * GTA_COP_REROUTE ticks or whenever he moves a block, at the level's
+     * cruise speed, ignoring the lights and the polite gap behind his car
+     * so that it drives INTO him, which is the original's own ram. */
+    unsigned char cop;
+    int  cop_re;                    /* ticks until the route is asked again */
+    int  cop_dest_x, cop_dest_y;    /* the block it was last routed to */
+    int  cop_wait;                  /* ticks stopped beside the player */
+    int  uturn_cool;                /* ticks before the next U-turn attempt */
+
     /* GOING ROUND WHAT IS IN THE WAY - see GTA_LANE_SWAP_WAIT.
      *
      * `swap_wait` counts ticks standing still behind something that will not
@@ -2286,6 +2299,55 @@ typedef struct {
     int  pl_layer;
     int  pl_hl, pl_hw;      /* world px half-extents */
 
+    /* THE WANTED LEVEL, as the fleet sees it - set every tick by the game.
+     * `cop_countdown` is the original's dispatch delay after the first
+     * crime (100 frames in a car, 200 on foot; 1.5 ticks a frame), and
+     * `cop_spawn_cool` keeps reinforcements to one every two seconds. */
+    int  wanted;
+    int  wanted_in_car;
+    int  cop_countdown;
+    int  cop_spawn_cool;
+    int  n_cop_chasing, n_cop_patrol;   /* this tick's count, for the log */
+    /* THE COP GETS OUT: a pursuer that has stopped beside the player for
+     * GTA_COP_OUT_TICKS asks the game to put a policeman on foot at
+     * (cop_out_x, cop_out_y); the car then stands (cop == 3) until the
+     * pursuit ends. Read and cleared by gta_traffic_cop_out(). */
+    /* A GOAL FOR choose_heading(): while goal_on, the arrow-following
+     * choice at a junction is the exit nearest the goal block instead of
+     * a random one. Set round the call by a pursuer, never left on. */
+    int  goal_on, goal_x, goal_y;
+    int  cop_out_req;
+    long cop_out_x, cop_out_y;
+    int  cop_out_layer, cop_out_angle;
+    int  last_grab_cop;     /* was the car the player just took a cop car */
+
+    /* ROADBLOCKS (level 3+, the player in a car): the CMP lists a few road
+     * blocks per district - its exits - and the police put a car ACROSS
+     * every one that is off screen, a cop beside it, for GTA_ROADBLOCK_TICKS
+     * (refreshed while any of them is on screen). One district at a time;
+     * a car placed asks the game for its cop through rb_cop_*. */
+    int  rb_zone;           /* the district blocked, -1 none */
+    int  rb_timer;
+    int  rb_check;          /* ticks until the next look */
+    int  rb_cop_n;          /* cops asked for, not yet spawned */
+    long rb_cop_x[8], rb_cop_y[8];
+    int  rb_cop_layer[8], rb_cop_angle[8];
+    long stat_roadblocks;
+    long stat_cops_sent, stat_cops_made, stat_cops_released;
+    long stat_cop_uturns;
+    long stat_cop_box_pushed;
+
+    /* THE TRAFFIC LIGHTS, found once by gta_traffic_lights_scan(): every
+     * road block the map marks with hint 1 - the stop lines - with the
+     * axis its road runs along and the side the crossing is on. Drawn as
+     * the style's lamp sprites at the edge of the block facing the box,
+     * red / green / amber from gta_traffic_light_green()'s own clock. */
+    int n_lights;
+    unsigned char light_x[GTA_MAX_LIGHTS], light_y[GTA_MAX_LIGHTS];
+    signed char   light_z[GTA_MAX_LIGHTS];
+    unsigned char light_axis[GTA_MAX_LIGHTS];     /* 1 = east-west road */
+    signed char   light_dx[GTA_MAX_LIGHTS], light_dy[GTA_MAX_LIGHTS];
+
     /* PEOPLE IN THE ROAD - see gta_traffic_add_walker(). Sixteen is more than
      * the ped pool holds, so a full crowd always fits and there is never a
      * question of which pedestrian was dropped. */
@@ -2394,6 +2456,68 @@ void gta_traffic_draw(gta_traffic *tr, gta_view *v);
  * with active 0 when the player is on foot. */
 void gta_traffic_set_player(gta_traffic *tr, int active, long x, long y,
                             long speed, int face, int layer, int hl, int hw);
+
+/* ---- THE POLICE (Phase 5 item 5(c)) -------------------------------------
+ *
+ * Model 4 is the cop car, and nothing else is ever sent - the original has
+ * no SWAT, army or tank in its police response; level 4 is more of the same
+ * car. Cars per level is Liberty City's own table, and the cruise speeds
+ * are the original's four steps scaled into the fleet's units (its patrol
+ * drives at the traffic's own cruise; each level adds a step). */
+#define GTA_COP_MODEL        4
+#define GTA_COP_PATROL_MAX   3          /* patrol cars kept on the streets */
+#define GTA_COP_REROUTE      25         /* ticks between route requests */
+#define GTA_COP_ROUTE_REACH  20         /* blocks: farther, route to a waypoint */
+#define GTA_COP_ARROWS_NEAR  14         /* blocks: nearer, no route - the arrows toward him */
+#define GTA_ROADBLOCK_LEVEL  3
+#define GTA_ROADBLOCK_TICKS  400        /* the original's zone timer */
+#define GTA_ROADBLOCK_CHECK  100
+#define GTA_COP_NEAR_FOOT    2          /* blocks: stop this close to a man */
+#define GTA_COP_COUNTDOWN    150        /* the original's 100 frames */
+#define GTA_COP_COUNTDOWN_FOOT 300      /* ...and 200 for a crime on foot */
+#define GTA_COP_SPAWN_COOL   100
+#define GTA_COP_STATION_NEAR 40         /* blocks: reinforce from the station */
+#define GTA_COP_OUT_TICKS    20         /* stopped this long beside him: get out */
+#define GTA_DELTA_LIGHT0     15         /* the police model's two lighting deltas */
+#define GTA_COP_STOP_PX      96         /* stop this close to his car (three blocks) */
+
+/* The level and whether the target is in a car, every tick. A level going
+ * from 0 to more starts the dispatch countdown; a level going to 0 sends
+ * every pursuer back to patrol. */
+void gta_traffic_set_wanted(gta_traffic *tr, int level, int in_car);
+
+/* One log line per pursuing car: where it is and why it is not moving. */
+void gta_traffic_police_report(const gta_traffic *tr);
+
+/* 1 when a pursuer has stopped beside the player and its driver should step
+ * out - fills where; the request is cleared. */
+int gta_traffic_cop_out(gta_traffic *tr, long *x, long *y, int *layer, int *angle);
+
+/* Was the car gta_traffic_grab_car() last took a police car (its `cop`)? */
+int gta_traffic_last_grab_cop(const gta_traffic *tr);
+
+/* The record index of the cop car's model, or -1. Test fixtures. */
+int gta_traffic_cop_model(const gta_traffic *tr);
+
+/* Find the map's traffic lights (hint 1 on a road block). Call once after
+ * the nav grid is set. Returns how many. */
+int gta_traffic_lights_scan(gta_traffic *tr, const gta_map *m);
+
+/* 0 red, 1 green, 2 amber for the light at (bx,by) on the given axis. */
+int gta_traffic_light_state(const gta_traffic *tr, int bx, int by, int along_x);
+
+/* Every car standing with its driver out gives up: parked for good. The
+ * original does this when the foot cop is killed. */
+void gta_traffic_cops_give_up(gta_traffic *tr);
+
+/* A roadblock car wants its cop: where and facing which way. One per
+ * call; 0 when none is waiting. */
+int gta_traffic_roadblock_cop(gta_traffic *tr, long *x, long *y, int *layer, int *angle);
+
+/* Put the patrol cars on the map's own police routes (one at the first
+ * node of each 0xff route, up to GTA_COP_PATROL_MAX). Call once, after the
+ * nav grid is set. Returns how many were placed. */
+int gta_traffic_police_start(gta_traffic *tr, const gta_map *m);
 
 /* GRAB THE NEAREST CAR - entering a vehicle, the traffic side of it. Finds
  * the nearest live car within `range` world px of (x,y) on `layer`, fills

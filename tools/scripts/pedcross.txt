@@ -1,0 +1,16 @@
+# pedcross.txt - STAND AT THE LIT CROSSING AND WATCH THE PEOPLE.
+park 0 0 -26 0
+enter
+wait 150
+run 60 1 0 0 0
+run 30 0 1 0 0
+wait 10
+enter
+wait 300
+film 3
+wait 250
+film 3
+wait 250
+film 3
+wait 250
+film 3

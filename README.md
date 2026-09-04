@@ -7,11 +7,11 @@ hardware — 68020 and up, AGA or RTG. Not PiStorm, not Vampire, not Emu68.
 It contains no game code and no game data. You supply your own copy of GTA and
 the port converts it on your own machine.
 
-Current release: **v0.1.0** — you can walk around Liberty City, steal a car,
-drive it over the bridges and ramps, and use any of five weapons on what you
-find. Cars dent, burn, explode and leave a burnt-out wreck. Traffic steers
-round what blocks it, changes lane and turns round. See
-[what is and is not in it](#what-v010-actually-is).
+Current release: **v0.2.0** — you start with your fists and a pager message,
+find the weapons in crates, and the police come for you: patrol cars,
+pursuit, roadblocks, a cop on foot who arrests you or shoots you, BUSTED and
+WASTED in the original's letters. Traffic lights work and pedestrians cross
+at them. See [what is and is not in it](#what-v020-actually-is).
 
 ---
 
@@ -62,10 +62,12 @@ does.
 
 You need a 68020 or better (no FPU is required and none is used), about 8 MB of
 fast RAM, and your own copy of GTA (1997) for the PC. The DOS 8-bit release is
-what it was built against; the 2002 Windows re-release carries the same two data
-files, so that works too.
+what it was built against; the 2002 Windows re-release carries the same data
+files, so that works too. Two files are required (the art and the map); five
+more are optional and make the game whole — the level script for the crates,
+the texts for the pager, and three fonts. The README in the archive lists them.
 
-## What v0.1.0 actually is
+## What v0.2.0 actually is
 
 **Works:** the city renders in 2.5D with correct projection and no gaps in the
 geometry; you walk, run and turn; pedestrians keep to the pavements, turn
@@ -86,12 +88,24 @@ contact; all five weapons work — fists, pistol, machine gun, rocket launcher
 and flamethrower — and the street reacts to a shot; cars take damage from
 crashes and gunfire, wear the dents, and at a hundred points burn and explode,
 taking whatever is parked next to them with them, and leave a burnt-out wreck
-behind; the score counts, and it and the current weapon are on screen.
+behind; a rocket leaves fires burning on the wall it hits; **the police**: a
+wanted level from the original's own heat rules, patrol cars, cars sent by
+the level's quota that chase, cut you off and ram, a cop who gets out and
+arrests you — or shoots, when you are armed or the level is high — roadblocks
+across the exits of your district at level 3, BUSTED with the multiplier
+halved and your weapons gone and the release outside a police station;
+**you can die**: health, armour, four lives, WASTED, the hospital; **the
+crates** from the level script hold the weapons and the rest — armour,
+bribes, multipliers, jail-free cards — and you start with your fists, as
+the original does; **traffic lights** run and are drawn, and pedestrians
+wait at the kerb and cross on the green; the score, the pager line and the
+BUSTED / WASTED cards are drawn in the original's own fonts from its own
+text file.
 
-**Not there yet:** no missions, no police, no wanted level; the five weapons are
-handed to you at the start because the crates that hold them are not built yet;
-sound is not wired up; tyre marks, blood and oil are not drawn; only Liberty
-City.
+**Not there yet:** no missions — the phones do not ring and the guide arrow is
+not there (the script interpreter is the next item, and its texts and fonts
+are in); no sound; the police cars have no siren; tyre marks, blood and oil
+are not drawn; only Liberty City.
 
 **Speed:** 60.3 fps at 320x200 on the project's calibration machine — a 68020
 core with the throttle set to stand in for a faster CPU, JIT off. That number is

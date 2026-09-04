@@ -96,11 +96,49 @@ if (Test-Path $ini) {
   $txt = [regex]::Replace($txt, '(?m)^MainPosY=.*$', 'MainPosY=60')
   Set-Content $ini $txt -Encoding ASCII -NoNewline
 }
-# MINIMISED, so the window never takes the keyboard and the mouse away from
-# whoever is working at the machine. The configs carry win32.minimized_pause=
-# false, so the guest keeps running. And this is meant to be started ONCE:
-# after that, reload-gta.ps1 restarts the game inside the running emulator.
-Start-Process -FilePath $exe -ArgumentList '-log', '-f', $Config -WorkingDirectory $wd -WindowStyle Minimized
+# STARTED MINIMISED AND THEN SHOWN WITHOUT ACTIVATION.
+#
+# The window must never take the keyboard and the mouse away from whoever is
+# working at the machine, and this is meant to be started ONCE: after that,
+# reload-gta.ps1 restarts the game inside the running emulator.
+#
+# It was left minimised at first, with win32.minimized_pause=false in the
+# configs - and WinUAE 2.8.1 does not have that option ("unknown config
+# entry" in winuaebootlog.txt), so a MINIMISED 2.8.1 PAUSES THE EMULATION:
+# the guest never booted, no gta.log ever appeared, and it read exactly like
+# a hang. Restoring the window with SW_SHOWNOACTIVATE (4) puts it on screen
+# without giving it the focus, which is the one state in which it both runs
+# and leaves the developer's input alone. Windows may refuse to let a
+# background process activate a window; it never refuses to SHOW one.
+$proc = Start-Process -FilePath $exe -ArgumentList '-log', '-f', $Config -WorkingDirectory $wd -WindowStyle Minimized -PassThru
+Add-Type -Name WinShow -Namespace GtaHarness -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int c);
+public delegate bool EnumProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr l);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint wp);
+[DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+'@
+$shown = $false
+for ($try = 0; $try -lt 20 -and -not $shown; $try++) {
+  Start-Sleep -Milliseconds 500
+  $cb = [GtaHarness.WinShow+EnumProc]{
+    param($h, $l)
+    [uint32]$wp = 0
+    [GtaHarness.WinShow]::GetWindowThreadProcessId($h, [ref]$wp) | Out-Null
+    if ($wp -eq $proc.Id) {
+      $cn = New-Object System.Text.StringBuilder 64
+      [GtaHarness.WinShow]::GetClassName($h, $cn, 64) | Out-Null
+      # PCsuxRox is WinUAE's emulation window; the -log console is another.
+      if ($cn.ToString() -eq 'PCsuxRox') {
+        [GtaHarness.WinShow]::ShowWindowAsync($h, 4) | Out-Null   # SW_SHOWNOACTIVATE
+        Set-Variable -Name shown -Value $true -Scope 1
+      }
+    }
+    return $true
+  }
+  [GtaHarness.WinShow]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+}
+if (-not $shown) { Write-Output "WARNING: emulation window not found to show - a minimised WinUAE 2.8.1 is PAUSED" }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 while ((Get-Date) -lt $deadline) {

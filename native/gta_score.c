@@ -2,6 +2,7 @@
  *
  * Licence: MIT (ours).
  */
+#include <stdio.h>
 #include "gta_score.h"
 
 #define SCORE_CAP  999999999L
@@ -14,6 +15,89 @@ void gta_score_init(gta_score *s)
     s->streak_count = 0;
     s->streak_timer = 0;
     s->last_award = 0;
+    s->heat = 0;
+    s->level = 0;
+    gta_score_new_life(s);
+}
+
+/* ---- the wanted level --------------------------------------------------- */
+
+int gta_score_level_of(int heat)
+{
+    /* Liberty City. San Andreas is 101/201/251/376 and Vice City
+     * 101/176/251/351; they arrive with their maps. */
+    if (heat < 151) return 0;
+    if (heat < 251) return 1;
+    if (heat < 351) return 2;
+    if (heat < 501) return 3;
+    return 4;
+}
+
+/* What each report is worth, in the original's own numbers. */
+static int crime_heat(int crime)
+{
+    switch (crime) {
+    case GTA_CRIME_SHUNT:   return 2;
+    case GTA_CRIME_RUNOVER: return 50;
+    case GTA_CRIME_HIJACK:  return 10;
+    case GTA_CRIME_CARJACK: return 15;
+    case GTA_CRIME_GTA:     return 50;
+    case GTA_CRIME_FIREARM: return 1;
+    case GTA_CRIME_MURDER:  return 100;
+    case 9:                 return 100;
+    default:                return 0;
+    }
+}
+
+int gta_score_crime(gta_score *s, int crime)
+{
+    int before = s->level;
+    if (crime >= 0 && crime < GTA_CRIME_COUNT)
+        s->crimes[crime]++;
+    s->heat += crime_heat(crime);
+    if (s->heat > GTA_HEAT_CAP)
+        s->heat = GTA_HEAT_CAP;
+    s->level = gta_score_level_of(s->heat);
+    if (s->level != before) {
+        printf("gta: wanted level %d -> %d (heat %d, crime %d)\n",
+               before, s->level, s->heat, crime);
+        fflush(stdout);
+    }
+    return s->level;
+}
+
+void gta_score_force_level(gta_score *s, int level)
+{
+    static const int thr[5] = { 0, 151, 251, 351, 501 };
+    int before = s->level;
+    if (level < 0) level = 0;
+    if (level > 4) level = 4;
+    if (s->heat < thr[level])
+        s->heat = thr[level];
+    s->level = gta_score_level_of(s->heat);
+    if (s->level != before) {
+        printf("gta: wanted level %d -> %d (forced, heat %d)\n",
+               before, s->level, s->heat);
+        fflush(stdout);
+    }
+}
+
+void gta_score_clear_heat(gta_score *s)
+{
+    if (s->level || s->heat) {
+        printf("gta: wanted level cleared (was %d, heat %d)\n",
+               s->level, s->heat);
+        fflush(stdout);
+    }
+    s->heat = 0;
+    s->level = 0;
+}
+
+void gta_score_new_life(gta_score *s)
+{
+    int i;
+    for (i = 0; i < GTA_CRIME_COUNT; i++)
+        s->crimes[i] = 0;
 }
 
 void gta_score_tick(gta_score *s)

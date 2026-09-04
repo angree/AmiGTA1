@@ -1,0 +1,17 @@
+# car_copjack.txt - TAKE A POLICE CAR. Level exactly 1, its cop on foot,
+# and he comes after the stopped car; the lights on the car sent.
+copcar 0 -26 0
+wait 2
+enter
+wait 200
+film 3
+wait 80
+film 3
+wait 80
+film 3
+wait 80
+film 3
+wait 80
+film 3
+wait 200
+film 3

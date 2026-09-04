@@ -1,0 +1,19 @@
+# crates.txt - A CRATE UNDERFOOT, ONE SHOT OPEN, ONE PICKED UP BY CAR.
+crate 0 -6 1 20
+wait 40
+film 3
+crate 0 -60 2 20
+weapon 1 20
+face 0
+wait 5
+fire 30
+wait 20
+film 3
+park 0 40 0 0
+wait 5
+crate 40 -60 9 0
+enter
+wait 150
+run 60 1 0 0 0
+wait 30
+film 3

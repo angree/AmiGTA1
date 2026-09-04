@@ -122,6 +122,84 @@ int gta_map_load(const char *path, gta_map *m)
         raw = NULL;
     }
 
+    /* --- the object list (routes, roadblock lists) and the bases --- */
+    if (fseek(f, (long)object_pos_size, SEEK_CUR) == 0) {
+        unsigned long left = route_size;
+        while (left >= 2 && m->n_routes < GTA_MAP_ROUTES) {
+            unsigned char hdr[2];
+            gta_map_route *r = &m->routes[m->n_routes];
+            unsigned long k, cnt;
+            if (fread(hdr, 1, 2, f) != 2) break;
+            left -= 2;
+            cnt = hdr[0];
+            r->type = hdr[1];
+            r->n = 0;
+            for (k = 0; k < cnt && left >= 3; k++) {
+                unsigned char p[3];
+                if (fread(p, 1, 3, f) != 3) { left = 0; break; }
+                left -= 3;
+                if (r->n < GTA_MAP_ROUTE_NODES) {
+                    r->node[r->n].x = p[0];
+                    r->node[r->n].y = p[1];
+                    r->node[r->n].z = p[2];
+                    r->n++;
+                }
+            }
+            if (r->type == 0xff) m->n_police_routes++;
+            m->n_routes++;
+        }
+        if (left > 0)
+            fseek(f, (long)left, SEEK_CUR);
+        {
+            unsigned char loc[GTA_MAP_LOCATIONS * 6 * 3];
+            int got = fread(loc, 1, sizeof loc, f) == sizeof loc;
+            if (got) {
+                /* ...and the districts after the bases: 35-byte records,
+                 * x y w h sample name[30]. */
+                unsigned long left2 = nav_size;
+                while (left2 >= 35 && m->n_districts < GTA_MAP_DISTRICTS) {
+                    unsigned char rec[35];
+                    if (fread(rec, 1, 35, f) != 35) break;
+                    left2 -= 35;
+                    if (rec[2] == 0 || rec[3] == 0) { m->n_districts++; continue; }
+                    m->districts[m->n_districts].x = rec[0];
+                    m->districts[m->n_districts].y = rec[1];
+                    m->districts[m->n_districts].w = rec[2];
+                    m->districts[m->n_districts].h = rec[3];
+                    memcpy(m->districts[m->n_districts].name, rec + 5, 30);
+                    m->districts[m->n_districts].name[30] = 0;
+                    m->n_districts++;
+                }
+            }
+            if (got) {
+                int i;
+                for (i = 0; i < GTA_MAP_LOCATIONS; i++) {
+                    const unsigned char *p = loc + i * 3;
+                    const unsigned char *h = loc + (GTA_MAP_LOCATIONS + i) * 3;
+                    const unsigned char *q = loc + (4 * GTA_MAP_LOCATIONS + i) * 3;
+                    if (p[0] || p[1] || p[2]) {
+                        m->police[m->n_police].x = p[0];
+                        m->police[m->n_police].y = p[1];
+                        m->police[m->n_police].z = p[2];
+                        m->n_police++;
+                    }
+                    if (h[0] || h[1] || h[2]) {
+                        m->hospital[m->n_hospital].x = h[0];
+                        m->hospital[m->n_hospital].y = h[1];
+                        m->hospital[m->n_hospital].z = h[2];
+                        m->n_hospital++;
+                    }
+                    if (q[0] || q[1] || q[2]) {
+                        m->fire[m->n_fire].x = q[0];
+                        m->fire[m->n_fire].y = q[1];
+                        m->fire[m->n_fire].z = q[2];
+                        m->n_fire++;
+                    }
+                }
+            }
+        }
+    }
+
     fclose(f);
     return 0;
 

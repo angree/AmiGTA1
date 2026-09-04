@@ -1,0 +1,21 @@
+# health.txt - WASTED BY THE FIXTURE, THEN LEVEL 3 AND THE COPS SHOOT.
+hurt 100
+wait 200
+film 2
+wait 60
+park 0 0 -26 0
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+run 150 1 0 0 0
+run 250 1 0 0 0
+run 100 0 1 0 0
+wait 500
+film 3
+wait 300
+film 3
+wait 300
+film 3

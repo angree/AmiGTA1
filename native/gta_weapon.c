@@ -23,6 +23,7 @@ void gta_weapons_init(gta_weapons *w, const gta_tiles *t)
     w->spr_splat  = gta_tiles_object_sprite(t, GTA_OBJ_SPLAT);
     w->spr_expl   = gta_tiles_sprite_count(t, GTA_SPR_EX) >= 4 * GTA_EXPL_FRAMES
                   ? gta_tiles_sprite_base(t, GTA_SPR_EX) : -1;
+    w->spr_fire = gta_tiles_object_sprite(t, 0x2e);
 }
 
 int gta_weapons_alive(const gta_weapons *w)
@@ -55,6 +56,58 @@ static void splat(gta_weapons *w, long x, long y, int layer)
 /* THE EXPLOSION. Four quadrant sprites a block across, twelve frames each at
  * two ticks a frame; the damage is dealt once, here, and the sprites are only
  * what it looks like afterwards. */
+/* A fire on the ground at (x,y): the next free slot, or the oldest. */
+static void fire_light(gta_weapons *w, long x, long y, int layer)
+{
+    int i, pick = 0;
+    for (i = 0; i < GTA_MAX_FIRES; i++) {
+        if (w->f[i].ticks == 0) { pick = i; break; }
+        if (w->f[i].ticks < w->f[pick].ticks) pick = i;
+    }
+    w->f[pick].x = x;
+    w->f[pick].y = y;
+    w->f[pick].layer = layer;
+    w->f[pick].ticks = GTA_FIRE_TICKS;
+    w->f[pick].frame = 0;
+    w->f[pick].frame_tick = 0;
+    w->stat_fires++;
+}
+
+void gta_weapons_set_player(gta_weapons *w, long x, long y, int layer,
+                            int in_car, int hl, int hw)
+{
+    w->pl_active = 1;
+    w->pl_x = x; w->pl_y = y; w->pl_layer = layer;
+    w->pl_in_car = in_car; w->pl_hl = hl; w->pl_hw = hw;
+}
+
+void gta_weapons_player_damage(gta_weapons *w, int *bullets, int *car_hits,
+                               int *blast, int *burn)
+{
+    *bullets = w->pl_hit_bullets; *car_hits = w->pl_hit_car;
+    *blast = w->pl_blast; *burn = w->pl_burn;
+    w->pl_hit_bullets = w->pl_hit_car = w->pl_blast = w->pl_burn = 0;
+}
+
+/* Is the player's body within `r` px of (x,y) on `layer`? On foot his body
+ * is six pixels; in a car the car's box, squared off. */
+static int player_within(const gta_weapons *w, long x, long y, int layer, int r)
+{
+    long dx, dy;
+    int reach;
+    if (!w->pl_active || w->pl_layer != layer) return 0;
+    reach = w->pl_in_car ? (w->pl_hl > w->pl_hw ? w->pl_hl : w->pl_hw) : 6;
+    reach += r;
+    dx = (w->pl_x - x) >> 16; if (dx < 0) dx = -dx;
+    dy = (w->pl_y - y) >> 16; if (dy < 0) dy = -dy;
+    return dx <= reach && dy <= reach;
+}
+
+void gta_weapons_set_pickups(gta_weapons *w, gta_pickups *pk)
+{
+    w->pk = pk;
+}
+
 void gta_weapons_explode(gta_weapons *w, long x, long y, int layer,
                          gta_peds *peds, gta_traffic *tr, gta_score *sc,
                          int by_player)
@@ -83,13 +136,24 @@ void gta_weapons_explode(gta_weapons *w, long x, long y, int layer,
             continue;
         if (dx <= GTA_EXPL_KILL_PX && dy <= GTA_EXPL_KILL_PX) {
             gta_peds_kill(peds, i);
-            if (sc && by_player)
+            if (sc && by_player) {
                 gta_score_event(sc, GTA_SCORE_TYPE_CIVILIAN,
                                 GTA_SCORE_REASON_BLOWN);
+                gta_score_crime(sc, GTA_CRIME_MURDER);
+            }
         } else {
             gta_peds_burn(peds, i, x, y);
         }
     }
+
+    /* THE CRATES within the square. */
+    if (w->pk)
+        gta_pickups_open_at(w->pk, x, y, layer, GTA_EXPL_KILL_PX);
+    /* THE PLAYER: killed in the inner ring, set alight in the outer. */
+    if (player_within(w, x, y, layer, GTA_EXPL_KILL_PX))
+        w->pl_blast++;
+    else if (player_within(w, x, y, layer, GTA_EXPL_BURN_PX))
+        w->pl_burn += 20;
 
     /* THE CARS: anything this close is written off. */
     for (i = 0; i < tr->n; i++) {
@@ -294,6 +358,37 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
         if (w->s[i].ticks > 0)
             w->s[i].ticks--;
 
+    /* THE FIRES: they burn down, they animate, and they hurt. A ped within
+     * reach catches; a car standing in one takes five points every few
+     * ticks (the original's five a tick wrecks a parked car in twenty). */
+    for (i = 0; i < GTA_MAX_FIRES; i++) {
+        gta_fire *f = &w->f[i];
+        int k;
+        if (f->ticks == 0) continue;
+        f->ticks--;
+        if (++f->frame_tick >= 3) {
+            f->frame_tick = 0;
+            f->frame = (f->frame + 1) % 7;
+        }
+        for (k = 0; k < GTA_MAX_PEDS; k++) {
+            gta_ped *p = &peds->p[k];
+            long dx, dy;
+            if (!p->alive || p->corpse || p->burn > 0 || p->layer != f->layer)
+                continue;
+            dx = (p->x - f->x) >> 16; if (dx < 0) dx = -dx;
+            dy = (p->y - f->y) >> 16; if (dy < 0) dy = -dy;
+            if (dx <= GTA_FIRE_REACH_PX && dy <= GTA_FIRE_REACH_PX)
+                gta_peds_burn(peds, k, f->x, f->y);
+        }
+        if (player_within(w, f->x, f->y, f->layer, GTA_FIRE_REACH_PX))
+            w->pl_burn++;
+        if ((f->ticks % GTA_FIRE_CAR_EVERY) == 0) {
+            int ci = car_at(tr, t, f->x, f->y, f->layer);
+            if (ci >= 0 && !tr->cars[ci].wrecked)
+                tr->cars[ci].damage += 5;
+        }
+    }
+
     for (i = 0; i < GTA_MAX_EXPLOSIONS; i++)
         if (w->x[i].frame > 0 && ++w->x[i].tick >= GTA_EXPL_TICKS) {
             w->x[i].tick = 0;
@@ -328,6 +423,27 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
 
         if (b->grace > 0) {
             b->grace--;
+        } else if (b->owner >= 0 && b->kind != GTA_PROJ_FLAME &&
+                   player_within(w, b->x, b->y, b->layer, b->speed / 2 + 2)) {
+            /* AN AI SHOT ON THE PLAYER - a policeman's. On foot it is a hit
+             * on him; in a car it is a hit on the car (+5, the original's).
+             * A rocket bursts. */
+            if (w->pl_in_car) w->pl_hit_car++; else w->pl_hit_bullets++;
+            if (b->kind == GTA_PROJ_ROCKET)
+                gta_weapons_explode(w, b->x, b->y, b->layer, peds, tr, sc, 0);
+            else
+                splat(w, b->x, b->y, b->layer);
+            b->alive = 0;
+            continue;
+        } else if (w->pk && gta_pickups_open_at(w->pk, b->x, b->y, b->layer, 12)) {
+            /* A CRATE: the original's object test comes before the peds,
+             * and only a crate stops a shot. A rocket still bursts. */
+            w->stat_crate++;
+            if (b->kind == GTA_PROJ_ROCKET)
+                gta_weapons_explode(w, b->x, b->y, b->layer, peds, tr, sc,
+                                    b->owner < 0);
+            b->alive = 0;
+            continue;
         } else if (b->kind == GTA_PROJ_FLAME) {
             /* A PUFF DOES NOT STOP ON PEOPLE. It sets alight everybody it
              * passes through and carries on; only a car ends it. */
@@ -339,9 +455,14 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 if (pi < 0 || peds->p[pi].burn > 0)
                     break;
                 gta_peds_burn(peds, pi, ox, oy);
-                if (sc && b->owner < 0)
+                if (sc && b->owner < 0) {
                     gta_score_event(sc, GTA_SCORE_TYPE_CIVILIAN,
                                     GTA_SCORE_REASON_BURNED);
+                    /* A man alight is a dead man in GTA_BURN_TICKS; the
+                     * original reports the murder when he dies, and the
+                     * only difference is a second and a half. */
+                    gta_score_crime(sc, GTA_CRIME_MURDER);
+                }
                 printf("gta: flame caught ped %d\n", pi);
             }
             ci = car_at(tr, t, b->x, b->y, b->layer);
@@ -350,8 +471,10 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 tr->cars[ci].dmg_bits |= 1UL << gta_car_panel_delta(
                     &t->cars[tr->cars[ci].model], tr->cars[ci].x,
                     tr->cars[ci].y, tr->cars[ci].face, b->x, b->y);
-                if (sc && b->owner < 0)
+                if (sc && b->owner < 0) {
                     gta_score_add(sc, 10);
+                    gta_score_crime(sc, GTA_CRIME_FIREARM);
+                }
                 b->alive = 0;
                 w->stat_car++;
                 continue;
@@ -371,9 +494,11 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 } else {
                     gta_peds_shoot(peds, pi, b->heading);
                     splat(w, peds->p[pi].x, peds->p[pi].y, b->layer);
-                    if (sc && b->owner < 0)
+                    if (sc && b->owner < 0) {
                         gta_score_event(sc, GTA_SCORE_TYPE_CIVILIAN,
                                         GTA_SCORE_REASON_SHOT);
+                        gta_score_crime(sc, GTA_CRIME_MURDER);
+                    }
                     printf("gta: bullet %d hit ped %d at (%ld,%ld) from %s\n",
                            i, pi, peds->p[pi].x >> 16, peds->p[pi].y >> 16,
                            peds->p[pi].shot == 2 ? "behind" : "the front");
@@ -391,8 +516,10 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                     tr->cars[ci].dmg_bits |= GTA_DELTA_DMG_MASK;
                     gta_weapons_explode(w, b->x, b->y, b->layer, peds, tr, sc,
                             b->owner < 0);
-                    if (sc && b->owner < 0)
+                    if (sc && b->owner < 0) {
                         gta_score_add(sc, 100);
+                        gta_score_crime(sc, GTA_CRIME_FIREARM);
+                    }
                     printf("gta: rocket burst on car %d (model %d)\n", ci,
                            tr->cars[ci].model);
                 } else {
@@ -401,8 +528,10 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                         &t->cars[tr->cars[ci].model], tr->cars[ci].x,
                         tr->cars[ci].y, tr->cars[ci].face, b->x, b->y);
                     splat(w, b->x, b->y, b->layer);
-                    if (sc && b->owner < 0)
+                    if (sc && b->owner < 0) {
                         gta_score_add(sc, 10);
+                        gta_score_crime(sc, GTA_CRIME_FIREARM);
+                    }
                     printf("gta: bullet %d hit car %d (model %d) at (%ld,%ld),"
                            " damage %d, panels %04lx\n", i, ci,
                            tr->cars[ci].model, b->x >> 16, b->y >> 16,
@@ -424,6 +553,18 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 printf("gta: rocket burst on %s at block (%d,%d,%d)\n",
                        g == GTA_GROUND_WATER ? "water" : "a wall",
                        bx, by, b->layer);
+                /* AND THE FIRES IT LEAVES: three, on the ground this side of
+                 * the wall - a step back along the rocket's line and a
+                 * little either way - not on water. */
+                if (g == GTA_GROUND_BUILDING) {
+                    long fx = ox - (((long)gta_sin(b->heading)) << 2) * 10;
+                    long fy = oy + (((long)gta_cos(b->heading)) << 2) * 10;
+                    long sx = (((long)gta_cos(b->heading)) << 2) * 10;
+                    long sy = (((long)gta_sin(b->heading)) << 2) * 10;
+                    fire_light(w, fx, fy, b->layer);
+                    fire_light(w, fx + sx, fy + sy, b->layer);
+                    fire_light(w, fx - sx, fy - sy, b->layer);
+                }
             } else if (b->kind == GTA_PROJ_BULLET) {
                 splat(w, b->x, b->y, b->layer);
                 printf("gta: bullet %d hit %s at (%ld,%ld) block (%d,%d,%d)\n",
@@ -497,6 +638,14 @@ void gta_weapons_draw_air(const gta_weapons *w, gta_view *v)
 
     /* THE EXPLOSION IS FOUR SPRITES, not one: a block-sized quadrant in each
      * corner, each with its own twelve frames further along the category. */
+    if (w->spr_fire >= 0)
+        for (i = 0; i < GTA_MAX_FIRES; i++) {
+            const gta_fire *f = &w->f[i];
+            if (f->ticks == 0) continue;
+            gta_render_add_sprite(v, f->x, f->y, f->layer, f->layer,
+                                  w->spr_fire + f->frame, 0);
+        }
+
     if (w->spr_expl >= 0)
         for (i = 0; i < GTA_MAX_EXPLOSIONS; i++) {
             const gta_explosion *e = &w->x[i];

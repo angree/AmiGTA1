@@ -63,6 +63,11 @@
 /* The brain's modes - the original's `ped+0x66` values that matter here. */
 #define GTA_PED_MODE_FLEE  1
 #define GTA_PED_MODE_IDLE  2
+#define GTA_PED_MODE_COP   3      /* a policeman on foot, after the player */
+#define GTA_PED_MODE_CROSS 4      /* at a lit crossing: waiting, then over */
+
+#define GTA_COP_ARREST_PX  10     /* the original's 20 units */
+#define GTA_COP_GIVE_UP_PX 400    /* farther than this, he walks back (retired) */
 
 /* The gait sub-modes - the original's `ped+0x72`. */
 #define GTA_PED_SUB_WANDER 2      /* speed 1, the default */
@@ -127,6 +132,24 @@ typedef struct {
      * and an AI ped runs at full speed the whole time. `burn` is what is
      * left of that; `burn_frame` animates the fire drawn over him. */
     int  burn, burn_frame, burn_tick;
+
+    /* A POLICEMAN (Phase 5 item 5(d)): drawn in the sprite's own palette
+     * (remap 0 - the base ped IS the cop, civilians are the remaps), walks
+     * and runs at the player wherever he is, roads included, and ARRESTS
+     * him within GTA_COP_ARREST_PX. `arrest` is the event, read and cleared
+     * by gta_peds_cop_event(). */
+    int  cop;
+    int  arrest;
+    int  cop_cool;          /* ticks before this cop may fire again */
+    int  shoot_req;         /* 1: fire a pistol at shoot_angle this tick */
+    int  shoot_angle;
+    int  execute;           /* level 4: the caught player is shot, not arrested */
+    int  post;              /* a roadblock's cop: stands until the player is near */
+
+    /* CROSSING AT THE LIGHTS (the original's mode 3 wait / mode 4 cross):
+     * the axis he is crossing along - x when he walks east or west - so
+     * the light he waits for is the one that stops the cars in his way. */
+    int  cross_axis_x;
 } gta_ped;
 
 /* A hundred of the original's ticks, one health point each. */
@@ -178,6 +201,29 @@ typedef struct {
     /* The original's global 0..12 punch counter: 10 of 13 punches land. */
     int punch_wheel;
     long stat_spawned, stat_runover, stat_killed, stat_shot, stat_punched;
+
+    /* THE PLAYER, for the cops on foot: where he is, and whether he is in
+     * a car (then the cop walks to the car and pulls him out). */
+    long pl_x, pl_y;
+    int  pl_layer, pl_in_car;
+    long stat_cops_out, stat_cops_killed;
+    int  last_index;        /* the slot the last pull used, -1 */
+
+    /* THE LIGHTS, asked through the traffic module: is the axis green for
+     * the cars at (bx,by)? A ped crosses a road when the cars ALONG his
+     * own line of walking have the green - the ones across his path are
+     * then stopped. The original's round robin picks which of the four
+     * ways a ped at a corner tries. */
+    int (*light_green)(void *ctx, int bx, int by, int along_x);
+    void *light_ctx;
+    int  cross_rr;
+    long stat_crossings, stat_crossed;
+
+    /* THE COPS' ORDERS: 0 arrest; 1 shoot instead (the player is armed, or
+     * the level is 3 or more); 2 shoot, and execute him when caught (level
+     * 4). Set by the game every tick. */
+    int  cop_shoot;
+    long stat_cop_shots;
 } gta_peds;
 
 void gta_peds_init(gta_peds *ps, const gta_tiles *t, unsigned long seed);
@@ -245,5 +291,51 @@ void gta_peds_burn(gta_peds *ps, int i, long fx, long fy);
 /* Ped `i` is killed where he stands - the explosion's inner ring, which the
  * original kills outright rather than knocking down. */
 void gta_peds_kill(gta_peds *ps, int i);
+
+/* ---- THE POLICE ON FOOT (Phase 5 item 5(d)) ---------------------------- */
+
+/* Where the player is, every tick. */
+void gta_peds_set_player(gta_peds *ps, long x, long y, int layer, int in_car);
+
+/* A policeman steps out at (x,y) facing `angle` and goes after the player.
+ * Returns 0 when the pool is full (the farthest civilian is evicted first). */
+int gta_peds_spawn_cop(gta_peds *ps, long x, long y, int layer, int angle);
+
+/* 1 once when a cop has caught the player; the flag is cleared. */
+int gta_peds_cop_event(gta_peds *ps);
+
+/* Every cop on foot is taken off the street - the pursuit is over. */
+void gta_peds_clear_cops(gta_peds *ps);
+
+/* How many policemen are out on foot right now. */
+int gta_peds_cops_out(const gta_peds *ps);
+
+/* Ped `i` (the last one pulled out of a car: ps->last_index) becomes a
+ * policeman - the driver of a jacked cop car. */
+void gta_peds_make_cop(gta_peds *ps, int i);
+
+/* The last cop spawned stands his post (a roadblock) until the player is
+ * within six blocks. */
+void gta_peds_post_last_cop(gta_peds *ps);
+
+/* THE BIKE JACK: the rider is punched off - put down beside the bike at
+ * (x,y) facing `angle`, thrown through the punch victim's fall (sprite 38,
+ * moving back), then lying, then up - the original's 0x39/0x3a then
+ * 0xaf..0xb2 then 0x2b. Returns 0 when the pool is full. */
+int gta_peds_knock_off(gta_peds *ps, long x, long y, int layer, int angle, int remap);
+
+/* The lights: the traffic module's gta_traffic_light_green, through a
+ * pointer so this module needs nothing of it. */
+void gta_peds_set_lights(gta_peds *ps, int (*fn)(void *, int, int, int), void *ctx);
+
+/* The cops' orders this tick - see cop_shoot. */
+void gta_peds_set_cop_shoot(gta_peds *ps, int mode);
+
+/* A cop wants to fire: returns his index and where from and at what
+ * angle, once per shot; -1 when nobody does. The game fires the pistol. */
+int gta_peds_cop_shot(gta_peds *ps, long *x, long *y, int *layer, int *angle);
+
+/* 1 once when a cop at level 4 has caught the player: he is shot. */
+int gta_peds_cop_execute(gta_peds *ps);
 
 #endif /* GTA_PEDS_H */

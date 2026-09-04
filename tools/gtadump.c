@@ -23,6 +23,8 @@
 #include "../native/gta_trig.h"
 #include "../native/gta_nav.h"
 #include "../native/gta_vehphys.h"
+#include "../native/gta_font.h"
+#include "../native/gta_text.h"
 #include "../native/gta_peds.h"
 
 static void put_u32le(unsigned char *p, unsigned long v)
@@ -876,6 +878,67 @@ static int cmd_rampcheck(const char *mapPath)
  *
  * The numbers printed are what a later change has to keep.
  */
+/* ONE ROUTE SEARCH, PRINTED. `gtadump route <nyc.cmp> sx sy z tx ty [ban]`
+ * runs gta_route_find exactly as the fleet does and prints the path or the
+ * failure reason. It exists because the police reported "no route, reason
+ * 6" (exhausted) from a southbound lane to the northbound lane two blocks
+ * over, and the only way to tell a map fact from a search fault is to run
+ * the search on its own. */
+static int cmd_route(const char *mapPath, int sx, int sy, int z, int tx, int ty, int ban)
+{
+    gta_map mp;
+    static gta_nav nav;
+    static gta_route_node path[GTA_ROUTE_MAX];
+    int n, i;
+
+    if (gta_map_load(mapPath, &mp) != 0)
+        return 1;
+    if (gta_nav_build(&nav, &mp) != 0) {
+        printf("nav build failed\n");
+        return 1;
+    }
+    printf("nav at start %02x, at target %02x\n",
+           gta_nav_at(&nav, sx, sy, z), gta_nav_at(&nav, tx, ty, z));
+    n = gta_route_find(&nav, sx, sy, z, tx, ty, ban, path, GTA_ROUTE_MAX);
+    printf("route (%d,%d) -> (%d,%d) layer %d ban %d: %d nodes, fail %d\n",
+           sx, sy, tx, ty, z, ban, n, gta_route_last_fail());
+    for (i = 0; i < n; i++)
+        printf("  %d: (%d,%d)\n", i, path[i].x, path[i].y);
+    n = gta_route_find_chase(&nav, sx, sy, z, tx, ty, ban, path, GTA_ROUTE_MAX);
+    printf("chase (%d,%d) -> (%d,%d): %d nodes, fail %d\n",
+           sx, sy, tx, ty, n, gta_route_last_fail());
+    for (i = 0; i < n; i++)
+        printf("  %d: (%d,%d)\n", i, path[i].x, path[i].y);
+    return 0;
+}
+
+/* `gtadump fonttest <tiles.til> <font.fon> <texts.fxt> <key> <out.bmp>`:
+ * draw text `key` in the font, remapped to the tile set's palette, into a
+ * BMP - the host check of both readers. */
+static int cmd_fonttest(const char *tilPath, const char *fonPath, const char *fxtPath,
+                        int key, const char *out)
+{
+    gta_tiles ti;
+    gta_font fn;
+    gta_text tx;
+    const char *s;
+    unsigned char *img;
+    int w = 320, h = 60;
+    if (gta_tiles_load(tilPath, &ti) != 0) return 1;
+    if (gta_font_load(&fn, fonPath, ti.palette) != 0) return 1;
+    gta_text_load(&tx, fxtPath);
+    s = gta_text_get(&tx, key);
+    printf("font %s: %d chars, %d px high; text %d: %s\n", fonPath, fn.n_chars,
+           fn.height, key, s ? s : "(none)");
+    img = (unsigned char *)calloc(w * h, 1);
+    gta_font_draw(&fn, img, w, w, h, 2, 2, s ? s : "NO TEXT 0123456789");
+    gta_font_draw(&fn, img, w, w, h, 2, 2 + fn.height + 4, "ABCDEFGHIJKLMNOPQRSTUVWXYZ abc");
+    write_bmp8(out, img, w, h, ti.palette);
+    printf("wrote %s\n", out);
+    free(img);
+    return 0;
+}
+
 static int cmd_steertest(void)
 {
     static const struct { const char *name; int face; long off_px; long speed;
@@ -5555,6 +5618,11 @@ int main(int argc, char **argv)
     if (argc >= 3 && strcmp(argv[1], "rampcheck") == 0)
         return cmd_rampcheck(argv[2]);
 
+    if (argc >= 7 && strcmp(argv[1], "fonttest") == 0)
+        return cmd_fonttest(argv[2], argv[3], argv[4], atoi(argv[5]), argv[6]);
+    if (argc >= 8 && strcmp(argv[1], "route") == 0)
+        return cmd_route(argv[2], atoi(argv[3]), atoi(argv[4]), atoi(argv[5]),
+                         atoi(argv[6]), atoi(argv[7]), argc >= 9 ? atoi(argv[8]) : -1);
     if (argc >= 2 && strcmp(argv[1], "steertest") == 0)
         return cmd_steertest();
 

@@ -1,0 +1,26 @@
+# car_bust.txt - GET WANTED, STOP, AND WAIT FOR THE ARREST (filmed).
+park 0 0 -40 0
+wait 20
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+run 150 1 0 0 0
+run 250 1 0 0 0
+run 100 0 1 0 0
+wait 200
+film 3
+wait 60
+film 3
+wait 60
+film 3
+wait 60
+film 3
+wait 60
+film 3
+wait 60
+film 3
+wait 60
+film 2

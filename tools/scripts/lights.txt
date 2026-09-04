@@ -1,0 +1,10 @@
+# lights.txt - DRIVE NORTH TO THE LIT CROSSING AND FILM IT.
+park 0 0 -26 0
+enter
+wait 150
+run 120 1 0 0 0
+film 3
+wait 120
+film 3
+wait 120
+film 3

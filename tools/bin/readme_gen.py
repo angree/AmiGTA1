@@ -26,6 +26,16 @@ for the PC. Both are in the game's GTADATA directory on the PC:
     style001.gry     about 2.7 MB  - the Liberty City art
     nyc.cmp          about 460 KB  - the Liberty City map
 
+...and, OPTIONAL but worth it, five more from the same directory:
+
+    mission.ini      the level script - the weapon crates come from it;
+                     without it you start with every weapon instead
+    english.fxt      the texts - the pager messages (or french/german/
+                     italian.fxt renamed to english.fxt)
+    pager1.fon       the pager font        \
+    score1.fon       the score digits       > the original's letters
+    big1.fon         the BUSTED / WASTED font/
+
 COPY THEM IN BINARY MODE. If your transfer tool has a "text" or "ASCII"
 mode, turn it off - a text-mode copy corrupts these files silently, and the
 game then reports that the map is not a map.
@@ -40,6 +50,7 @@ minute or two on an 020. Afterwards this drawer needs only:
 
     style001.til     made by gtabake
     nyc.cmp          copied from the PC
+    (and the optional five, copied as they are - nothing converts them)
 
 style001.gry is not read by the game and can be deleted once the tiles are
 made.
@@ -50,7 +61,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.1.0
+TEXT = """AmiGTA v0.2.0
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -83,7 +94,7 @@ WHAT IS IN THIS ARCHIVE
   gtabake       The converter. Runs ON THE AMIGA. It reads the game's own
                 style001.gry and writes the tile set the engine loads, and
                 with -sfx it converts the sound bank too - see WHAT IS NOT
-                IN v0.1.0 for why you do not need that yet.
+                IN v0.2.0 for why you do not need that yet.
 
   run           Startup script. Sets the stack and starts the game.
 
@@ -113,6 +124,13 @@ the game's GTADATA directory:
 
     style001.gry     about 2.7 MB  - the Liberty City art
     nyc.cmp          about 460 KB  - the Liberty City map
+
+Five more from the same directory are OPTIONAL and copied as they are:
+mission.ini (the level script: the weapon crates - without it you start
+with every weapon), english.fxt (the texts: the pager), and the fonts
+pager1.fon, score1.fon and big1.fon (the original's letters for the
+pager, the score and the BUSTED / WASTED cards; without them the port's
+own small letters draw those). Nothing converts them.
 
 STEP 1 - unpack this archive anywhere you like - DH1:Games/AmiGTA,
     Work:AmiGTA, a CF card, it does not matter. You get the game, the two
@@ -243,7 +261,7 @@ It opens a small window on Workbench with three choices:
               mixes in software. Auto picks Paula where a real chipset
               exists and AHI where one does not.
 
-              NOTHING PLAYS YET. v0.1.0 has no sound at all; the setting
+              NOTHING PLAYS YET. v0.2.0 has no sound at all; the setting
               is read and reported in gta.log and nothing more. It is here
               because the choice has to be settled before the sound layer
               is written, not after.
@@ -295,30 +313,40 @@ can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
 
 ===========================================================================
-NEW SINCE v0.0.4
+NEW SINCE v0.1.0
 ===========================================================================
 
-  * Traffic steers instead of sliding. A car blocked off a junction
-    changes lane through a proper S-curve, after checking the new lane
-    three blocks ahead; with nowhere to go it turns round; knocked off
-    its lane by you it steers back onto it. Nothing snaps sideways any
-    more, and nothing turns round on the spot.
-  * Cars climb every ramp and bridge in Liberty City, and are drawn ON
-    the ramp instead of under it.
-  * A wrecked car stays as a burnt-out shell.
-  * The fleet stops for a person in the road - including you.
-  * Cars leant on by other cars rotate with the tyres dragging, rather
-    than being shoved bodily.
-  * You get into a car on the driver's side, on every model.
-  * A parked car cannot be walked into a wall by rounding error.
+  * THE POLICE. A wanted level from the original's own heat rules (it
+    never decays; the level is the heat against Liberty City's
+    thresholds), shown as cop heads at the top. Patrol cars on the
+    streets; at a level, cars are sent by its quota - they chase, cut
+    you off, ram, turn round after you; at level 3 roadblocks go up
+    across the exits of your district. A cop gets out beside your
+    stopped car or when you are on foot, and ARRESTS you - or shoots,
+    when you are armed or the level is 3 or more. BUSTED: the
+    multiplier halved, weapons gone, released outside a police station.
+    Take a police car and its cop comes after you on foot.
+  * YOU CAN DIE. Health 100, four lives, armour from its crate, fire
+    burns. WASTED: a life gone, the hospital.
+  * THE CRATES. The level script's 150 crates - pistols, machine guns,
+    armour, bribes, multipliers, jail-free cards, lives - opened by a
+    shot, by walking into them or driving over them. You start with
+    your fists, as the original does. (Needs mission.ini.)
+  * TRAFFIC LIGHTS run and are drawn on the corners; traffic waits at
+    the red, and pedestrians wait at the kerb and cross on the green.
+  * THE ORIGINAL'S LETTERS: the pager line along the bottom with the
+    level's opening message, the score digits, the BUSTED and WASTED
+    cards. (Needs english.fxt and the three fonts.)
+  * A rocket leaves fires on the wall it hits; a bike's rider is
+    knocked off, not pulled out.
 
 ===========================================================================
-WHAT IS NOT IN v0.1.0
+WHAT IS NOT IN v0.2.0
 ===========================================================================
 
-  * No crates to pick weapons up from - you start with all five.
-  * No missions, no police, no wanted level. The score counts, the
-    wanted level does not exist yet.
+  * No missions. The phones do not ring and there is no guide arrow;
+    the script's texts and fonts are in, the interpreter is next.
+  * The police cars have no siren, and the cop has no firing pose.
   * Tyre marks, blood and oil are not drawn.
   * Only Liberty City. The startup path is fixed to nyc.cmp.
   * Sound is not wired up yet. The DATA side is done - gtabake can

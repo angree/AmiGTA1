@@ -45,10 +45,50 @@ typedef struct {
     unsigned char  faces[GTA_FACE_COUNT];
 } gta_block;
 
+/* THE SERVICE BASES AND THE PATROL ROUTES, from the two sections after the
+ * blocks that the port used to skip. The location table is six entries each
+ * of police stations, hospitals, (two unused), fire stations, (unused) -
+ * (x, y, z) in blocks, all-zero when absent. The object list before it is
+ * a run of {count, type} + count x (x, y, z): type 0xff is a police patrol
+ * route, 0xfe another route class, anything else a roadblock position list
+ * for that zone. `z` is stored as the file has it; the road layer is found
+ * by looking, because the two conventions for it have already been
+ * confused once in this port's history. */
+#define GTA_MAP_LOCATIONS   6
+#define GTA_MAP_ROUTES      56
+#define GTA_MAP_ROUTE_NODES 24
+
+typedef struct { unsigned char x, y, z; } gta_map_loc;
+
+/* THE DISTRICTS, from the navigation section: a rectangle of blocks and a
+ * name, 28 in Liberty City. The roadblock lists above are numbered by
+ * them (zone t = district t). */
+#define GTA_MAP_DISTRICTS 32
+typedef struct {
+    unsigned char x, y, w, h;
+    char name[31];
+} gta_map_district;
+
+typedef struct {
+    unsigned char type;         /* 0xff police, 0xfe other, else a zone */
+    unsigned char n;            /* nodes kept (the file may carry more) */
+    gta_map_loc   node[GTA_MAP_ROUTE_NODES];
+} gta_map_route;
+
 typedef struct {
     unsigned long version;
     int  style_number;
     int  sample_number;
+
+    gta_map_loc   police[GTA_MAP_LOCATIONS];
+    gta_map_loc   hospital[GTA_MAP_LOCATIONS];
+    gta_map_loc   fire[GTA_MAP_LOCATIONS];
+    int  n_police, n_hospital, n_fire;
+    gta_map_route routes[GTA_MAP_ROUTES];
+    int  n_routes;
+    int  n_police_routes;
+    gta_map_district districts[GTA_MAP_DISTRICTS];
+    int  n_districts;
 
     unsigned long *base;        /* GTA_MAP_DIM * GTA_MAP_DIM byte offsets */
     unsigned short *columns;

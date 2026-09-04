@@ -1,0 +1,15 @@
+# small.txt - A ROCKET INTO THE WALL EAST, THEN A BIKE TAKEN OFF ITS RIDER.
+weapon 3 5
+face 192
+wait 5
+fire 6
+wait 40
+film 3
+wait 120
+film 3
+park 3 0 -26 0 1
+enter
+wait 30
+film 4
+wait 60
+film 3

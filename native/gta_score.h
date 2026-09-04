@@ -38,6 +38,31 @@
 /* Thirteen of the original's frames, in the port's 50 Hz ticks. */
 #define GTA_SCORE_STREAK_TICKS  20
 
+/* ---- THE WANTED LEVEL - Phase 5 item 5(b), the second half ------------
+ *
+ * The original keeps one number, the HEAT, and it NEVER DECAYS: the only
+ * things that write it are a crime (adds), a respray, a bribe, a bust, a
+ * death or a script (clears). The LEVEL, 0..4, is not stored as state at
+ * all - it is recomputed from the heat against the city's thresholds, and
+ * Liberty City's are 151 / 251 / 351 / 501. So a player who has run one man
+ * over is at level 0 with 50 points of heat that will still be there an hour
+ * later, and the third one puts him at level 1 - which is exactly how the
+ * original feels: nothing happens, nothing happens, and then it does.
+ *
+ * The crimes are numbered as the original's reports are, and the counters
+ * are what the pager prints on a bust. */
+#define GTA_CRIME_SHUNT      2      /* ramming a car, player driving, at speed  +2   */
+#define GTA_CRIME_RUNOVER    3      /* a pedestrian hit by the player's car     +50  */
+#define GTA_CRIME_HIJACK     4      /* a train                                  +10  */
+#define GTA_CRIME_CARJACK    5      /* a car taken off its driver               +15  */
+#define GTA_CRIME_GTA        6      /* +50, the original never reports it       */
+#define GTA_CRIME_FIREARM    7      /* a round through a car, or destroying one +1   */
+#define GTA_CRIME_MURDER     8      /* a pedestrian killed                      +100 */
+#define GTA_CRIME_COUNT      10
+
+#define GTA_HEAT_CAP         2000
+#define GTA_WANTED_MAX       4
+
 typedef struct {
     long score;             /* capped at 999999999, as the original is */
     int  multiplier;        /* 1 at the start of a level */
@@ -45,6 +70,10 @@ typedef struct {
     int  streak_count;
     int  streak_timer;      /* ticks left in which the same type still counts */
     long last_award;        /* what the last event was worth - for the log */
+
+    int  heat;              /* 0..GTA_HEAT_CAP, never decays */
+    int  level;             /* 0..4, recomputed from heat at every change */
+    long crimes[GTA_CRIME_COUNT]; /* this life's counters, by GTA_CRIME_* */
 } gta_score;
 
 void gta_score_init(gta_score *s);
@@ -59,5 +88,25 @@ long gta_score_event(gta_score *s, int type, int reason);
 /* A flat award, still multiplied - the original's popup call, which is what
  * shooting a car uses (+10). */
 long gta_score_add(gta_score *s, long value);
+
+/* Report crime `crime` (a GTA_CRIME_*): adds its heat, counts it, and
+ * recomputes the level. Returns the level, and prints a line when it
+ * changes. The multiplier and the score are not touched - a crime is not
+ * an award, the award is scored separately by whoever reports it. */
+int gta_score_crime(gta_score *s, int crime);
+
+/* Heat and level to zero - the respray, the bribe, the bust, the death. The
+ * crime counters are kept: they are this LIFE's, and the pager reads them
+ * on the bust that clears the heat. gta_score_new_life() clears those. */
+void gta_score_clear_heat(gta_score *s);
+void gta_score_new_life(gta_score *s);
+
+/* The level the heat would give, from Liberty City's table. */
+int gta_score_level_of(int heat);
+
+/* Heat set to exactly the threshold of `level` when below it - the
+ * original's "hit a police car / take a police car at level 0 -> level
+ * exactly 1". Never lowers it. */
+void gta_score_force_level(gta_score *s, int level);
 
 #endif /* GTA_SCORE_H */

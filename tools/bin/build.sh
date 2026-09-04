@@ -83,6 +83,9 @@ compile gta_vehphys.c
 compile gta_peds.c
 compile gta_score.c
 compile gta_weapon.c
+compile gta_pickup.c
+compile gta_font.c
+compile gta_text.c
 compile gta_route.c
 compile gta_traffic.c
 compile gta_map.c
@@ -97,6 +100,7 @@ compile amiga_gfx.c
 compile amiga_startup.c
 compile amiga_uclock.c
 compile amiga_trap.c
+compile amiga_watchdog.c
 compile libnix_fixes.c
 compile fp_conv.c
 compile fp_single.c

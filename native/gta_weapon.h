@@ -46,6 +46,7 @@
 #include "gta_peds.h"
 #include "gta_traffic.h"
 #include "gta_score.h"
+#include "gta_pickup.h"
 
 /* The weapons, in the original's own order - the order X and Z cycle. */
 #define GTA_WEAPON_FIST    0
@@ -144,8 +145,24 @@ typedef struct {
     int  tick;
 } gta_explosion;
 
+/* A FREE-STANDING FIRE - what a rocket leaves on the wall it burst against
+ * (the original's 0x12 fires, 0x13 when they burn down). Every tick it sets
+ * alight any ped within GTA_FIRE_REACH_PX and puts damage on a car standing
+ * in it; it burns for GTA_FIRE_TICKS. Drawn with the burning man's fire. */
+#define GTA_MAX_FIRES     8
+#define GTA_FIRE_TICKS    250
+#define GTA_FIRE_REACH_PX 8
+#define GTA_FIRE_CAR_EVERY 4       /* +5 damage this often */
+typedef struct {
+    long x, y;
+    int  layer;
+    int  ticks;             /* 0 = out */
+    int  frame, frame_tick;
+} gta_fire;
+
 typedef struct {
     gta_bullet b[GTA_MAX_BULLETS];
+    gta_fire   f[GTA_MAX_FIRES];
     gta_splat  s[GTA_MAX_SPLATS];
     gta_explosion x[GTA_MAX_EXPLOSIONS];
     int splat_next;
@@ -153,9 +170,33 @@ typedef struct {
      * which object type draws what. -1 when the style has no such object. */
     int spr_bullet, spr_rocket, spr_flame, spr_splat, spr_expl;
     long stat_fired, stat_ped, stat_car, stat_wall, stat_expired, stat_expl;
+    /* The crates, when the game has any: a shot opens the one it meets. */
+    gta_pickups *pk;
+    long stat_crate;
+    int  spr_fire;          /* the ped fire object, seven frames */
+    long stat_fires;
+
+    /* THE PLAYER AS A TARGET. He is neither a ped in the pool nor a car in
+     * the fleet, so an AI shooter's bullet, an explosion and a fire have to
+     * be told where he is; what they did to him is counted here and read
+     * once a tick by the game (gta_weapons_player_damage). */
+    int  pl_active, pl_in_car, pl_layer, pl_hl, pl_hw;
+    long pl_x, pl_y;
+    int  pl_hit_bullets, pl_hit_car, pl_blast, pl_burn;
 } gta_weapons;
 
 void gta_weapons_init(gta_weapons *w, const gta_tiles *t);
+void gta_weapons_set_pickups(gta_weapons *w, gta_pickups *pk);
+
+/* Where the player is this tick: on foot (a six-pixel body) or in a car of
+ * half-extents hl x hw. */
+void gta_weapons_set_player(gta_weapons *w, long x, long y, int layer,
+                            int in_car, int hl, int hw);
+
+/* What hit him since the last call: AI bullets on foot, AI bullets on his
+ * car, explosions in the kill radius, ticks of fire. Cleared by the call. */
+void gta_weapons_player_damage(gta_weapons *w, int *bullets, int *car_hits,
+                               int *blast, int *burn);
 
 /* One shot of `weapon` from a shooter at (x,y) facing `angle`; `running`
  * picks the original's running muzzle offset and grace, and is also the

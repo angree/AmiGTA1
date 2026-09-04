@@ -9,6 +9,8 @@
 
 #define W GTA_ROUTE_WINDOW
 
+static int g_allow_reverse;     /* see gta_route_find_chase */
+
 /* The scratch, at file scope on purpose.
  *
  * 4 KB of visited flags and 8 KB of queue is more than belongs on the Amiga's
@@ -259,7 +261,15 @@ static int route_bfs(const gta_nav *nav, int sx, int sy, int z,
             /* AND NOT BACK THE WAY THE PATH WAS GOING TWO STEPS AGO - see the
              * note above the scan order: this is the whole of the U-turn fix
              * for routes that reverse across a dual carriageway. */
-            if (i == back2)
+            /* THE CHASE MAY DOUBLE BACK. The rule above keeps traffic from
+             * hopping across a dual carriageway and coming straight back,
+             * which is right for a car going about its business and wrong
+             * for a police car whose target is on the other carriageway: a
+             * cop on the inner southbound lane could not route to the
+             * northbound lane two blocks over at all ("exhausted"), while
+             * one lane further out could, because its loop had two blocks
+             * across. gta_route_find_chase() lifts the rule for one search. */
+            if (i == back2 && !g_allow_reverse)
                 continue;
 
             nx = cx + step_x[i];
@@ -353,6 +363,16 @@ int gta_route_find(const gta_nav *nav, int sx, int sy, int z,
                    int tx, int ty, int ban, gta_route_node *out, int max)
 {
     return route_bfs(nav, sx, sy, z, tx, ty, ban, out, max, 0, 0, 0, 0);
+}
+
+int gta_route_find_chase(const gta_nav *nav, int sx, int sy, int z,
+                         int tx, int ty, int ban, gta_route_node *out, int max)
+{
+    int n;
+    g_allow_reverse = 1;
+    n = route_bfs(nav, sx, sy, z, tx, ty, ban, out, max, 0, 0, 0, 0);
+    g_allow_reverse = 0;
+    return n;
 }
 
 /* ASK THE SEARCH WHERE IT CAN GO, INSTEAD OF GUESSING AND BEING TOLD NO.

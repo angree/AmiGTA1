@@ -152,6 +152,87 @@ void gta_hud_text(unsigned char *dst, int pitch, int w, int h,
     }
 }
 
+void gta_hud_text_big(unsigned char *dst, int pitch, int w, int h,
+                      int x, int y, const char *s, int scale)
+{
+    int len = 0, bw, bh, by, bx;
+    const char *p;
+    if (scale < 1) scale = 1;
+    for (p = s; *p; p++) len++;
+    if (len <= 0) return;
+    bw = (len * (GW + 1) + 1) * scale;
+    bh = (GH + 2) * scale;
+    for (by = y - scale; by < y - scale + bh; by++) {
+        unsigned char *d;
+        if (by < 0 || by >= h) continue;
+        d = dst + (long)by * pitch;
+        for (bx = x - scale; bx < x - scale + bw; bx++)
+            if (bx >= 0 && bx < w) d[bx] = hud_shadow;
+    }
+    for (p = s; *p; p++) {
+        const unsigned char *g = glyph[glyph_index(*p)];
+        int row, col, sy, sx;
+        for (row = 0; row < GH; row++)
+            for (col = 0; col < GW; col++) {
+                if (!(g[row] & (1 << (GW - 1 - col)))) continue;
+                for (sy = 0; sy < scale; sy++) {
+                    int py = y + row * scale + sy;
+                    unsigned char *d;
+                    if (py < 0 || py >= h) continue;
+                    d = dst + (long)py * pitch;
+                    for (sx = 0; sx < scale; sx++) {
+                        int px = x + col * scale + sx;
+                        if (px >= 0 && px < w) d[px] = hud_ink;
+                    }
+                }
+            }
+        x += (GW + 1) * scale;
+    }
+}
+
+int gta_hud_width_big(const char *s, int scale)
+{
+    return gta_hud_width(s) * (scale < 1 ? 1 : scale);
+}
+
+/* The cop's head: a peaked cap over a face with two eyes. Bit 6 is the left
+ * column. Seven wide, eight tall, and the plate is a pixel round it. */
+static const unsigned char cop_glyph[8] = {
+    0x1C,   /* ..XXX.. */
+    0x3E,   /* .XXXXX. */
+    0x7F,   /* XXXXXXX  the peak */
+    0x3E,   /* .XXXXX. */
+    0x2A,   /* .X.X.X.  the eyes are holes */
+    0x3E,   /* .XXXXX. */
+    0x1C,   /* ..XXX.. */
+    0x1C    /* ..XXX..  the collar */
+};
+
+void gta_hud_cop(unsigned char *dst, int pitch, int w, int h, int x, int y)
+{
+    int by, bx, row, col;
+    for (by = y - 1; by < y + 9; by++) {
+        unsigned char *d;
+        if (by < 0 || by >= h) continue;
+        d = dst + (long)by * pitch;
+        for (bx = x - 1; bx < x + 8; bx++)
+            if (bx >= 0 && bx < w)
+                d[bx] = hud_shadow;
+    }
+    for (row = 0; row < 8; row++) {
+        int py = y + row;
+        unsigned char *d;
+        if (py < 0 || py >= h) continue;
+        d = dst + (long)py * pitch;
+        for (col = 0; col < 7; col++) {
+            int px = x + col;
+            if (px < 0 || px >= w) continue;
+            if (cop_glyph[row] & (1 << (6 - col)))
+                d[px] = hud_ink;
+        }
+    }
+}
+
 /* How wide gta_hud_text() will draw `s`, plate included. A caller that wants
  * the text against the RIGHT edge needs this: the score is right-aligned in
  * the original and a left-aligned one jumps sideways as the digits grow. */

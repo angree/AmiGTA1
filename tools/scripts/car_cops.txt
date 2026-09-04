@@ -1,0 +1,23 @@
+# car_cops.txt - GET WANTED, THEN DRIVE: DO THE POLICE COME?
+# Three men run over (level 4), then two hundred ticks of driving with a
+# film every hundred, then a stop and a long wait - the pursuers should
+# arrive and drive into the stopped car. The log says who was sent.
+park 0 0 -40 0
+wait 20
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+run 150 1 0 0 0
+run 200 1 0 0 0
+film 4
+run 200 1 0 0 0
+film 4
+run 100 0 1 0 0
+wait 250
+film 6
+wait 250
+film 6
+dump
