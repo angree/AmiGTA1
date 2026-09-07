@@ -149,6 +149,16 @@ STEP 3 - convert the art. From a shell, in the drawer you unpacked to:
         stack 1000000
         gtabake GTADATA/style001.gry GTADATA/style001.til
 
+    ...and, if you want the title screen, one more:
+
+        gtabake -front GTADATA GTADATA/front.fnt
+
+    That one reads the front end's own pictures - f_logo0.raw to
+    f_logo7.raw and f_lower0.raw - and squashes them to the Amiga's
+    screen with a palette of their own. It is OPTIONAL: without
+    front.fnt the game starts straight into the city, exactly as
+    v0.3.0 did.
+
     It prints what it found and takes a minute or two on an 020. When it
     is done you have GTADATA/style001.til, about 1.8 MB, and you never
     need to run it again.
@@ -360,11 +370,42 @@ NEW SINCE v0.1.0
     knocked off, not pulled out.
 
 ===========================================================================
+NEW IN v0.4.0
+===========================================================================
+
+  THE MISSIONS RUN. The level's own script is read and obeyed. The game
+  starts you where the script says - which is also the trigger that
+  begins the level - the South Park telephones ring, and walking up to
+  one on foot gives you a job: a brief, an arrow, a car to steal and a
+  garage to deliver it to. Stealing pays, delivering pays more, and the
+  game rings you back on another phone for the next one. Liberty City's
+  first two missions play from the phone to the pay-out; the second has
+  a passenger to collect on the way.
+
+  THE HUD IS THE GAME'S OWN. The wanted level's cop heads flash across
+  the top, the weapon in hand and its ammunition sit at the left with
+  the armour and the get-out-of-jail-free card under them, and the three
+  displays the original uses are all there: the brief box along the
+  bottom with its icon, the pager scrolling its line through the little
+  device at the top left, and MISSION COMPLETE across the middle. The
+  score has the multiplier under it.
+
+  A TITLE SCREEN, with the logo animating and START GAME / QUIT. It
+  needs one extra conversion - see SETTING IT UP - and the game runs
+  without it if you skip that.
+
+  A CAR CAN JUMP. A ramp with a hole after it is a jump, and the arc is
+  the original's.
+
+  THE SPRAY SHOPS WORK. Drive in, the car changes colour, and the
+  police lose interest in it.
+
+===========================================================================
 WHAT IS NOT IN v0.4.0
 ===========================================================================
 
-  * No missions. The phones do not ring and there is no guide arrow;
-    the script's texts and fonts are in, the interpreter is next.
+  * Missions past the second. The script's whole vocabulary is not
+    written yet - what the game reaches next is in its own log.
   * The police cars have no siren, and the cop has no firing pose.
   * Tyre marks, blood and oil are not drawn.
   * Only Liberty City. The startup path is fixed to nyc.cmp.

@@ -139,7 +139,8 @@ static int front_read(const char *dir, const char *name, unsigned char *dst,
 /* ---- THE FRONT END'S OWN PALETTE ----------------------------------------
  *
  * See gta_front.h. The picture is quantised rather than pushed through
- * f_pal.raw, and the first GTA_FRONT_RESERVED entries are left to Intuition:
+ * a palette of its own, and the first GTA_FRONT_RESERVED entries are left
+ * to Intuition:
  *
  *    0  black          the screen's background and the bar's trim
  *    1  white          the bar's text, and the pointer's own white

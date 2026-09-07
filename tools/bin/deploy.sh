@@ -180,7 +180,7 @@ fi
 # from the file sizes.
 FNT="$ROOT/build/data/front.fnt"
 if [ ! -f "$FNT" ] && [ -x "$ROOT/build/host/gtabake" ] && \
-   [ -f "$DATA/f_pal.raw" ]; then
+   [ -f "$DATA/f_logo0.raw" ]; then
     mkdir -p "$ROOT/build/data"
     "$ROOT/build/host/gtabake" -front "$DATA" "$FNT" >/dev/null &&
         echo "baked:    build/data/front.fnt"
