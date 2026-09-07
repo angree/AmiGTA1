@@ -104,6 +104,13 @@ void gta_map_free(gta_map *m);
  * out-of-range coordinates, 1 when a block was written. */
 int  gta_map_block(const gta_map *m, int x, int y, int z, gta_block *out);
 
+/* The ground type of a block, 0 air / 1 water / 2 road / 3 pavement /
+ * 4 field / 5 building - and pavement for a block the file leaves out of a
+ * surface that goes on around it. See the definition; it is the answer to
+ * the invisible wall on the pavement at (25,17). Everything that asks "may
+ * somebody be here" must go through this rather than reading the bits. */
+int  gta_map_ground_type(const gta_map *m, int bx, int by, int z);
+
 /* Height of the column at (x, y): the number of layers that hold a block,
  * counting up from the ground. 0 means the column is entirely air. */
 int  gta_map_column_height(const gta_map *m, int x, int y);

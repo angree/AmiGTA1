@@ -1677,6 +1677,11 @@ typedef struct {
      *
      * Costs one int per car and nothing per tick. */
     unsigned long serial;
+    /* THE SCRIPT PUT THIS CAR HERE AND IT IS PART OF A JOB. The retirement
+     * sweep leaves it alone however far from the camera it is - a mission
+     * car is a place on the map, not traffic - and so does the fleet's
+     * eviction. Cleared when the job is over (RESET). */
+    unsigned char mission;
 } gta_car;
 
 typedef struct {
@@ -1807,6 +1812,13 @@ typedef struct {
 
     /* Handed out to each car as it is parked; see gta_car.serial. */
     unsigned long next_serial;
+    /* THE SERIAL OF THE CAR THE PLAYER LAST GOT INTO. Entering takes the car
+     * out of the fleet, so without this the identity is lost the moment he
+     * opens the door - and a mission that says "steal that car" has nothing
+     * left to compare against. Read it with gta_traffic_last_grab_serial()
+     * straight after a successful gta_traffic_grab_car(). */
+    unsigned long last_grab_serial;
+    int last_grab_mission;
 
     /* How the route finder is getting on: searches that produced a path,
      * searches that found nothing, and how many nodes have been handed out.
@@ -2226,7 +2238,11 @@ typedef struct {
      * the box was already booked - "lewa zajeta, jedzie prosto". */
     long stat_left_skipped;
     long stat_joins;
-    long stat_rams;                     /* player-vs-fleet hits, item 3c */                    /* convoy joins granted */
+    long stat_rams;                     /* player-vs-fleet hits, item 3c */
+    long stat_ram_cop;                  /* ...of which were police cars */
+    int  pl_damage;                     /* the player's own share of the last
+                                         * ram - gta_traffic_ram() clears it
+                                         * and the game side charges it */                    /* convoy joins granted */
     /* Why the box gate said no, per refusal-tick: 0 body-in-line,
      * 1 first-square owned, 2 exit full, 3 no room past the box,
      * 4 the booking (a claim or a body on the path). Diagnostic. */
@@ -2295,6 +2311,9 @@ typedef struct {
     int  pl_active;
     long pl_x, pl_y;        /* 16.16 world */
     long pl_speed;          /* 16.16 px/tick, magnitude */
+    long pl_prev_x, pl_prev_y;  /* where he was last tick */
+    long pl_moved;          /* and how far he actually got - see below */
+    int  pl_still;          /* ticks he has been going nowhere */
     int  pl_face;           /* 0..255 */
     int  pl_layer;
     int  pl_hl, pl_hw;      /* world px half-extents */
@@ -2333,6 +2352,7 @@ typedef struct {
     long rb_cop_x[8], rb_cop_y[8];
     int  rb_cop_layer[8], rb_cop_angle[8];
     long stat_roadblocks;
+    long stat_layer_jumps;     /* cars whose block was not drivable on their layer */
     long stat_cops_sent, stat_cops_made, stat_cops_released;
     long stat_cop_uturns;
     long stat_cop_box_pushed;
@@ -2479,7 +2499,17 @@ void gta_traffic_set_player(gta_traffic *tr, int active, long x, long y,
 #define GTA_COP_STATION_NEAR 40         /* blocks: reinforce from the station */
 #define GTA_COP_OUT_TICKS    20         /* stopped this long beside him: get out */
 #define GTA_DELTA_LIGHT0     15         /* the police model's two lighting deltas */
-#define GTA_COP_STOP_PX      96         /* stop this close to his car (three blocks) */
+/* HOW STILL IS STILL, and for how long. A car wedged against a wall with
+ * the throttle down has a speed and gets nowhere, and the original asks the
+ * question the other way round - both cars stopped - so the port measures
+ * what the player's car actually COVERED since last tick. Half a pixel a
+ * tick over half a second is a car that is not going anywhere. */
+#define GTA_PL_STILL_PX   (1L << (FP - 1))
+#define GTA_PL_STILL_TICKS 25
+
+/* Five blocks, the original's 0xd1 reach (POLICE.md). */
+#define GTA_COP_STOP_BLOCKS 5
+
 
 /* The level and whether the target is in a car, every tick. A level going
  * from 0 to more starts the dispatch countdown; a level going to 0 sends
@@ -2532,8 +2562,33 @@ int gta_traffic_grab_car(gta_traffic *tr, long x, long y, int layer,
  * drawn, solid, enterable, and never driven away. Returns 0 if the fleet is
  * full, in which case the car really is lost - but at twenty cars against
  * GTA_MAX_CARS that does not happen in practice. */
-int gta_traffic_abandon(gta_traffic *tr, int model, long x, long y, int face,
-                        int layer, int remap, int damage);
+unsigned long gta_traffic_abandon(gta_traffic *tr, int model, long x, long y,
+                                  int face, int layer, int remap, int damage);
+
+/* The serial of the car the last successful grab_car() took out of the
+ * fleet. Zero when there has not been one. */
+unsigned long gta_traffic_last_grab_serial(const gta_traffic *tr);
+
+/* ...and whether it was a MISSION car, so the flag can be put back on when
+ * the player gets out of it again. */
+int gta_traffic_last_grab_mission(const gta_traffic *tr);
+
+/* Mark the car with this serial as the script's, or stop doing so. 1 when
+ * there was such a car. */
+int gta_traffic_set_mission(gta_traffic *tr, unsigned long serial, int on);
+
+/* GIVE A CAR BACK ITS OLD NAME. The player gets out, abandon() puts a fresh
+ * car in the fleet with a fresh serial, and this renames it to the one it had
+ * before he got in - so a mission car is still the mission car after a drive.
+ * Nothing else is changed. 1 when a car with that serial was found. */
+int gta_traffic_rename_car(gta_traffic *tr, unsigned long from,
+                           unsigned long to);
+
+/* Where the car with this serial is, and whether it is still whole. Returns
+ * 0 when there is no such car in the fleet - which for a mission car means
+ * either the player is driving it or it has been swept up. */
+int gta_traffic_find_car(const gta_traffic *tr, unsigned long serial,
+                         long *x, long *y, int *layer, int *wrecked);
 
 /* The same, but what it leaves is a BURNT-OUT WRECK - every panel dented,
  * nobody able to get into it, and swept up on the wreck's own fixed radius

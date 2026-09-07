@@ -208,6 +208,12 @@ typedef struct {
     long wx, wy;        /* 16.16 world pixels, reference scale */
     int  layer;         /* map layer, for draw order */
     int  grid;          /* grid level of the surface it stands on */
+    /* ...AND EIGHTHS ABOVE IT, 0..8, when that surface is a RAMP. A ramp's
+     * lid is interpolated between the two grid levels its block spans (see
+     * LERP8 in gta_render.c) and so is anything standing on it: the feet are
+     * at `grid` + `sub`/8. The renderer fills this in itself from the map -
+     * see the note on slope_eighths(). */
+    int  sub;
     int  index;         /* index into gta_tiles.sprites */
     int  angle;         /* 0..255, 0 = north, clockwise (gta_trig.h) */
     /* PALETTE REMAP, 0 for none. The sprite's pixels are looked up through
@@ -455,6 +461,13 @@ int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
  * gta_sprite_req.delta. Pass -1 and it is exactly gta_render_add_sprite_r(). */
 int gta_render_add_sprite_d(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap, int delta);
+
+/* A SPRITE THAT IS NOT ON THE GROUND AT ALL: `sub` in eighths, given rather
+ * than worked out. A car in mid-air over a gap has no block under it to read
+ * a slope from, so the caller says how high it is. */
+int gta_render_add_sprite_air(gta_view *v, long wx, long wy, int layer,
+                              int grid, int sub, int index, int angle,
+                              int remap, int delta, unsigned long mask);
 
 /* The same again with a MASK of deltas as well - a car wears its dents and
  * its open door at the same time, and one index cannot say that. `delta` is

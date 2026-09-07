@@ -84,6 +84,9 @@ compile gta_peds.c
 compile gta_score.c
 compile gta_weapon.c
 compile gta_pickup.c
+compile gta_script.c
+compile gta_script_run.c
+compile gta_front.c
 compile gta_font.c
 compile gta_text.c
 compile gta_route.c

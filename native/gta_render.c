@@ -1206,6 +1206,35 @@ static int slope_under_sprite(const gta_view *v, long wx, long wy, int layer,
     return 0;
 }
 
+/* HOW FAR UP THE RAMP THE FEET ARE, in eighths of a grid level.
+ *
+ * The block a sprite is standing IN is the one that carries the slope - a
+ * ramp block holds the road type and the sloping lid together, which is what
+ * slope_under_sprite() above is also about - so its lid runs from `e0` at the
+ * low-coordinate edge to `e1` at the high one, along whichever axis
+ * slope_heights() names. Where in the block the sprite is decides the rest.
+ *
+ * Zero on flat ground, which is every sprite in the city bar the handful on a
+ * ramp, and the draw path then takes its old whole-level route. */
+static int slope_eighths(const gta_view *v, long wx, long wy, int grid)
+{
+    gta_block b;
+    int axis, e0, e1, f;
+
+    if (!v->map || grid < 0 || grid >= GTA_MAP_LAYERS)
+        return 0;
+    if (!gta_map_block(v->map, (int)(wx >> 21), (int)(wy >> 21), grid, &b))
+        return 0;
+    slope_heights(gta_block_slope(&b), &axis, &e0, &e1);
+    if (axis == 0)
+        return 0;                       /* flat: nothing to interpolate */
+    /* The position inside the block, 0..31 world pixels along the tilt axis:
+     * axis 2 tilts along y, axis 1 along x - the same convention the lid quad
+     * is drawn with. */
+    f = (int)((axis == 2 ? wy : wx) >> FP) & (TILE - 1);
+    return e0 + ((e1 - e0) * f) / (TILE - 1);
+}
+
 int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap)
 {
@@ -1222,8 +1251,22 @@ int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
     sp->wy = wy;
     sp->layer = layer;
     sp->grid  = grid;
+    sp->sub   = slope_eighths(v, wx, wy, grid);
     sp->index = index;
     sp->angle = angle & 255;
+    return 1;
+}
+
+int gta_render_add_sprite_air(gta_view *v, long wx, long wy, int layer,
+                              int grid, int sub, int index, int angle,
+                              int remap, int delta, unsigned long mask)
+{
+    if (!gta_render_add_sprite_dm(v, wx, wy, layer, grid, index, angle,
+                                  remap, delta, mask))
+        return 0;
+    /* OVERRIDE what slope_eighths() decided: there is no block under a car
+     * in mid-air to read a slope from. */
+    v->sprites[v->n_sprites - 1].sub = sub < 0 ? 0 : (sub > 8 ? 8 : sub);
     return 1;
 }
 
@@ -1380,15 +1423,35 @@ void gta_render_sprite(gta_view *v, const gta_sprite_req *sp)
         dyb >  (64L << FP) || dyb < -(64L << FP))
         return;
 
-    cx = (int)((v->ox[sp->grid] + blocks_to_px(dxb, v->step[sp->grid])) >> FP);
-    cy = (int)((v->oy[sp->grid] + blocks_to_px(dyb, v->stepy[sp->grid])) >> FP);
+    /* THE FEET MAY BE BETWEEN TWO LEVELS - a ramp's lid is, and so is
+     * anything standing on it. The interpolation is the same LERP8 the lid
+     * itself uses and it is exact: a grid level projects to a uniform scale
+     * about the screen centre, so every quantity here is linear in the
+     * level. */
+    {
+        int g = sp->grid, e = sp->sub;
+        long ox, oy;
+        if (e < 0) e = 0;
+        if (e > 8) e = 8;
+        if (e == 0 || g + 1 >= GTA_GRID_LEVELS) {
+            ox = v->ox[g];   oy = v->oy[g];
+            sstepx = v->step[g];  sstepy = v->stepy[g];
+        } else {
+            ox = LERP8(v->ox[g],    v->ox[g + 1],    e);
+            oy = LERP8(v->oy[g],    v->oy[g + 1],    e);
+            sstepx = LERP8(v->step[g],  v->step[g + 1],  e);
+            sstepy = LERP8(v->stepy[g], v->stepy[g + 1], e);
+        }
+        cx = (int)((ox + blocks_to_px(dxb, sstepx)) >> FP);
+        cy = (int)((oy + blocks_to_px(dyb, sstepy)) >> FP);
+        sstepx >>= 6;                     /* 16.16 screen px per src px */
+        sstepy >>= 6;
+    }
 
     /* TWO SCALES, NOT ONE. The 5/6 squash is a property of the screen, so it
      * applies to everything drawn on it - a pedestrian included. Scaling a
      * sprite isotropically in a squashed world makes him 20% too tall, which
      * on a 12-pixel man is a pixel and a half and reads as him floating. */
-    sstepx = v->step[sp->grid]  >> 6;             /* 16.16 screen px per src px */
-    sstepy = v->stepy[sp->grid] >> 6;
     if (sstepx <= 0 || sstepy <= 0) return;
     iscx = ((1L << 30) / sstepx) << 2;            /* 16.16 src px per screen px */
     iscy = ((1L << 30) / sstepy) << 2;

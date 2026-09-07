@@ -61,7 +61,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.2.0
+TEXT = """AmiGTA v0.4.0
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -94,7 +94,7 @@ WHAT IS IN THIS ARCHIVE
   gtabake       The converter. Runs ON THE AMIGA. It reads the game's own
                 style001.gry and writes the tile set the engine loads, and
                 with -sfx it converts the sound bank too - see WHAT IS NOT
-                IN v0.2.0 for why you do not need that yet.
+                IN v0.4.0 for why you do not need that yet.
 
   run           Startup script. Sets the stack and starts the game.
 
@@ -261,7 +261,7 @@ It opens a small window on Workbench with three choices:
               mixes in software. Auto picks Paula where a real chipset
               exists and AHI where one does not.
 
-              NOTHING PLAYS YET. v0.2.0 has no sound at all; the setting
+              NOTHING PLAYS YET. v0.4.0 has no sound at all; the setting
               is read and reported in gta.log and nothing more. It is here
               because the choice has to be settled before the sound layer
               is written, not after.
@@ -313,6 +313,25 @@ can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
 
 ===========================================================================
+NEW SINCE v0.2.0
+===========================================================================
+
+  * A BRIDGE IS A BRIDGE. Traffic climbs the ramps onto the flyovers and
+    comes down the far side instead of treating the deck as a junction
+    and driving off it onto the street below; a car you shove up a ramp
+    goes up it rather than disappearing under the deck.
+  * THE MAN YOU DRAG OUT OF A CAR gets up and runs away again instead of
+    dying under your wheels as you drive off.
+  * THE WANTED LEVEL is the original's arithmetic. One pedestrian run
+    over is a third of a head, not two heads; hitting or shooting a
+    police car is one head at once. Nothing decays, as in the original.
+  * WEIGHT DECIDES DAMAGE. A tanker shrugs off what wrecks a saloon: the
+    car table's mass is what a crash is divided by, and a heavy body
+    takes two points a bullet where a car takes five - thirty-nine
+    shots to destroy a tanker against sixteen for a saloon.
+  * AND THE PAVEMENT beside the police station no longer has an
+    invisible wall in it.
+
 NEW SINCE v0.1.0
 ===========================================================================
 
@@ -341,7 +360,7 @@ NEW SINCE v0.1.0
     knocked off, not pulled out.
 
 ===========================================================================
-WHAT IS NOT IN v0.2.0
+WHAT IS NOT IN v0.4.0
 ===========================================================================
 
   * No missions. The phones do not ring and there is no guide arrow;

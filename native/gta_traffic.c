@@ -1715,6 +1715,19 @@ static int nav_step_layer(const gta_map *m, int bx, int by, int z, int dir)
     int dx, dy, here_slope;
 
     heading_step(dir, &dx, &dy);
+
+    /* THE TOP OF A RAMP COMES BEFORE THE ROAD UNDER THE BRIDGE. When this
+     * block is a slope climbing the way we are going, the block ahead is a
+     * layer up - even if it is drivable on this layer too, which at the
+     * truss bridge over the avenue (19..24,44..47) it is: layer 2 there is
+     * the avenue under the deck. Taking "drivable here" first put a car
+     * that had climbed the row-44 ramp onto the avenue's arrows, and it
+     * turned south down them: a bridge that behaved like a junction. */
+    if (z + 1 < GTA_MAP_LAYERS &&
+        gta_map_slope_up_dir(m, bx, by, z) == dir &&
+        drivable(m, bx + dx, by + dy, z + 1))
+        return z + 1;
+
     if (drivable(m, bx + dx, by + dy, z))
         return z;
 
@@ -4434,6 +4447,103 @@ static void cop_dispatch(gta_traffic *tr, const gta_map *m);
 static void roadblock_tick(gta_traffic *tr, const gta_map *m);
 static void roadblock_clear(gta_traffic *tr, int offscreen_only);
 
+/* WHICH LEVEL IS THIS CAR ON, given the block it has just arrived in.
+ *
+ * A ramp takes a car up or down (see nav_step_layer) and the layer is stored
+ * rather than derived, so it has to follow. Asking here - from the block the
+ * car has ARRIVED in, not at the moment of stepping - means the answer is
+ * right however it got there: after a turn on a ramp block, after a lane
+ * correction across a boundary, and after a shove from the player.
+ *
+ * TWO RULES, IN THIS ORDER.
+ *
+ * 1. OFF THE TOP OF A RAMP. The block just left is a slope and it climbs the
+ *    way the car went, so the car is now a level higher. The fall-back below
+ *    cannot work this out, because it only asks whether THIS block is
+ *    drivable on the old layer - and at the truss bridge over the avenue
+ *    (19..24,44..47) it is: the avenue runs under the deck. A car that
+ *    climbed the row-44 ramp arrived at (19,44) still on layer 2, standing on
+ *    the avenue's arrows, and turned south down them: "auta traktuja mosty
+ *    jak skrzyzowania i zjezdzaja na drogi ponizej". This is the car's copy
+ *    of gta_veh_layer()'s first rule, which the PLAYER has had since the ramp
+ *    work and traffic never did.
+ * 2. THE FALL-BACK: this block is not road on my layer, so try the one below
+ *    and then the one above. Down first, because a car that has just left a
+ *    viaduct is on the street, not on the roof of the building beside it.
+ *    This is what brings a car down the far ramp.
+ *
+ * `up_fallback` is 0 for a car NOBODY IS DRIVING. Such a car may still climb
+ * (rule 1, which needs a ramp under it) and must still be able to come down
+ * (rule 2's first branch), but it may not be lifted onto a bridge merely
+ * because it was shoved onto a pavement underneath one.
+ *
+ * Any change of level throws the route away: routes are found within one
+ * layer (gta_route.h), so the one in hand was planned on the layer the car
+ * has just left - which from a ramp top is the road under the bridge. */
+static void car_layer_follow(gta_traffic *tr, const gta_map *m, gta_car *c,
+                             int bx, int by, int from_bx, int from_by,
+                             int up_fallback)
+{
+    int was = c->layer;
+
+    if ((from_bx != bx || from_by != by) &&
+        c->layer + 1 < GTA_MAP_LAYERS &&
+        drivable(m, bx, by, c->layer + 1)) {
+        int dir = gta_map_step_dir((long)(bx - from_bx), (long)(by - from_by));
+        int up = gta_map_slope_up_dir(m, from_bx, from_by, c->layer);
+        if (up >= 0 && up == dir) {
+            if (tr->stat_layer_jumps++ < 40)
+                printf("gta: car %lu at (%d,%d) LAYER %d -> %d off the ramp "
+                       "top at (%d,%d)\n", c->serial, bx, by, c->layer,
+                       c->layer + 1, from_bx, from_by);
+            c->layer++;
+        }
+    }
+
+    if (!drivable(m, bx, by, c->layer)) {
+        if (c->layer > 0 && drivable(m, bx, by, c->layer - 1))
+            c->layer--;
+        else if (up_fallback && c->layer + 1 < GTA_MAP_LAYERS &&
+                 drivable(m, bx, by, c->layer + 1))
+            c->layer++;
+        if (c->layer != was && tr->stat_layer_jumps++ < 40)
+            printf("gta: car %lu at (%d,%d) LAYER %d -> %d ground here %d\n",
+                   c->serial, bx, by, was, c->layer,
+                   ground_at(m, bx, by, was));
+    }
+
+    if (c->layer != was) {
+        c->path_n = c->path_i = 0;
+        c->want_route = 1;
+    }
+}
+
+/* THE SAME, FOR A BODY NOBODY IS DRIVING - one the player is shoving up a
+ * ramp, or a wreck rolling off one.
+ *
+ * drive_one() returns before section 0 for both of those (the knock branch
+ * and the abandoned branch), so until now a shoved car kept whatever level it
+ * had: pushed up the ramp it stayed on layer 2, and the moment its centre
+ * crossed onto the deck it was drawn in pass 2 - underneath the bridge, out
+ * of sight. That is the developer's "jak spychalem auto ai to znowu zaczelo
+ * zanikac pod rampa zamiast na nia wjezdzac", and it is the same fault as the
+ * driven car's, one early return further up.
+ *
+ * The block it was last in is `last_bx/last_by`, which drive_one keeps for
+ * its own wedged timer; updating it here costs that timer nothing, because a
+ * car that is moving clears the timer anyway. */
+static void car_layer_track(gta_traffic *tr, const gta_map *m, gta_car *c)
+{
+    int bx = (int)(c->x >> (FP + 5));
+    int by = (int)(c->y >> (FP + 5));
+
+    if (bx == c->last_bx && by == c->last_by)
+        return;
+    car_layer_follow(tr, m, c, bx, by, c->last_bx, c->last_by, 0);
+    c->last_bx = bx;
+    c->last_by = by;
+}
+
 static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
 {
     gta_car *c = &tr->cars[idx];
@@ -4447,6 +4557,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
     int give_way = 0, exit_busy = 0;
     int ahead;                      /* the corner is a block ahead - see below */
     int move_face = -1;         /* mid-arc heading for this step, -1 = not set */
+    int from_bx, from_by;       /* the block this car was in last tick */
     long gap, lead, want, edge, dx, dy;
 
     /* NOBODY IS DRIVING THIS ONE, YET. A car that has just been hit hard is
@@ -4472,14 +4583,17 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
             c->recover = 0;
             c->angle = c->face;
         }
+        car_layer_track(tr, m, c);      /* shoved onto a ramp - see there */
         return;
     }
 
     /* NOBODY IS DRIVING THIS ONE. A car the player parked and walked away
      * from stays exactly where it was left - it is still drawn, still solid,
      * still enterable, and it never books a square or asks for a route. */
-    if (c->abandoned)
+    if (c->abandoned) {
+        car_layer_track(tr, m, c);
         return;
+    }
 
     /* STRAIGHTENING UP AFTER A KNOCK IS JUST DRIVING, and it is done by the
      * steering controller in section 6 like every other lateral intention:
@@ -4546,9 +4660,25 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
             c->uturn_cool--;
         {
             /* STOPPING BESIDE HIM. On foot: within two blocks. In a car:
-             * his car stopped and mine within GTA_COP_STOP_PX of it. Either
-             * way the car halts, and after GTA_COP_OUT_TICKS of that the
-             * driver gets out (the original's states 0xd2 -> 0x6e). */
+             * the two of us stopped on the same floor, within five blocks -
+             * which is the original's rule, state 0xd1 in POLICE.md ("target
+             * in a car: both stopped and same floor -> 0x6e, the driver gets
+             * out"), and 0xd2's "own speed < 4 && target speed < 4".
+             *
+             * TWO THINGS WERE WRONG HERE and between them the developer
+             * watched ten police cars drive past a stationary target:
+             *
+             *   - the reach was three blocks in BOTH axes
+             *     measured to the player, so a cop in the far lane of a wide
+             *     avenue never qualified. The original's is five blocks.
+             *   - "stopped" was read off `pl_speed`, and a car wedged against
+             *     a wall - which is exactly how he was sitting, against the
+             *     invisible one at (25,17) - reports a speed for as long as
+             *     the throttle is down. `pl_still` counts the ticks he has
+             *     actually gone nowhere, so a wedged car counts as stopped.
+             *
+             * The cop's own speed is not tested: it is set to zero on the
+             * line below, which IS the original's "brake, then get out". */
             long wx = tr->pl_x - c->x, wy = tr->pl_y - c->y;
             int near_ = 0;
             if (wx < 0) wx = -wx;
@@ -4557,8 +4687,10 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
                 if (!tr->wanted_in_car)
                     near_ = ddx <= GTA_COP_NEAR_FOOT && ddy <= GTA_COP_NEAR_FOOT;
                 else
-                    near_ = tr->pl_speed < (2L << FP) &&
-                            wx <= (GTA_COP_STOP_PX << FP) && wy <= (GTA_COP_STOP_PX << FP);
+                    near_ = (tr->pl_speed < (2L << FP) ||
+                             tr->pl_still >= GTA_PL_STILL_TICKS) &&
+                            ddx <= GTA_COP_STOP_BLOCKS &&
+                            ddy <= GTA_COP_STOP_BLOCKS;
             }
             if (near_) {
                 c->speed = 0;
@@ -4620,6 +4752,8 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      *
      * And half a minute without covering one block means the car is not
      * queueing but trapped - see GTA_TRAFFIC_ABANDON. */
+    from_bx = c->last_bx;
+    from_by = c->last_by;
     if (bx != c->last_bx || by != c->last_by) {
         c->last_bx = bx;
         c->last_by = by;
@@ -4674,23 +4808,10 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         return;
     }
 
-    /* --- 0. the layer the car is actually on -------------------------------
-     *
-     * A ramp takes a car up or down (see nav_step_layer), and the layer is
-     * stored rather than derived, so it has to follow. Doing it here - from
-     * the block the car has ARRIVED in - rather than at the moment of stepping
-     * means it is right however the car got there, including after a turn on a
-     * ramp block or a lane correction across a boundary.
-     *
-     * Down is tried before up because a car that has just left a viaduct is on
-     * the street, not on the roof of the building beside it. */
-    if (!drivable(m, bx, by, c->layer)) {
-        if (c->layer > 0 && drivable(m, bx, by, c->layer - 1))
-            c->layer--;
-        else if (c->layer + 1 < GTA_MAP_LAYERS &&
-                 drivable(m, bx, by, c->layer + 1))
-            c->layer++;
-    }
+    /* --- 0. the layer the car is actually on ------------------------------
+     * See car_layer_follow(). A driven car gets the whole rule, the up
+     * fall-back included. */
+    car_layer_follow(tr, m, c, bx, by, from_bx, from_by, 1);
 
     /* --- CROSSING A JUNCTION, MEASURED END TO END -------------------------
      *
@@ -7843,6 +7964,15 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
                    : (c->cop == 2 ? r + 24 : r);
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
+            /* A MISSION CAR IS NEVER TOO FAR AWAY. The script parks one at
+             * the other end of the city on purpose and the whole job is
+             * going to get it. */
+            if (c->mission && !c->done) {
+                if (keep != i)
+                    tr->cars[keep] = *c;
+                keep++;
+                continue;
+            }
             if (dx > rr || dy > rr || c->done)
                 continue;
             if (keep != i)
@@ -7948,6 +8078,7 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
      * the rest of this file uses as a cheap magnitude. */
     long pspd = (pvx < 0 ? -pvx : pvx) + (pvy < 0 ? -pvy : pvy);
 
+    tr->pl_damage = 0;
     *dvx = *dvy = *dyaw = 0;
     *dpx = *dpy = 0;
     if (pm < 1) pm = 1;
@@ -8009,6 +8140,16 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
          * apart for ever. */
         depth -= ((long)GTA_TOUCH_PX << 14);
         if (depth < 0) depth = 0;
+
+        /* TOUCHING A POLICE CAR IS ONE OF THE ORIGINAL'S TWO INSTANT
+         * HEADS (the other is shooting one), and it is
+         * the CONTACT that counts, not a crash hard enough to cost
+         * bodywork - the damage gate below wants a real impact, and a
+         * player who rolls into the back of a patrol car has still hit it.
+         * Counted every tick of contact; the game side only looks at
+         * whether the number moved. */
+        if (o->model == GTA_COP_MODEL)
+            tr->stat_ram_cop++;
 
         om = oi->mass >> 16;
         if (om < 1) om = 1;
@@ -8345,7 +8486,40 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
          * ungated - a car being leant on is pushed every tick, which is what
          * stops the pair interpenetrating, and it costs no bodywork. */
         if (vrel > GTA_RAM_HARD && o->ram_cool == 0) {
-            o->damage += (int)(jp >> 14) + 1;
+            /* WHAT A CRASH COSTS EACH CAR, and it is the ORIGINAL'S sum
+             * (the original's own integer response):
+             *
+             *     sev = (|mA vAx - mB vBx| + |mA vAy - mB vBy|) / 4
+             *     damage_i = sev / (2 * mass_i), at least 1
+             *
+             * A MOMENTUM DIFFERENCE, shared out in INVERSE proportion to
+             * each car's OWN mass. That is the whole of "cysterna ma taka
+             * sama wytrzymalosc jak osobowka": this used to charge the
+             * victim `jp`, its share of the impulse, which grows WITH its
+             * mass - the rule exactly upside down, so the heavier the
+             * vehicle the more a shunt cost it. Worked through: a tanker
+             * (mass 110) at speed 30 into a parked saloon (mass 10) costs
+             * the tanker 3 and the saloon 41; two saloons head on at 30
+             * cost 7 apiece.
+             *
+             * Speeds are the original's own units - VEH_SPEED_UNIT is half
+             * a world pixel - taken here in quarters of one so that a slow
+             * contact does not round away to nothing. */
+            long pux = pvx >> 13, puy = pvy >> 13;      /* quarter units */
+            long oux = ovx >> 13, ouy = ovy >> 13;
+            long ax = pm * pux - om * oux, ay = pm * puy - om * ouy;
+            long sev, dmg_o, dmg_p;
+            if (ax < 0) ax = -ax;
+            if (ay < 0) ay = -ay;
+            sev = (ax + ay) / 16;                       /* back to whole */
+            dmg_o = sev / (2 * om);
+            dmg_p = sev / (2 * pm);
+            if (dmg_o < 1) dmg_o = 1;
+            if (dmg_p < 1) dmg_p = 1;
+            if (dmg_o > 100) dmg_o = 100;
+            if (dmg_p > 100) dmg_p = 100;
+            o->damage += (int)dmg_o;
+            tr->pl_damage += (int)dmg_p;
             /* ...and it dents the panel the other body was against, which is
              * what the player sees: a car rammed in the tail carries a
              * crumpled tail. */
@@ -8454,10 +8628,14 @@ static int car_place(gta_traffic *tr, int model, long x, long y, int face,
     return slot;
 }
 
-int gta_traffic_abandon(gta_traffic *tr, int model, long x, long y, int face,
-                        int layer, int remap, int damage)
+unsigned long gta_traffic_abandon(gta_traffic *tr, int model, long x, long y,
+                                  int face, int layer, int remap, int damage)
 {
-    return car_place(tr, model, x, y, face, layer, remap, damage) >= 0;
+    int slot = car_place(tr, model, x, y, face, layer, remap, damage);
+    /* THE SERIAL, not a yes/no: the caller may need to say later "that car".
+     * Zero still means "the fleet had no room", so every `if (!abandon(...))`
+     * already written keeps working. */
+    return slot >= 0 ? tr->cars[slot].serial : 0;
 }
 
 /* ---- THE POLICE ---------------------------------------------------------
@@ -9007,6 +9185,28 @@ int gta_traffic_add_walker(gta_traffic *tr, long x, long y, int layer)
 void gta_traffic_set_player(gta_traffic *tr, int active, long x, long y,
                             long speed, int face, int layer, int hl, int hw)
 {
+    /* HOW FAR HE ACTUALLY GOT. See GTA_PL_STILL_PX: `speed` is what the
+     * engine is doing, not what the car is doing, and a car held against a
+     * wall reports a speed for as long as the throttle is down. The police
+     * decide to stop and get out on "both of us stopped" (POLICE.md, state
+     * 0xd1), so what they need is the distance covered. */
+    if (tr->pl_active) {
+        long mx = x - tr->pl_prev_x, my = y - tr->pl_prev_y;
+        if (mx < 0) mx = -mx;
+        if (my < 0) my = -my;
+        tr->pl_moved = mx > my ? mx : my;
+        if (tr->pl_moved <= GTA_PL_STILL_PX) {
+            if (tr->pl_still < 30000) tr->pl_still++;
+        } else {
+            tr->pl_still = 0;
+        }
+    } else {
+        tr->pl_moved = 0;
+        tr->pl_still = 0;
+    }
+    tr->pl_prev_x = x;
+    tr->pl_prev_y = y;
+
     tr->pl_active = active;
     tr->pl_x = x; tr->pl_y = y;
     tr->pl_speed = speed;
@@ -9050,8 +9250,70 @@ int gta_traffic_grab_car(gta_traffic *tr, long x, long y, int layer,
     /* Out of the fleet: the tick compacts it and the release sweep frees
      * every square it held - the same path a despawn takes. */
     tr->last_grab_cop = tr->cars[bi].cop;
+    tr->last_grab_serial = tr->cars[bi].serial;
+    tr->last_grab_mission = tr->cars[bi].mission;
     tr->cars[bi].done = 1;
     return 1;
+}
+
+unsigned long gta_traffic_last_grab_serial(const gta_traffic *tr)
+{
+    return tr->last_grab_serial;
+}
+
+int gta_traffic_last_grab_mission(const gta_traffic *tr)
+{
+    return tr->last_grab_mission;
+}
+
+int gta_traffic_set_mission(gta_traffic *tr, unsigned long serial, int on)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial) {
+            tr->cars[i].mission = (unsigned char)(on != 0);
+            return 1;
+        }
+    return 0;
+}
+
+int gta_traffic_rename_car(gta_traffic *tr, unsigned long from,
+                           unsigned long to)
+{
+    int i;
+    if (!from || !to || from == to)
+        return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == from) {
+            /* `convoy` is the serial of the route's leader and starts as the
+             * car's own; a rename that left it behind would put the car in
+             * somebody else's convoy. */
+            if (tr->cars[i].convoy == from)
+                tr->cars[i].convoy = to;
+            tr->cars[i].serial = to;
+            return 1;
+        }
+    return 0;
+}
+
+int gta_traffic_find_car(const gta_traffic *tr, unsigned long serial,
+                         long *x, long *y, int *layer, int *wrecked)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < tr->n; i++) {
+        if (tr->cars[i].serial != serial || tr->cars[i].done)
+            continue;
+        if (x) *x = tr->cars[i].x;
+        if (y) *y = tr->cars[i].y;
+        if (layer) *layer = tr->cars[i].layer;
+        if (wrecked) *wrecked = tr->cars[i].wrecked;
+        return 1;
+    }
+    return 0;
 }
 
 int gta_traffic_lights_scan(gta_traffic *tr, const gta_map *m)

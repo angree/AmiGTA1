@@ -273,6 +273,69 @@ int gta_map_block(const gta_map *m, int x, int y, int z, gta_block *out)
     return 1;
 }
 
+/* THE GROUND TYPE OF A BLOCK, INCLUDING THE ONES THAT ARE NOT IN THE FILE.
+ *
+ * "tu jest jakas niewidzialna przeszkoda na tym chodniku (1 kratka)" - block
+ * (25,17), on the pavement beside the police station. Its column is TWO
+ * blocks high where both its neighbours are three:
+ *
+ *      gtadump column <nyc.cmp> 25 17     height 2   z=1 LID=8
+ *      gtadump column <nyc.cmp> 25 18     height 3   z=1 LID=8, z=2 pavement
+ *
+ * The floor you can see is the LID OF THE BLOCK BELOW in both cases, so the
+ * two look identical on screen; what the file omits at (25,17) is the empty
+ * pavement block above it, and with it the ground-type bits. This port reads
+ * walkability off those bits, so the missing block became a wall you cannot
+ * see - and a car driven onto that pavement stopped dead against nothing.
+ *
+ * The original does not decide collision this way: an empty block is EMPTY
+ * SPACE, which is where a man stands, and what holds him up is the lid under
+ * him. So an absent block counts as pavement when there is something to stand
+ * on and the surface goes on around it:
+ *
+ *   - the block below must carry a lid (a floor, not a hole), and
+ *   - at least two of the four neighbours at this level must themselves be
+ *     road, pavement or field.
+ *
+ * The second test is what keeps this to holes in a surface. A roof is empty
+ * space over a lid as well, and its neighbours are empty space too, so it
+ * stays what it is now: unreachable. Same for the air above a street at a
+ * level nobody walks on.
+ *
+ * Called for every block the player, the peds and the cars test, so the fast
+ * path - the block exists - is one column lookup, exactly as before.
+ */
+int gta_map_ground_type(const gta_map *m, int bx, int by, int z)
+{
+    static const signed char nx[4] = {  0,  0, -1,  1 };
+    static const signed char ny[4] = { -1,  1,  0,  0 };
+    gta_block b;
+    int i, n = 0;
+
+    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM) return 0;
+    if (z < 0 || z >= GTA_MAP_LAYERS) return 0;
+
+    if (gta_map_block(m, bx, by, z, &b))
+        return gta_block_ground_type(&b);
+
+    if (z == 0) return 0;
+    if (!gta_map_block(m, bx, by, z - 1, &b))
+        return 0;
+    if (b.faces[GTA_FACE_LID] == 0)
+        return 0;                       /* no floor: a hole, not a pavement */
+
+    for (i = 0; i < 4; i++) {
+        gta_block nb;
+        int g;
+        if (!gta_map_block(m, bx + nx[i], by + ny[i], z, &nb))
+            continue;
+        g = gta_block_ground_type(&nb);
+        if (g >= 2 && g <= 4)           /* road, pavement, field */
+            n++;
+    }
+    return n >= 2 ? 3 : 0;              /* pavement */
+}
+
 void gta_map_describe(const gta_map *m, FILE *out)
 {
     int x, y, z;

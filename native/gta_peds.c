@@ -112,6 +112,11 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->remap = remap >= 0 ? remap
              : ped_remaps[(ps->remap_next++) % 22];
     p->alive = 1;
+    /* AND NOT THE LAST OCCUPANT'S MARKS. A slot is reused, and one that had
+     * held the script's own person would come back as a pedestrian the
+     * recycler would not touch and the script still believed in. */
+    p->mission = 0;
+    p->serial = 0;
     p->mode = GTA_PED_MODE_IDLE;
     p->sub = GTA_PED_SUB_WANDER;
     p->speed = 1;
@@ -165,11 +170,13 @@ static int free_slot(gta_peds *ps)
     for (i = 0; i < GTA_MAX_PEDS; i++)
         if (!ps->p[i].alive)
             return i;
+    /* AND NEVER THE SCRIPT'S OWN PERSON, whatever else is short. */
     /* THE POOL IS TWELVE, NOT TWO HUNDRED: a street of bodies would starve
      * the spawner for good, so a corpse gives up its slot to a newcomer -
      * the one that has been out of sight longest. */
     for (i = 0; i < GTA_MAX_PEDS; i++)
-        if (ps->p[i].corpse && ps->p[i].offscreen > oldest_off) {
+        if (ps->p[i].corpse && !ps->p[i].mission &&
+            ps->p[i].offscreen > oldest_off) {
             oldest = i; oldest_off = ps->p[i].offscreen;
         }
     return oldest;
@@ -194,7 +201,8 @@ static int free_slot_forced(gta_peds *ps)
     if (slot >= 0)
         return slot;
     for (i = 0; i < GTA_MAX_PEDS; i++)
-        if (ps->p[i].alive && ps->p[i].offscreen > worst_off) {
+        if (ps->p[i].alive && !ps->p[i].mission &&
+            ps->p[i].offscreen > worst_off) {
             worst = i; worst_off = ps->p[i].offscreen;
         }
     return worst;
@@ -297,6 +305,43 @@ static void pull_place(const gta_peds *ps, gta_ped *p)
 
 static int gta_peds_pull_i(gta_peds *ps, long cx, long cy, int face, int model,
                            int layer, int remap);
+
+/* HOW FAR A COP IS FROM THE PLAYER, MEASURED TO HIS CAR'S BODY.
+ *
+ * On foot it is the plain distance. In a car the player sits at the middle
+ * of a body 62 px long, and the arrest used to be contact within 22 px of
+ * that middle - i.e. a cop had to be THIRTY PIXELS INSIDE THE BONNET before
+ * it fired, where the car sprite hides him completely. The offset is
+ * projected onto the car's own axes and each component reduced by the half
+ * extent, so this is the distance to the nearest point of the bodywork, and
+ * `inside` says he is under the car rather than beside it - a cop who
+ * appeared there may not arrest at all; he walks out first. */
+static long dist_to_player_body(const gta_peds *ps, const gta_ped *p,
+                                int *inside)
+{
+    long dx = (ps->pl_x - p->x) >> 16, dy = (ps->pl_y - p->y) >> 16;
+    long fx, fy, rx, ry, along, side;
+
+    if (inside) *inside = 0;
+    if (!ps->pl_in_car) {
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        return dx > dy ? dx : dy;
+    }
+    fx = gta_sin(ps->pl_face); fy = -gta_cos(ps->pl_face);
+    rx = gta_cos(ps->pl_face); ry = gta_sin(ps->pl_face);
+    along = (dx * (fx >> 6) + dy * (fy >> 6)) >> 8;
+    side  = (dx * (rx >> 6) + dy * (ry >> 6)) >> 8;
+    if (along < 0) along = -along;
+    if (side  < 0) side  = -side;
+    if (inside && along < ps->pl_hl && side < ps->pl_hw)
+        *inside = 1;
+    along -= ps->pl_hl;
+    side  -= ps->pl_hw;
+    if (along < 0) along = 0;
+    if (side  < 0) side  = 0;
+    return along > side ? along : side;
+}
 
 int gta_peds_pull(gta_peds *ps, long cx, long cy, int face, int model,
                   int layer, int remap)
@@ -574,11 +619,15 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
             p->offscreen = 0;
         } else {
             p->offscreen++;
-            if ((p->corpse && p->offscreen > GTA_CORPSE_TICKS)
+            /* THE SCRIPT'S OWN PERSON IS NEVER TOO FAR AWAY: a job puts
+             * him at the far end of the city on purpose and the whole point
+             * is to drive there. Same rule as the mission car's. */
+            if (!p->mission &&
+                ((p->corpse && p->offscreen > GTA_CORPSE_TICKS)
                 || (!p->corpse && p->pull < 0
                     && p->offscreen > GTA_PED_RETIRE_TICKS)
                 || bx < cbx - 24 || bx > cbx + 24
-                || by < cby - 24 || by > cby + 24) {
+                || by < cby - 24 || by > cby + 24)) {
                 p->alive = 0;
                 ps->spawned_since_retire = 0;
                 continue;
@@ -610,6 +659,16 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
 
         if (p->corpse)
             continue;
+
+        /* THE SCRIPT'S OWN PERSON WAITS. He was put down at a place the job
+         * names and the job expects to find him there; the wander, the kerb
+         * rule and the crossing logic are all for the crowd. He still burns,
+         * still falls and can still be run over - he is simply not going
+         * anywhere on his own. */
+        if (p->mode == GTA_PED_MODE_MISSION && p->burn <= 0 && !p->down) {
+            p->speed = 0;
+            continue;
+        }
 
         /* BURNING. A point of health a tick, and he runs the whole time -
          * the original gives an AI ped speed 4 and leaves it there. The
@@ -703,12 +762,20 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                  * car is reached at the car: contact with the body of the
                  * car counts, and the game side pulls him out. A cop left
                  * far behind gives up (retired by distance like anyone). */
-                long dx = (ps->pl_x - p->x) >> 16, dy = (ps->pl_y - p->y) >> 16;
-                long d;
-                if (dx < 0) dx = -dx;
-                if (dy < 0) dy = -dy;
-                d = dx > dy ? dx : dy;
+                int under = 0;
+                long d = dist_to_player_body(ps, p, &under);
                 p->mode = GTA_PED_MODE_COP;
+                if (p->arrest_wait > 0) p->arrest_wait--;
+                if (under) {
+                    /* UNDER THE CAR - he got out of a police car that had
+                     * stopped against the player's. Out first, and no
+                     * arrest from in there. */
+                    p->angle = angle_to(ps->pl_x, ps->pl_y, p->x, p->y);
+                    p->speed = 2;
+                    p->arrest = 0;
+                    corner_ahead = 0;
+                    continue;
+                }
                 if (p->post && d > 192) {
                     /* AT HIS POST: stands, faces the way he was put. */
                     p->speed = 0;
@@ -734,8 +801,8 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                     if (ps->cop_shoot >= 2 && d <= GTA_COP_ARREST_PX)
                         p->execute = 1;
                 } else
-                if (ps->pl_layer == p->layer &&
-                    d <= (ps->pl_in_car ? GTA_COP_ARREST_PX + 12 : GTA_COP_ARREST_PX)) {
+                if (ps->pl_layer == p->layer && d <= GTA_COP_ARREST_PX &&
+                    p->arrest_wait == 0) {
                     if (!p->arrest) {
                         p->arrest = 1;
                         printf("gta: police - the cop has him, %ld px away\n", d);
@@ -1034,6 +1101,13 @@ int gta_peds_ram(gta_peds *ps, long px, long py, int pface, int phl, int phw,
         side  = (dx * (rx >> 6) + dy * (ry >> 6)) >> 8;
         if (along < 0) along = -along;
         if (side  < 0) side  = -side;
+        /* A LYING MAN IS FLAT: the three pixels of body are not there,
+         * and he has to be under the car proper. The driver dragged out
+         * lies two pixels outside his own car's flank - within the
+         * standing man's margin, so driving off used to kill him where
+         * the original lets him get up and run. */
+        if (p->down && (along > phl - 2 || side > phw - 2))
+            continue;
         if (along <= phl + 3 && side <= phw + 3) {
             if (fast) {
                 /* KILLED WHERE HE STANDS - the original's 0x2d: no
@@ -1264,12 +1338,67 @@ void gta_peds_burn(gta_peds *ps, int i, long fx, long fy)
 
 /* ---- the police on foot ------------------------------------------------ */
 
-void gta_peds_set_player(gta_peds *ps, long x, long y, int layer, int in_car)
+void gta_peds_set_player(gta_peds *ps, long x, long y, int layer, int in_car,
+                         int hl, int hw, int face)
 {
     ps->pl_x = x;
     ps->pl_y = y;
     ps->pl_layer = layer;
     ps->pl_in_car = in_car;
+    ps->pl_hl = hl;
+    ps->pl_hw = hw;
+    ps->pl_face = face;
+}
+
+unsigned long gta_peds_spawn_mission(gta_peds *ps, long x, long y, int layer,
+                                     int angle)
+{
+    int i = free_slot(ps);
+    if (i < 0)
+        i = free_slot_forced(ps);
+    if (i < 0) { ps->last_index = -1; return 0; }
+    ped_reset(ps, &ps->p[i], x, y, layer, angle, 0);
+    ps->p[i].mode = GTA_PED_MODE_MISSION;
+    ps->p[i].speed = 0;
+    ps->p[i].tx = ps->p[i].ty = 0;
+    ps->p[i].mission = 1;
+    ps->p[i].serial = ++ps->next_ped_serial;
+    ps->stat_spawned++;
+    ps->last_index = i;
+    return ps->p[i].serial;
+}
+
+int gta_peds_find(const gta_peds *ps, unsigned long serial,
+                  long *x, long *y, int *layer, int *alive)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        if (ps->p[i].serial != serial)
+            continue;
+        if (x) *x = ps->p[i].x;
+        if (y) *y = ps->p[i].y;
+        if (layer) *layer = ps->p[i].layer;
+        if (alive) *alive = ps->p[i].alive && !ps->p[i].corpse;
+        return 1;
+    }
+    return 0;
+}
+
+int gta_peds_take_mission(gta_peds *ps, unsigned long serial)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].serial == serial && ps->p[i].alive) {
+            ps->p[i].alive = 0;
+            ps->p[i].mission = 0;
+            ps->p[i].serial = 0;
+            return 1;
+        }
+    return 0;
 }
 
 int gta_peds_spawn_cop(gta_peds *ps, long x, long y, int layer, int angle)
@@ -1280,6 +1409,7 @@ int gta_peds_spawn_cop(gta_peds *ps, long x, long y, int layer, int angle)
     if (i < 0) { ps->last_index = -1; return 0; }
     ped_reset(ps, &ps->p[i], x, y, layer, angle, 0);
     ps->p[i].cop = 1;
+    ps->p[i].arrest_wait = GTA_COP_ARREST_WAIT;
     ps->p[i].mode = GTA_PED_MODE_COP;
     ps->p[i].speed = 2;
     ps->stat_spawned++;
@@ -1344,6 +1474,7 @@ void gta_peds_make_cop(gta_peds *ps, int i)
     if (i < 0 || i >= GTA_MAX_PEDS) return;
     p = &ps->p[i];
     p->cop = 1;
+    p->arrest_wait = GTA_COP_ARREST_WAIT;
     p->remap = 0;
     p->mode = GTA_PED_MODE_COP;
     ps->stat_cops_out++;

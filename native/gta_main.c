@@ -35,6 +35,7 @@
 #include "gta_map.h"
 #include "gta_tiles.h"
 #include "gta_render.h"
+#include "gta_style.h"      /* GTA_SPR_ARROW - the HUD icon category */
 #include "gta_hud.h"
 #include "gta_player.h"
 #include "gta_traffic.h"
@@ -43,6 +44,8 @@
 #include "gta_weapon.h"
 #include "gta_score.h"
 #include "gta_pickup.h"
+#include "gta_script.h"
+#include "gta_front.h"
 #include "gta_font.h"
 #include "gta_text.h"
 #include "gta_prefs.h"
@@ -147,6 +150,12 @@ static int g_scale2x = 0;
 #define FONT_PAGER GTA_DIR "GTADATA/pager1.fon"
 #define FONT_SCORE GTA_DIR "GTADATA/score1.fon"
 #define FONT_BIG   GTA_DIR "GTADATA/big1.fon"
+/* The multiplier has a font of its own in the data and nothing else uses
+ * it, which is as clear a statement as the file makes about where it goes. */
+#define FONT_MULT  GTA_DIR "GTADATA/missmul1.fon"
+/* The front end's own font and its baked art. */
+#define FONT_MENU  GTA_DIR "GTADATA/f_mtext.fon"
+#define FRONT_PATH GTA_DIR "GTADATA/front.fnt"
 /* THE SOUND BANK IS OPTIONAL, and that is not laziness.
  *
  * Nothing plays it yet, the shipped archive has no game data at all, and a
@@ -196,6 +205,12 @@ static int g_scale2x = 0;
  * three sides, which is the view that shows whether the projection works. */
 #define START_BX 64
 #define START_BY 64
+
+/* WHERE THE PLAYER ACTUALLY STARTS, once the level script has been read: the
+ * PLAYER declaration's block. START_BX/START_BY stay as they are because the
+ * BENCHMARKS quote them - a headline frame rate measured over a different
+ * junction is not comparable with the ones already in PROGRESS.md. */
+static int start_bx = START_BX, start_by = START_BY;
 
 /* A stretch of the waterfront, for the second benchmark. Half water, half
  * quay - the case the renderer is slowest on. */
@@ -431,6 +446,12 @@ static int opt_selftest = 0;
 static int opt_audio = GTA_AUDIO_AUTO;
 
 static gta_traffic traffic;
+
+/* THE MAP AND THE BAKED TILE SET. Up here with the rest of the file statics
+ * rather than beside `view` and `player`, because the HUD draws the style
+ * file's own icons now and every drawing routine in this file needs them. */
+static gta_map   map;
+static gta_tiles tiles;
 static gta_peds peds;
 
 /* The pedestrians ask the traffic module about the lights through this. */
@@ -439,32 +460,112 @@ static int ped_light_green(void *ctx, int bx, int by, int along_x)
     return gta_traffic_light_green((const gta_traffic *)ctx, bx, by, along_x);
 }
 static gta_pickups pickups;
+/* THE LEVEL SCRIPT'S DECLARATION BLOCK - the phones, the parked mission
+ * cars, the triggers, the counters and the rest of what a mission is played
+ * with. Read here so the game says in the log what it found; the interpreter
+ * that acts on it is the next step (LEFTOFF, phase 5 item 6). */
+static gta_script script;
+
+/* How many crates the script has made, and how many POWERUP_ONs asked for one
+ * that was already there. The second number is not a fault: 175 POWERUP_ON
+ * commands name only 137 distinct powerups. */
+static long script_crates_made, script_crates_refused;
+/* WHICH ICON THE LAST BRIEF ASKED FOR - GTA_BRIEF_*. */
+static int  script_brief_kind = GTA_BRIEF_PAGER;
+static int script_triggers_listed;
+
+static void pager_brief(int key);
+static void script_brief(void *ctx, int kind, int key, int arg);
+static void script_score(void *ctx, long points);
+static void log_fps(const char *label, int frames, unsigned long us);
+static void dump_frame(const char *path, const unsigned char *chunky,
+                       int pitch, int w, int h, const unsigned char *palette);
+
 
 /* THE ORIGINAL'S FONTS AND TEXTS (Phase 5 item 7, the first piece). The
  * pager font draws the briefs along the bottom, the score font the score,
  * the big font the cards. Each is optional: when a file is missing the
  * port's own 3x5 font draws that part, as before. */
-static gta_font pager_font, score_font, big_font;
-static int have_pager, have_score_font, have_big;
+static gta_font pager_font, score_font, big_font, mult_font;
+static int have_pager, have_score_font, have_big, have_mult;
 static gta_text texts;
-/* THE PAGER: one line of text along the bottom, shown for pager_ticks
- * ticks. The original scrolls the brief through a pager; this shows as
- * much of it as fits, then the rest, a page every PAGER_PAGE_TICKS. */
-static char pager_text[400];
-static int  pager_ticks, pager_page;
-#define PAGER_PAGE_TICKS 200
+/* THE THREE DISPLAYS, and which one a command uses is the original's
+ * business, not a choice.
+ *
+ *   (a) THE BRIEF BOX along the bottom: an ICON at the left edge and the
+ *       text beside it. Six kinds; the icon of each is a sprite of the HUD
+ *       set (gta_hud.h). It stands for `(len + 24)` of the script's own
+ *       ticks - `((strlen + 0x18) * (4 / text_speed)) / 2` at the normal
+ *       speed - and a kind 0..2 brief replaces a kind 3..5 one at once
+ *       because those carry the higher priority.
+ *
+ *   (b) THE PAGER at the top left: the device is sprite +3 of the HUD set,
+ *       80x30 with a dark window and a red light, and the line SCROLLS
+ *       through the window right to left until it has gone.
+ *
+ *   (c) THE BIG MESSAGE, centred low: up to three words, `len * 5` ticks.
+ *
+ * Ticks here are the SIMULATION'S 50 Hz, so every duration out of the
+ * original is doubled on the way in. */
+static char brief_text[400];
+static int  brief_ticks, brief_kind;
+static char pager_line[400];
+static int  pager_ticks, pager_px, pager_secs, pager_led;
+static char big_text[80];
+static int  big_ticks;
 
-static void pager_show(const char *s)
+/* The window in the pager device the text shows through, measured off the
+ * sprite: the dark panel runs from x=9 to x=71 and y=7 to y=18 of the 80x30
+ * device. */
+#define PAGER_WIN_X0  9
+#define PAGER_WIN_X1 71
+#define PAGER_WIN_Y   6
+#define PAGER_LED_X  11
+#define PAGER_LED_Y  19
+
+static void text_copy(char *dst, int cap, const char *s)
 {
     int i;
-    for (i = 0; s[i] && i < (int)sizeof pager_text - 1; i++)
-        pager_text[i] = s[i];
-    pager_text[i] = 0;
-    pager_ticks = 1;
-    pager_page = 0;
+    for (i = 0; s[i] && i < cap - 1; i++)
+        dst[i] = s[i];
+    dst[i] = 0;
 }
 
-/* The brief with numeric key `key` from the texts, if there is one. */
+static int text_len(const char *s)
+{
+    int n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+/* (b) - a line through the pager. */
+static void pager_show(const char *s)
+{
+    text_copy(pager_line, (int)sizeof pager_line, s);
+    pager_ticks = 1;
+    pager_px = 0;
+    pager_secs = -1;
+}
+
+/* (a) - the brief box. Priority: kinds 0..2 beat kinds 3..5. */
+static void brief_show(int kind, const char *s)
+{
+    if (brief_ticks > 0 && brief_kind <= GTA_BRIEF_MOBILE &&
+        kind > GTA_BRIEF_MOBILE)
+        return;                         /* the important one keeps the box */
+    text_copy(brief_text, (int)sizeof brief_text, s);
+    brief_kind = kind;
+    brief_ticks = (text_len(s) + 24) * 2;
+}
+
+/* (c) - the big card. */
+static void big_show(const char *s)
+{
+    text_copy(big_text, (int)sizeof big_text, s);
+    big_ticks = text_len(s) * 5 * 2;
+}
+
+/* The pager line with numeric key `key` from the texts, if there is one. */
 static void pager_brief(int key)
 {
     const char *s = gta_text_get(&texts, key);
@@ -491,6 +592,118 @@ static int g_reload;
 static long traffic_moved_last;
 static gta_nav nav;
 
+/* WHAT THE SCRIPT MAY DO TO THE WORLD. Same reason as script_brief: the
+ * interpreter is built by the host tools too and must not know what a crate
+ * is. `pickups` and `nav` are file statics, so the context is unused. */
+static void script_powerup_on(void *ctx, int line, int kind, int amount,
+                              int bx, int by)
+{
+    (void)ctx;
+    if (gta_pickups_add_block(&pickups, &nav, bx, by, kind, amount)) {
+        script_crates_made++;
+        /* ONE LINE PER CRATE, on purpose. The count alone cannot tell a
+         * right crate from a wrong one, and the mapping being checked here
+         * is p1 -> declaration -> block: awk the log for these and compare
+         * them with mission.ini's own POWERUP lines. */
+        printf("gta: crate line %d kind %d amount %d at (%d,%d)\n",
+               line, kind, amount, bx, by);
+    } else {
+        script_crates_refused++;
+    }
+}
+
+static void script_powerup_off(void *ctx, int line, int bx, int by)
+{
+    (void)ctx; (void)line;
+    gta_pickups_remove_block(&pickups, bx, by);
+}
+
+static int script_powerup_done(void *ctx, int line, int bx, int by)
+{
+    (void)ctx; (void)line;
+    return !gta_pickups_at_block(&pickups, bx, by);
+}
+
+/* THE ARROW - the one piece of guidance GTA 1 gives you, and it is NOT a
+ * marker over the target.
+ *
+ * The original puts it near the
+ * PLAYER, at `player - dir(angle) * (base + reach)`, where the angle is the
+ * bearing from the player to the target and `reach` moves eight units a
+ * frame:
+ *
+ *   * target OFF screen - reach falls to 0, so the arrow sits just clear of
+ *     the player and simply points the way;
+ *   * target ON screen - reach grows toward `max(|dx|,|dy|) - base`, so the
+ *     arrow slides out from the player and comes to rest beside the thing.
+ *
+ * `base` is 0x20 on foot and `(car_length + 1) * 6 + 0x20` in a car, in the
+ * original's units of 64 to a block - half of ours. */
+static int  arrow_on;
+static long arrow_tx, arrow_ty;     /* 16.16 world, the target */
+static long arrow_reach;            /* world pixels, the sliding part */
+static int  arrow_angle;
+static int  arrow_sprite = -1;
+
+/* THE HUD ICON SET is the same "arrow" category the mission arrow comes
+ * from; these are the offsets the original uses. See gta_hud.h. */
+static int  hud_icon = -1;              /* the category's base sprite */
+#define HUD_ICON_PAGER    3
+#define HUD_ICON_PAGER_LED 4
+#define HUD_ICON_WEAPON   5             /* +0..3: pistol, MG, rocket, flame */
+#define HUD_ICON_COP     16             /* and 17 - the pair flashes */
+#define HUD_ICON_ARMOUR  18             /* and 19 */
+#define HUD_ICON_KEY     20             /* and 21 - the jail-free card */
+#define HUD_ICON_FRENZY  22             /* and 23 */
+/* ARROWCAR follows something that drives away, so the target is re-read
+ * every tick from the fleet rather than being a fixed point. */
+static unsigned long arrow_car_h;
+static unsigned long arrow_ped_h;
+
+/* THE SERIAL OF THE CAR THE PLAYER IS IN, so a mission can say "that car".
+ * Set from the fleet when he gets in and handed back to it when he gets out;
+ * zero when he is on foot. Without it a stolen car is a NEW car the moment
+ * the door shuts and STEAL / CHECK_CAR have nothing to compare against. */
+static unsigned long veh_serial;
+static int veh_mission;         /* ...and whether it belongs to a job */
+
+/* A MIRROR OF THE CAR HE IS DRIVING. `veh` and `in_car` are locals of main()
+ * and the script's callbacks are file-scope, so the sim tick copies over the
+ * four fields they ask about - the same arrangement as hud_weapon. */
+/* SET BY THE SPRAY SHOP, applied by the tick - the callback runs inside the
+ * script and `veh` is a local of main(). -1 when there is nothing to do. */
+/* THE CAR IN THE AIR - see the note over the take-off test below. `veh_z` is
+ * height above the layer's own surface in 16.16 world pixels, `veh_vz` the
+ * rate, `veh_lift` how many ticks of climb are left. */
+static long veh_z, veh_vz;
+static int  veh_lift, veh_air;
+static long veh_air_from;               /* how far it has flown, world px */
+
+/* The original's numbers, halved twice over: its world unit is half this
+ * port's pixel and its tick is half as long, so 8 units of gravity a tick
+ * becomes 2 pixels and 4 of lift becomes 1, with twice as many lifting
+ * ticks. The arc is the same shape and the same length. */
+#define VEH_GRAVITY  (1L << 16)
+#define VEH_LIFT     (1L << 16)
+#define VEH_Z_MAX    (160L << 16)       /* the original's cap: five blocks */
+
+static int  script_respray_to = -1;
+static int  script_in_car, script_veh_model, script_veh_damage;
+static long script_veh_x, script_veh_y, script_veh_speed;
+static long script_pl_x, script_pl_y;
+
+static void script_arrow(void *ctx, int on, long wx, long wy)
+{
+    (void)ctx;
+    if (on && !arrow_on)
+        arrow_reach = 0;
+    arrow_on = on;
+    arrow_car_h = 0;
+    arrow_ped_h = 0;
+    arrow_tx = wx;
+    arrow_ty = wy;
+}
+
 /* --- the screen, and the Workbench title bar ------------------------------
  *
  * WHY THE BAR IS ON BY DEFAULT
@@ -515,7 +728,7 @@ static gta_nav nav;
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.2.0"
+#define GTA_VERSION "v0.4.0"
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
 
 /* The renderer's own buffer, used ONLY when the picture is doubled: the
@@ -574,6 +787,11 @@ static const unsigned char *g_palette;
  * fill the entry nearest a dark neutral grey - nearest by squared distance,
  * the same measure the tile downscaler uses. Each city has its own palette and
  * this runs on whichever one was baked. */
+/* WHICH THREE INDICES THE BAR IS DRAWN WITH, remembered because they are
+ * fixed for the life of the screen and the front end loads a palette under
+ * them. See front_palette(). */
+static int bar_pen_text, bar_pen_fill, bar_pen_trim;
+
 static void choose_bar_pens(const unsigned char *pal)
 {
     int i, text = 15, fill = 17, trim = 0;
@@ -596,6 +814,9 @@ static void choose_bar_pens(const unsigned char *pal)
            fill, pal[fill * 3], pal[fill * 3 + 1], pal[fill * 3 + 2],
            trim, pal[trim * 3], pal[trim * 3 + 1], pal[trim * 3 + 2]);
     fflush(stdout);
+    bar_pen_text = text;
+    bar_pen_fill = fill;
+    bar_pen_trim = trim;
     amigagfx_set_bar_pens(text, fill, trim);
 }
 
@@ -829,6 +1050,52 @@ static void mode_apply(gta_view *v)
  * the benchmark it sits next to. Leaving it on during the benchmarks is what
  * makes the number on screen and the number in the log the same measurement. */
 static gta_score   score;
+
+/* WHICH OF THE THREE DISPLAYS. The brief box and the pager are still the
+ * one line along the bottom until the UI step; the kind is carried so that
+ * step has only the drawing left to do, and so the log says which display
+ * the script asked for. */
+static void script_brief(void *ctx, int kind, int key, int arg)
+{
+    const char *s;
+    (void)ctx;
+    if (kind == GTA_BRIEF_CANCEL) {
+        pager_ticks = 0;
+        return;
+    }
+    s = gta_text_get(&texts, key);
+    if (!s) {
+        printf("gta: brief - no text %d\n", key);
+        fflush(stdout);
+        return;
+    }
+    script_brief_kind = kind;
+    if (kind <= GTA_BRIEF_FRENZY) {
+        brief_show(kind, s);
+    } else if (kind == GTA_BRIEF_BIG) {
+        big_show(s);
+    } else {
+        pager_show(s);
+        if (kind == GTA_BRIEF_PAGER_T)
+            pager_secs = arg;
+    }
+}
+
+/* THE MONEY. `p5` on a success path, times the player's own multiplier, as
+ * the original does it. */
+static void script_score(void *ctx, long points)
+{
+    long paid;
+    (void)ctx;
+    if (points <= 0)
+        return;
+    paid = points * (score.multiplier > 0 ? score.multiplier : 1);
+    score.score += paid;
+    if (score.score > 999999999L) score.score = 999999999L;
+    printf("gta: script - paid %ld (%ld x%d), score %ld\n",
+           paid, points, score.multiplier, score.score);
+    fflush(stdout);
+}
 /* WHAT THE CORNER SHOWS. The weapon and its ammunition live in the main
  * loop, where the keyboard is; the readout is drawn from a function that
  * runs in five other places as well (the tour, the benchmark), so the two
@@ -838,6 +1105,183 @@ static int hud_ammo;
 static int hud_frames;
 static long hud_fps10;
 static unsigned long hud_t0;
+
+/* WHERE THE DEVELOPMENT READOUT LIVES: two 5-pixel lines just above the
+ * brief line at the bottom, out of the game's own corners. */
+/* WHERE THE DEVELOPMENT READOUT LIVES. Not the top left - that is the
+ * pager, the weapon and the armour - and not the bottom left either, which
+ * is where the brief box stacks its lines. Under the score, right-aligned
+ * with it, in the corner this port has always used for its own numbers. */
+#define HUD_DEBUG_Y 32
+
+
+/* ---- THE FRONT END -------------------------------------------------------
+ *
+ * The title screen and the menu, in the game's own art: gta_front.h says
+ * where that art is and how its format was worked out from the file sizes.
+ * It runs ONCE, before the city is drawn, and it has its own palette - the
+ * screen is set to f_pal while it is up and back to the style file's when
+ * the game starts.
+ *
+ * IT IS SKIPPED WHEN A SCRIPT IS DRIVING. Every automated test in this
+ * project runs with no keyboard at all (autodrive.txt / autowalk.txt /
+ * autoinput.txt), and a menu that waits for a key would hang every one of
+ * them. Nothing about the harness had to change; the menu simply does not
+ * appear when a script is there.
+ */
+static gta_front front;
+static gta_font  menu_font;
+static int       have_menu_font;
+static unsigned char front_ink;         /* brightest entry of f_pal */
+
+#define MENU_ITEMS 2
+static const char *const menu_item[MENU_ITEMS] = { "START GAME", "QUIT" };
+
+static void menu_line(unsigned char *chunky, int pitch, int y,
+                      const char *text, int on)
+{
+    int w = have_menu_font ? gta_font_width(&menu_font, text)
+                           : gta_hud_width(text);
+    int fh = have_menu_font ? menu_font.height : 7;
+    int x = (SCREEN_W - w) / 2;
+    if (have_menu_font)
+        gta_font_draw(&menu_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                      x, y, text);
+    else
+        gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, x, y, text);
+    /* THE SELECTION is a rule above and below, in the brightest colour the
+     * FRONT END'S palette has - not the game's, which is not loaded while
+     * this is on screen. */
+    if (on) {
+        int i;
+        for (i = 0; i < 2; i++) {
+            int by = y + (i ? fh + 2 : -3);
+            unsigned char *d;
+            int bx;
+            if (by < 0 || by >= SCREEN_H) continue;
+            d = chunky + (long)by * pitch;
+            for (bx = x - 8; bx < x + w + 8; bx++)
+                if (bx >= 0 && bx < SCREEN_W) d[bx] = front_ink;
+        }
+    }
+}
+
+/* THE MENU. Returns 0 to play and 1 to quit. */
+static int front_menu(unsigned char *chunky, int pitch)
+{
+    int sel = 0, frame = 0, done = 0, quit = 0;
+    unsigned long cap_t0, menu_t0;
+    long menu_frames = 0;
+    AmigaGfxEvent ev;
+
+    if (!front.ok)
+        return 0;
+    {   /* the brightest entry of the front end's own palette */
+        int i, best = 255;
+        long bright = -1;
+        for (i = 0; i < 256; i++) {
+            long v = (long)front.pal[i * 3] + front.pal[i * 3 + 1]
+                   + front.pal[i * 3 + 2];
+            if (v > bright) { bright = v; best = i; }
+        }
+        front_ink = (unsigned char)best;
+    }
+    /* THE BAR'S OWN THREE ENTRIES ARE THE GAME'S, whatever the artwork
+     * wanted them for: Intuition draws the bar out of indices fixed when the
+     * screen opened, and a palette that ignores them draws it in two colours
+     * nobody chose. The picture loses three of its 236 and never misses
+     * them - the quantiser's own entries either side are within a few
+     * levels. */
+    {
+        static unsigned char pal[768];
+        int k;
+        for (k = 0; k < 768; k++)
+            pal[k] = front.pal[k];
+        for (k = 0; k < 3; k++) {
+            pal[bar_pen_text * 3 + k] = tiles.palette[bar_pen_text * 3 + k];
+            pal[bar_pen_fill * 3 + k] = tiles.palette[bar_pen_fill * 3 + k];
+            pal[bar_pen_trim * 3 + k] = tiles.palette[bar_pen_trim * 3 + k];
+        }
+        amigagfx_set_palette(pal, 0, 256);
+    }
+    printf("gta: front end - %d logo frames, menu font %s, bar pens %d/%d/%d\n",
+           front.frames, have_menu_font ? "yes" : "no",
+           bar_pen_text, bar_pen_fill, bar_pen_trim);
+    fflush(stdout);
+
+    cap_t0 = menu_t0 = amiga_uclock_us();
+    while (!done) {
+        int y0 = GTA_FRONT_UP + 34;
+        int i;
+
+        gta_front_draw(&front, chunky, pitch, 0, frame >> 3);
+        for (i = 0; i < MENU_ITEMS; i++)
+            menu_line(chunky, pitch, y0 + i * 30, menu_item[i], i == sel);
+        /* The version, clear of the bottom edge - the menu font is fourteen
+         * pixels tall and at SCREEN_H - 12 the last two rows were cut. */
+        menu_line(chunky, pitch, SCREEN_H - 26, GTA_VERSION, 0);
+        amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
+
+        /* ONE PICTURE OF THE TITLE SCREEN, without anybody having to press
+         * anything: the menu is the one part of this port a script cannot
+         * reach, so it writes its own evidence. */
+        if (frame == 24 || frame == 40)
+            dump_frame(frame == 24 ? GTA_DIR "front0.raw"
+                                   : GTA_DIR "front1.raw",
+                       chunky, pitch, SCREEN_W, SCREEN_H, front.pal);
+        if (++frame >= front.frames * 8)
+            frame = 0;
+
+        /* THE CAP, and it is the same one the interactive loop uses - see
+         * FRAME_CAP_US. Without it this loop ran at whatever the machine
+         * would give it, which starved Intuition and hung the game after a
+         * while; it is the only loop in the port that had none. The
+         * subtraction is unsigned because the microsecond clock is 32 bits
+         * and wraps every 71 minutes. */
+        while ((unsigned long)(amiga_uclock_us() - cap_t0)
+                   < (unsigned long)FRAME_CAP_US)
+            ;
+        cap_t0 = amiga_uclock_us();
+        menu_frames++;
+
+        while (amigagfx_poll(&ev)) {
+            if (ev.type == AMIGAGFX_EV_QUIT) { quit = 1; done = 1; }
+            if (ev.type != AMIGAGFX_EV_KEY || (ev.code & 0x80))
+                continue;
+            switch (ev.code & 0x7F) {
+            case KEY_UP:   sel = (sel + MENU_ITEMS - 1) % MENU_ITEMS; break;
+            case KEY_DOWN: sel = (sel + 1) % MENU_ITEMS;              break;
+            case KEY_ESC:  quit = 1; done = 1;                        break;
+            case KEY_RETURN:
+            case KEY_SPACE: quit = (sel == 1); done = 1;              break;
+            default: break;
+            }
+        }
+        /* AND THE RELOAD FILE, so the harness can restart a game that is
+         * sitting on the title screen instead of waiting for a key that
+         * nobody is going to press. */
+        {
+            FILE *rf = fopen(GTA_DIR "reload.txt", "r");
+            if (rf) {
+                fclose(rf);
+                remove(GTA_DIR "reload.txt");
+                g_reload = 1;
+                quit = 1;
+                done = 1;
+            }
+        }
+    }
+    /* WHAT THE CAP ACTUALLY DID. The menu is the one loop whose rate nobody
+     * can read off a benchmark, so it says it on the way out. */
+    {
+        unsigned long us = amiga_uclock_us() - menu_t0;
+        log_fps("gta: front end", (int)menu_frames, us);
+    }
+    amigagfx_set_palette(tiles.palette, 0, 256);
+    printf("gta: front end - %s\n", quit ? "quit" : "start");
+    fflush(stdout);
+    return quit;
+}
 
 static void hud_draw(const gta_view *v, unsigned char *chunky, int pitch)
 {
@@ -857,8 +1301,14 @@ static void hud_draw(const gta_view *v, unsigned char *chunky, int pitch)
     *p++ = ' '; *p++ = 'F'; *p++ = 'P'; *p++ = 'S'; *p = 0;
     /* Inside the picture, not inside the bar. The readout used to be at x=2
      * absolute, which in a narrow mode is 25 pixels out in the black - the
-     * text was still on the screen and no longer on the game. */
-    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, present_x() + 2, 2, line);
+     * text was still on the screen and no longer on the game.
+     *
+     * AND AT THE BOTTOM, not the top. The top left is the game's: the pager,
+     * the weapon in hand and the armour go there in the original and this
+     * readout was drawn straight over them. */
+    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                 present_x() + render_w() - 2 - gta_hud_width(line),
+                 HUD_DEBUG_Y, line);
 
     /* The DISPLAYED zoom, not v->zoom_px - at half resolution the renderer is
      * told half of it, and a readout that jumped from 32 to 16 when the
@@ -877,7 +1327,9 @@ static void hud_draw(const gta_view *v, unsigned char *chunky, int pitch)
     *p++ = ' '; *p++ = 'C';
     p = gta_hud_int(p, v->cam_h);
     *p = 0;
-    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, present_x() + 2, 10, line);
+    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                 present_x() + render_w() - 2 - gta_hud_width(line),
+                 HUD_DEBUG_Y + 8, line);
 }
 
 /* THE SCORE AND THE GUN, in the top right corner.
@@ -912,6 +1364,276 @@ static int player_health = 100;
 static int player_armour;
 static int player_lives = 4;
 static int player_burning;
+/* THE SPEED-UP, powerup kinds 6, 7 and 8. The original asks
+ * whether the player is in a car: on foot it starts a timer of 0x177 ticks
+ * (375, fifteen seconds at the game's 25 Hz) and says "speed!"; in a car it
+ * works on the CAR and says "car speed!" - and that one has no timer, the
+ * car keeps it.
+ *
+ * THE DURATION IS THE ORIGINAL'S. THE MAGNITUDE IS OURS: the original sets
+ * a field whose readers are not worked out, so how much faster is a guess
+ * until somebody measures it. Doubling the
+ * man's pace is what a drug called "speed" should feel like; a quarter more
+ * top speed is what a car can take without the handling going with it. */
+#define SPEED_TICKS 375
+static int player_speed;        /* ticks of speed-up left, on foot */
+
+/* ONE TICK OF THE ARROW. See script_arrow() for where the rule comes from.
+ * Everything is in world pixels (half the original's units), so its 0x20 is
+ * 16 and its step of 8 is 4. */
+#define ARROW_BASE_FOOT 16
+#define ARROW_STEP       4
+
+/* The `0x20` / `(car_length + 1) * 6 + 0x20` half of the stand-off. */
+static long arrow_base(int in_a_car, int car_len)
+{
+    return in_a_car ? ARROW_BASE_FOOT + (long)(car_len / 2 + 1) * 3
+                    : ARROW_BASE_FOOT;
+}
+
+/* AND A QUARTER OF THE CAMERA HEIGHT, which is the bigger half of it -
+ * the original adds a quarter of the camera's own z to the stand-off - the
+ * same z its projection divides by.
+ *
+ * The original counts 64 units to a block in every axis, so its camera at
+ * `n` grid levels is `n * 64` units up and a quarter of that is `n * 16`;
+ * this port's world pixel is two of its units and `cam_h` is in QUARTER
+ * levels, so the same quantity is `cam_h * 2` world pixels. At the shipped
+ * camera of 8 levels that is 64 px - two blocks - which is why the arrow
+ * floats well away from the player rather than sitting on his shoulder. */
+static long arrow_standoff(gta_view *v, int in_a_car, int car_len)
+{
+    return arrow_base(in_a_car, car_len) + (long)gta_render_cam_h(v, 0) * 2;
+}
+
+static void arrow_tick(gta_view *v, long px, long py, int in_a_car,
+                       int car_len)
+{
+    long dx, dy, want, base, arrow_standoff_v;
+    int on_screen;
+
+    if (!arrow_on)
+        return;
+    /* A CAR MOVES. ARROWCAR named one, so where it is has to be asked every
+     * tick; when it is gone the arrow simply stays where it last saw it. */
+    if (arrow_car_h) {
+        long cx_, cy_;
+        if (arrow_car_h == veh_serial && script_in_car) {
+            arrow_tx = script_veh_x;
+            arrow_ty = script_veh_y;
+        } else if (gta_traffic_find_car(&traffic, arrow_car_h, &cx_, &cy_, 0, 0)) {
+            arrow_tx = cx_;
+            arrow_ty = cy_;
+        }
+    } else if (arrow_ped_h) {
+        long cx_, cy_;
+        if (gta_peds_find(&peds, arrow_ped_h, &cx_, &cy_, 0, 0)) {
+            arrow_tx = cx_;
+            arrow_ty = cy_;
+        }
+    }
+    arrow_standoff_v = arrow_standoff(v, in_a_car, car_len);
+    dx = arrow_tx - px;
+    dy = arrow_ty - py;
+    arrow_angle = (int)(gta_dir16(dx, dy) >> 16) & 255;
+
+    base = arrow_base(in_a_car, car_len);
+
+    /* ON SCREEN? The visible half-width in world pixels is half the render
+     * width divided by the zoom's pixels per block, times 32 - which the
+     * renderer already knows as its own reach. Compared per axis, like the
+     * original's rectangle test. */
+    {
+        long hx = ((long)render_w() / 2) * 32 / (zoom_display > 0 ? zoom_display : 32);
+        long hy = ((long)SCREEN_H / 2) * 32 / (zoom_display > 0 ? zoom_display : 32);
+        long adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+        on_screen = (adx >> 16) <= hx && (ady >> 16) <= hy;
+        want = 0;
+        if (on_screen) {
+            /* It settles half a block SHORT of the target, along whichever
+             * axis is the longer - so `reach` is what is left after both the
+             * stand-off and that last half block. */
+            long m = (adx > ady ? adx : ady) >> 16;
+            want = m - base - arrow_standoff_v;
+            if (want < 0) want = 0;
+        }
+    }
+    if (arrow_reach < want) {
+        arrow_reach += ARROW_STEP;
+        if (arrow_reach > want) arrow_reach = want;
+    } else if (arrow_reach > want) {
+        arrow_reach -= ARROW_STEP;
+        if (arrow_reach < want) arrow_reach = want;
+    }
+}
+
+/* Queue it. The arrow is a world sprite like everything else, so it scales
+ * and sorts with the city instead of being pasted on the screen. */
+static void arrow_draw(gta_view *v, long px, long py, int layer,
+                       int in_a_car, int car_len)
+{
+    long r;
+    if (!arrow_on || arrow_sprite < 0)
+        return;
+    r = arrow_standoff(v, in_a_car, car_len) + arrow_reach;
+    gta_render_add_sprite(v,
+        px + (((long)gta_sin(arrow_angle) * r) >> 14 << 16),
+        py - (((long)gta_cos(arrow_angle) * r) >> 14 << 16),
+        layer, layer, arrow_sprite, arrow_angle);
+}
+
+/* THE THREE DISPLAYS, drawn. See the note on brief_text for what each is.
+ *
+ * All three are the game's own art: the pager is a sprite, the icons are
+ * sprites and the letters are GTA's .FON files. The port's 3x5 font is the
+ * fall-back for a data set that has none of them. */
+static void text_displays(unsigned char *chunky, int pitch)
+{
+    int px = present_x();
+
+    /* (b) THE PAGER, top left. The line scrolls right to left through the
+     * device's window and the message is over when it has gone off the
+     * left-hand end. */
+    if (pager_ticks > 0 && pager_line[0]) {
+        int wide = have_pager ? gta_font_width(&pager_font, pager_line)
+                              : gta_hud_width(pager_line);
+        int win = PAGER_WIN_X1 - PAGER_WIN_X0;
+        int tx = px + PAGER_WIN_X0 + win - pager_px;
+        if (hud_icon >= 0)
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H, px, 0,
+                           &tiles, hud_icon + HUD_ICON_PAGER);
+        if (have_pager)
+            gta_font_draw_clip(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                               tx, PAGER_WIN_Y, pager_line,
+                               px + PAGER_WIN_X0, PAGER_WIN_Y,
+                               px + PAGER_WIN_X1, 19);
+        else
+            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                         px + 2, PAGER_WIN_Y, pager_line);
+        /* THE LIGHT, blinking every five ticks as the original's does. */
+        if (hud_icon >= 0 && (pager_led & 8))
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H,
+                           px + PAGER_LED_X, PAGER_LED_Y, &tiles,
+                           hud_icon + HUD_ICON_PAGER_LED);
+        /* A TIMED LINE counts its seconds down beside the device. */
+        if (pager_secs >= 0) {
+            char n[8];
+            *gta_hud_int(n, pager_secs) = 0;
+            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                         px + 84, 8, n);
+        }
+        if (++pager_led >= 16) pager_led = 0;
+        if (++pager_ticks & 1) {
+            pager_px++;
+            if (pager_px > win + wide)
+                pager_ticks = 0;        /* scrolled off: gone */
+            if (pager_secs > 0 && (pager_ticks % 50) == 0)
+                pager_secs--;
+        }
+    }
+
+    /* (a) THE BRIEF BOX, bottom left: the icon sits ON THE BOTTOM EDGE and
+     * the text is WRAPPED beside it, as many lines as it needs, STACKED
+     * UPWARDS - `screen_height - ((lines - 1) * spacing + 1)` in
+     * the original. A job's brief is a sentence, not a caption. */
+    if (brief_ticks > 0 && brief_text[0]) {
+        static const unsigned char icon_of[6] = { 11, 10, 12, 14, 13, 15 };
+        int ih = 0, iw = 0;
+        int k = brief_kind >= 0 && brief_kind < 6 ? brief_kind : 3;
+        int lh = have_pager ? pager_font.height + 1 : 8;
+        int wrap, nlines = 0, start = 0, i2;
+        short brk[8];
+        if (hud_icon >= 0) {
+            ih = gta_hud_sprite_h(&tiles, hud_icon + icon_of[k]);
+            iw = gta_hud_sprite_w(&tiles, hud_icon + icon_of[k]);
+        }
+        wrap = render_w() - iw - 4;
+        /* WHERE THE LINES BREAK: greedily, on spaces, measured in the font
+         * that will draw them. Eight lines is more than any text in the
+         * file needs and the ninth is simply not shown. */
+        while (brief_text[start] && nlines < 8) {
+            int e = start, last = -1;
+            while (brief_text[e]) {
+                int q = e;
+                char save;
+                while (brief_text[q] && brief_text[q] != ' ') q++;
+                save = brief_text[q];
+                brief_text[q] = 0;
+                {
+                    int wpx = have_pager
+                            ? gta_font_width(&pager_font, brief_text + start)
+                            : gta_hud_width(brief_text + start);
+                    brief_text[q] = save;
+                    if (wpx > wrap && last >= 0)
+                        break;
+                }
+                last = q;
+                if (!brief_text[q]) break;
+                e = q + 1;
+            }
+            if (last < 0) break;
+            brk[nlines++] = (short)last;
+            start = last;
+            while (brief_text[start] == ' ') start++;
+        }
+        if (ih)
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H, px,
+                           SCREEN_H - ih, &tiles, hud_icon + icon_of[k]);
+        start = 0;
+        for (i2 = 0; i2 < nlines; i2++) {
+            char save = brief_text[brk[i2]];
+            int y = SCREEN_H - 2 - (nlines - i2) * lh;
+            brief_text[brk[i2]] = 0;
+            if (have_pager)
+                gta_font_draw(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                              px + iw + 3, y, brief_text + start);
+            else
+                gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                             px + iw + 3, y + 3, brief_text + start);
+            brief_text[brk[i2]] = save;
+            start = brk[i2];
+            while (brief_text[start] == ' ') start++;
+        }
+        brief_ticks--;
+    }
+
+    /* (c) THE BIG MESSAGE - UP TO THREE WORDS, ONE PER LINE, each centred.
+     * The original keeps them in three separate buffers with a word count
+     * separately, and that is the only
+     * reason "MISSION COMPLETE!" fits across a 320-pixel screen in a font
+     * this size. */
+    if (big_ticks > 0 && big_text[0]) {
+        int lh = have_big ? big_font.height + 2 : 26;
+        int word[3], n = 0, i2, at = 0;
+        while (big_text[at] && n < 3) {
+            while (big_text[at] == ' ') at++;
+            if (!big_text[at]) break;
+            word[n++] = at;
+            while (big_text[at] && big_text[at] != ' ') at++;
+        }
+        for (i2 = 0; i2 < n; i2++) {
+            int end = word[i2];
+            char save;
+            int bw, y;
+            while (big_text[end] && big_text[end] != ' ') end++;
+            save = big_text[end];
+            big_text[end] = 0;
+            bw = have_big ? gta_font_width(&big_font, big_text + word[i2])
+                          : gta_hud_width_big(big_text + word[i2], 3);
+            y = SCREEN_H / 2 - (n * lh) / 2 + i2 * lh;
+            if (have_big)
+                gta_font_draw(&big_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                              px + (render_w() - bw) / 2, y,
+                              big_text + word[i2]);
+            else
+                gta_hud_text_big(chunky, pitch, SCREEN_W, SCREEN_H,
+                                 px + (render_w() - bw) / 2, y,
+                                 big_text + word[i2], 3);
+            big_text[end] = save;
+        }
+        big_ticks--;
+    }
+}
 
 static void hud_score(unsigned char *chunky, int pitch)
 {
@@ -935,22 +1657,55 @@ static void hud_score(unsigned char *chunky, int pitch)
     gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
                  right - gta_hud_width(line), 2, line);
 
-    {
+    /* THE MULTIPLIER, under the score and right-aligned with it. It only
+     * ever goes up - a job, or the crate - and it multiplies everything the
+     * player earns, so it belongs beside the number it acts on. */
+    if (score.multiplier > 1) {
+        char m[8];
+        char *q = m;
+        *q++ = 'x';
+        q = gta_hud_int(q, score.multiplier);
+        *q = 0;
+        if (have_mult) {
+            char g[8];
+            int k2;
+            /* missmul1.fon holds ELEVEN glyphs where score1.fon holds ten:
+             * the digits, and then one more. The one more is the 'x', which
+             * is the only other character a multiplier is ever written
+             * with - so digits map to '!'.. and 'x' to the eleventh, '+'. */
+            for (k2 = 0; m[k2]; k2++)
+                g[k2] = m[k2] >= '0' && m[k2] <= '9'
+                      ? (char)(m[k2] - '0' + '!')
+                      : (char)('!' + 10);
+            g[k2] = 0;
+            gta_font_draw(&mult_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                          right - gta_font_width(&mult_font, g),
+                          have_score_font ? score_font.height + 1 : 10, g);
+        } else {
+            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                         right - gta_hud_width(m),
+                         have_score_font ? 14 : 10, m);
+        }
+    }
+
+    /* THE WEAPON USED TO BE SPELLED OUT HERE. It is an ICON on the left now,
+     * where the original puts it, so this line is only for the case where
+     * the style file has no HUD sprites to draw. */
+    if (hud_icon < 0) {
         const char *n = weapon_name[hud_weapon >= 0 && hud_weapon < 5
                                     ? hud_weapon : 0];
         const char *q;
         p = line;
         for (q = n; *q; q++) *p++ = *q;
-        /* Fists have no ammunition, and a zero next to them reads as an
-         * empty gun. */
         if (hud_weapon != 0) {
             *p++ = ' ';
             p = gta_hud_int(p, hud_ammo);
         }
         *p = 0;
+        gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                     right - gta_hud_width(line), have_score_font ? 14 : 10,
+                     line);
     }
-    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
-                 right - gta_hud_width(line), have_score_font ? 14 : 10, line);
 
     /* The third line: lives and health (ours - the original hides the
      * health and shows the lives with a small glyph). */
@@ -964,81 +1719,7 @@ static void hud_score(unsigned char *chunky, int pitch)
     gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
                  right - gta_hud_width(line), have_score_font ? 22 : 18, line);
 
-    /* THE PAGER LINE, along the bottom, in the original's pager font. A
-     * page is what fits in the width; the text advances a page every
-     * PAGER_PAGE_TICKS and goes away after the last. */
-    if (pager_ticks > 0 && pager_text[0]) {
-        int pw = render_w() - 8;
-        int start = 0, page = 0, len = 0, k;
-        /* find the start of the current page by measuring words */
-        while (pager_text[start] && page < pager_page) {
-            int e = start, last = start;
-            while (pager_text[e]) {
-                int q = e;
-                char save;
-                while (pager_text[q] && pager_text[q] != ' ') q++;
-                save = pager_text[q]; pager_text[q] = 0;
-                if ((have_pager ? gta_font_width(&pager_font, pager_text + start)
-                                : gta_hud_width(pager_text + start)) > pw) {
-                    pager_text[q] = save;
-                    break;
-                }
-                pager_text[q] = save;
-                last = q;
-                if (!pager_text[q]) { last = q; break; }
-                e = q + 1;
-            }
-            if (last == start) break;
-            start = last;
-            while (pager_text[start] == ' ') start++;
-            page++;
-        }
-        if (!pager_text[start]) {
-            pager_ticks = 0;            /* past the end: gone */
-        } else {
-            char line2[200];
-            int e = start, last = start;
-            while (pager_text[e]) {
-                int q = e;
-                char save;
-                while (pager_text[q] && pager_text[q] != ' ') q++;
-                save = pager_text[q]; pager_text[q] = 0;
-                if ((have_pager ? gta_font_width(&pager_font, pager_text + start)
-                                : gta_hud_width(pager_text + start)) > pw) {
-                    pager_text[q] = save;
-                    break;
-                }
-                pager_text[q] = save;
-                last = q;
-                if (!pager_text[q]) break;
-                e = q + 1;
-            }
-            len = last - start;
-            if (len <= 0) len = 1;
-            if (len > (int)sizeof line2 - 1) len = (int)sizeof line2 - 1;
-            for (k = 0; k < len; k++) line2[k] = pager_text[start + k];
-            line2[len] = 0;
-            {
-                int y = SCREEN_H - (have_pager ? pager_font.height : 7) - 3;
-                int x = present_x() + 4;
-                /* a dark plate under it, the height of the font */
-                int by;
-                for (by = y - 2; by < SCREEN_H; by++) {
-                    unsigned char *d = chunky + (long)by * pitch;
-                    int bx;
-                    for (bx = present_x(); bx < present_x() + render_w(); bx++) d[bx] = 0;
-                }
-                if (have_pager)
-                    gta_font_draw(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H, x, y, line2);
-                else
-                    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, x, y, line2);
-            }
-            if (++pager_ticks > PAGER_PAGE_TICKS) {
-                pager_ticks = 1;
-                pager_page++;
-            }
-        }
-    }
+    text_displays(chunky, pitch);
 
     if (bust_timer > 0) {
         const char *t = card_text[card_kind & 3];
@@ -1056,15 +1737,67 @@ static void hud_score(unsigned char *chunky, int pitch)
     /* THE WANTED LEVEL: that many heads across the top middle, each one
      * flashing every other frame, as the original's are. Nothing at level
      * 0 - an empty row would be a readout of nothing. */
+    /* THE WANTED LEVEL: the original's own cop head, sprites 16 and 17 of
+     * the HUD set, CENTRED ALONG THE TOP - `iVar17 = (width - n * w) / 2`
+     * and y = 0. Each head keeps its OWN flash timer and
+     * changes state every other frame, which is why the row shimmers rather
+     * than blinking in unison. */
     if (score.level > 0) {
-        static int flash;
-        int n = score.level, k;
-        int x = present_x() + render_w() / 2
-              - (n * GTA_HUD_COP_W - 1) / 2;
-        if ((++flash & 2) == 0)
-            for (k = 0; k < n; k++)
+        static unsigned char head_on[4], head_t[4];
+        int n = score.level > 4 ? 4 : score.level, k;
+        int iw = hud_icon >= 0
+               ? gta_hud_sprite_w(&tiles, hud_icon + HUD_ICON_COP) + 1
+               : GTA_HUD_COP_W;
+        int x = present_x() + render_w() / 2 - (n * iw) / 2;
+        for (k = 0; k < n; k++) {
+            if (hud_icon >= 0)
+                gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H,
+                               x + k * iw, 0, &tiles,
+                               hud_icon + HUD_ICON_COP + (head_on[k] ? 1 : 0));
+            else if ((head_t[k] & 2) == 0)
                 gta_hud_cop(chunky, pitch, SCREEN_W, SCREEN_H,
                             x + k * GTA_HUD_COP_W, 2);
+            if (++head_t[k] >= 2) {
+                head_t[k] = 0;
+                head_on[k] = (unsigned char)!head_on[k];
+            }
+        }
+    }
+
+    /* THE LEFT-HAND COLUMN, in the original's order: the weapon in hand with
+     * its ammunition, then the things you are carrying - armour, the
+     * get-out-of-jail-free card - each a two-frame pair that flashes. */
+    if (hud_icon >= 0) {
+        static unsigned char ind_t, ind_on;
+        int x = present_x() + 1;
+        /* UNDER THE PAGER when the pager is showing - the original takes
+         * this y from the device's own height - the pager sprite's, and 0 when it
+         * is not up. */
+        int y = pager_ticks > 0
+              ? gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_PAGER) + 1 : 2;
+        if (++ind_t >= 8) { ind_t = 0; ind_on = (unsigned char)!ind_on; }
+        if (hud_weapon > 0 && hud_weapon <= 4) {
+            char n[8];
+            int iw = gta_hud_sprite_w(&tiles, hud_icon + HUD_ICON_WEAPON
+                                              + hud_weapon - 1);
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H, x, y, &tiles,
+                           hud_icon + HUD_ICON_WEAPON + hud_weapon - 1);
+            *gta_hud_int(n, hud_ammo) = 0;
+            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                         x + iw + 2, y + 6, n);
+            y += gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_WEAPON
+                                          + hud_weapon - 1) + 2;
+        }
+        if (player_armour > 0) {
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H, x, y, &tiles,
+                           hud_icon + HUD_ICON_ARMOUR + (ind_on ? 1 : 0));
+            y += gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_ARMOUR) + 2;
+        }
+        if (jail_free) {
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H, x, y, &tiles,
+                           hud_icon + HUD_ICON_KEY + (ind_on ? 1 : 0));
+            y += gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_KEY) + 2;
+        }
     }
 }
 
@@ -1100,7 +1833,9 @@ static void hud_player(const gta_player *p, unsigned char *chunky, int pitch)
     q = gta_hud_int(q, p->angle);
     if (p->blocked_x || p->blocked_y) { *q++ = ' '; *q++ = 'X'; }
     *q = 0;
-    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, present_x() + 2, 18, line);
+    gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                 present_x() + render_w() - 2 - gta_hud_width(line),
+                 HUD_DEBUG_Y + 16, line);
 }
 
 /* Expand if the mode needs it, draw the readout, and put the frame on screen.
@@ -1491,14 +2226,289 @@ static int autowalk_run(gta_view *v, gta_player *p, const gta_map *m,
  * are moved too, because the next thing to grow will not announce itself
  * either. If any of them needs to grow again it now costs BSS, which the
  * linker accounts for, instead of stack, which nothing does. */
-static gta_map   map;
-static gta_tiles tiles;
 /* A megabyte of samples. Static for the same reason the map is: it is memory
  * the linker accounts for rather than a surprise at the far end of a load. */
 static gta_sfx   sfx;
 static gta_weapons weapons;
 static gta_view  view;
 static gta_player player;
+
+/* ---- WHAT A JOB DOES TO CARS ---------------------------------------------
+ *
+ * A mission is nearly always "steal that car and bring it here", so the
+ * script has to be able to make one car and be asked about that same car
+ * later. The fleet's serial is the handle and it survives the player driving
+ * it about (gta_traffic_rename_car). These are the world half of
+ * gta_script_world; they live down here rather than with the powerup
+ * callbacks because they need `tiles`. */
+static unsigned long script_car_on(void *ctx, int line, int model_id,
+                                   int bx, int by, int angle)
+{
+    int rec, lz;
+    unsigned long h;
+    (void)ctx;
+    rec = gta_script_model_index(&tiles, model_id);
+    if (rec < 0) {
+        printf("gta: script - line %d wants model %d and this style has no "
+               "such car\n", line, model_id);
+        fflush(stdout);
+        return 0;
+    }
+    lz = gta_script_stand_layer(&nav, bx, by);
+    if (lz < 0) lz = 0;
+    h = gta_traffic_abandon(&traffic, rec,
+                            (((long)bx * 32 + 16) << 16),
+                            (((long)by * 32 + 16) << 16),
+                            angle, lz, -1, 0);
+    if (h)
+        gta_traffic_set_mission(&traffic, h, 1);
+    printf("gta: script - car line %d (model %d, record %d) put at (%d,%d), "
+           "handle %lu\n", line, model_id, rec, bx, by, h);
+    fflush(stdout);
+    return h;
+}
+
+static int script_car_pos(void *ctx, unsigned long h, long *wx, long *wy)
+{
+    (void)ctx;
+    /* THE CAR THE PLAYER HAS is not in the fleet - grab_car took it out the
+     * tick he pressed RETURN, and it does not come back until he gets out.
+     * While the get-in animation runs there is no `veh` yet either, so the
+     * best answer is where HE is: he is standing at its door. */
+    if (h && h == veh_serial) {
+        *wx = script_in_car ? script_veh_x : script_pl_x;
+        *wy = script_in_car ? script_veh_y : script_pl_y;
+        return 1;
+    }
+    return gta_traffic_find_car(&traffic, h, wx, wy, 0, 0);
+}
+
+static int script_car_dead(void *ctx, unsigned long h)
+{
+    long x_, y_;
+    int wr_ = 0;
+    (void)ctx;
+    if (!h)
+        return 0;
+    /* AND IT IS NOT DEAD JUST BECAUSE THE FLEET HAS NOT GOT IT. See
+     * script_car_pos: `veh_serial` is set at the GRAB, forty ticks before
+     * `in_car`, and asking the fleet in between reported every mission car
+     * the player walked up to as wrecked. */
+    if (h == veh_serial)
+        return script_in_car && script_veh_damage >= 100;
+    /* GONE IS DEAD, which is the original's rule too: it reports zero health
+     * for a car whose handle is -1. */
+    if (!gta_traffic_find_car(&traffic, h, &x_, &y_, 0, &wr_)) {
+        static unsigned long said;
+        if (said != h) {
+            said = h;
+            printf("gta: script - car %lu is GONE from the fleet (%d cars, "
+                   "player has %lu)\n", h, traffic.n, veh_serial);
+            fflush(stdout);
+        }
+        return 1;
+    }
+    return wr_;
+}
+
+static unsigned long script_player_car(void *ctx)
+{
+    (void)ctx;
+    return script_in_car ? veh_serial : 0UL;
+}
+
+/* MISSION_END: the multiplier goes up by one and stays up. That is the
+ * whole reward structure of GTA 1 - a job pays, and every job after it pays
+ * more. */
+static void script_mission_done(void *ctx)
+{
+    (void)ctx;
+    score.multiplier++;
+    printf("gta: script - mission complete, multiplier x%d\n",
+           score.multiplier);
+    fflush(stdout);
+}
+
+static int script_player_car_at(void *ctx, long *wx, long *wy, int *stopped)
+{
+    (void)ctx;
+    if (!script_in_car)
+        return 0;
+    *wx = script_veh_x;
+    *wy = script_veh_y;
+    /* "Stopped" at the original's own reading of it: under a quarter of a
+     * world pixel a tick, which is a car that has come to rest rather than
+     * one merely crawling. */
+    *stopped = script_veh_speed < (1L << 14);
+    return 1;
+}
+
+static int script_player_car_model(void *ctx)
+{
+    (void)ctx;
+    if (!script_in_car || script_veh_model < 0)
+        return -1;
+    return tiles.cars[script_veh_model].model_id;
+}
+
+/* RESET has finished with this car: the fleet may sweep it up now. */
+static void script_car_release(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    if (h) {
+        gta_traffic_set_mission(&traffic, h, 0);
+        if (h == veh_serial)
+            veh_mission = 0;
+        if (h == arrow_car_h)
+            arrow_car_h = 0;
+    }
+}
+
+static void script_arrow_car(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    if (!h)
+        return;
+    arrow_car_h = h;
+    arrow_ped_h = 0;
+    arrow_on = 1;
+    arrow_reach = 0;
+}
+
+/* ---- THE JOB'S OWN PEOPLE, the world half of gta_script_world. ---- */
+static unsigned long script_ped_on(void *ctx, int line, long wx, long wy,
+                                   int angle)
+{
+    int lz = gta_script_stand_layer(&nav, (int)(wx >> 21), (int)(wy >> 21));
+    unsigned long h;
+    (void)ctx;
+    if (lz < 0) lz = 0;
+    h = gta_peds_spawn_mission(&peds, wx, wy, lz, angle);
+    printf("gta: script - ped line %d at (%ld,%ld) layer %d, handle %lu\n",
+           line, wx >> 16, wy >> 16, lz, h);
+    fflush(stdout);
+    return h;
+}
+
+static int script_ped_pos(void *ctx, unsigned long h, long *wx, long *wy)
+{
+    (void)ctx;
+    return gta_peds_find(&peds, h, wx, wy, 0, 0);
+}
+
+static int script_ped_dead(void *ctx, unsigned long h)
+{
+    int alive = 0;
+    (void)ctx;
+    if (!h)
+        return 0;
+    if (!gta_peds_find(&peds, h, 0, 0, 0, &alive))
+        return 1;                       /* gone is dead, as for a car */
+    return !alive;
+}
+
+static void script_arrow_ped(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    if (!h)
+        return;
+    arrow_ped_h = h;
+    arrow_car_h = 0;
+    arrow_on = 1;
+    arrow_reach = 0;
+}
+
+/* PED_BACK: he gets in when the player brings the right car to him. The
+ * reach is a car length either way - `GTA_PED_INTO_CAR_PX` - which is close
+ * enough that you have to stop AT him and loose enough that you do not have
+ * to be exact. */
+#define GTA_PED_INTO_CAR_PX 34
+
+static int script_ped_into_car(void *ctx, unsigned long ped, unsigned long car)
+{
+    long px_, py_, dx, dy;
+    (void)ctx;
+    if (!ped || !car || !script_in_car || veh_serial != car)
+        return 0;
+    if (!gta_peds_find(&peds, ped, &px_, &py_, 0, 0))
+        return 0;
+    dx = script_veh_x - px_; if (dx < 0) dx = -dx;
+    dy = script_veh_y - py_; if (dy < 0) dy = -dy;
+    if (dx > ((long)GTA_PED_INTO_CAR_PX << 16) ||
+        dy > ((long)GTA_PED_INTO_CAR_PX << 16))
+        return 0;
+    if (arrow_ped_h == ped) {
+        arrow_ped_h = 0;
+        arrow_on = 0;
+    }
+    return gta_peds_take_mission(&peds, ped);
+}
+
+/* THE PLAYER'S OWN STATE, for a job's guards. "Arrested" is the BUSTED
+ * card being up, which is the whole of what the port has of an arrest. */
+/* THE SPRAY SHOP does two things and the second is the point of it: the car
+ * changes colour, and the heat goes with the paint. A police force looking
+ * for a red saloon stops looking when it becomes a blue one. */
+static int script_respray(void *ctx, int remap)
+{
+    (void)ctx;
+    if (!script_in_car)
+        return 0;
+    script_respray_to = remap;
+    return 1;
+}
+
+static int script_player_arrested(void *ctx)
+{
+    (void)ctx;
+    return bust_timer > 0 && card_kind == 1;
+}
+
+static int script_player_dead(void *ctx)
+{
+    (void)ctx;
+    return player_health <= 0;
+}
+
+static void script_ped_kill(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    if (arrow_ped_h == h) { arrow_ped_h = 0; arrow_on = 0; }
+    gta_peds_take_mission(&peds, h);
+}
+
+static const gta_script_world script_world = {
+    script_powerup_on, script_powerup_off, script_powerup_done, script_arrow,
+    script_car_on, script_car_pos, script_car_dead,
+    script_player_car, script_player_car_model, script_arrow_car,
+    script_score, script_player_car_at, script_mission_done,
+    script_car_release,
+    script_ped_on, script_ped_pos, script_ped_dead, script_arrow_ped,
+    script_ped_into_car, script_ped_kill,
+    script_player_arrested, script_player_dead, script_respray
+};
+
+/* PUT THE CAR BACK AND GIVE IT ITS NAME AGAIN.
+ *
+ * abandon() makes a fresh car with a fresh serial; a mission that said
+ * "steal car 189" must still recognise it after the player has driven it
+ * across the city and got out, so the old serial is put back. Returns what
+ * abandon() returned, so `if (!leave_car(...))` reads as before. */
+static unsigned long leave_car(int model, long x, long y, int face, int layer,
+                               int remap, int damage)
+{
+    unsigned long s_ = gta_traffic_abandon(&traffic, model, x, y, face, layer,
+                                           remap, damage);
+    if (s_ && veh_serial) {
+        gta_traffic_rename_car(&traffic, s_, veh_serial);
+        s_ = veh_serial;
+    }
+    if (s_ && veh_mission)
+        gta_traffic_set_mission(&traffic, s_, 1);
+    veh_serial = 0;
+    veh_mission = 0;
+    return s_;
+}
 
 /* WHERE THE DRIVER'S DOOR IS, in world 16.16, for a car at (cx,cy) facing
  * `face`. The style file's door record is a hinge offset from the car's centre
@@ -1698,6 +2708,7 @@ int main(void)
      * stays visible on top. Decided once from the vehicle class when the
      * animation starts, so the per-tick code does not re-read the table. */
     int enter_bike = 0;
+    long ram_cop_seen = 0;      /* police cars rammed, already accounted for */
     /* THE VAULT (LEFTOFF.md, the vault).
      *
      * 0 = none; 1 = part of getting in - he is on the wrong flank, runs at
@@ -1962,13 +2973,32 @@ int main(void)
      * from 6-bit VGA to 8-bit by gta_style_load on the host. The screen's copy
      * of it is set by open_display(); this is the HUD's. */
     gta_hud_init(tiles.palette);
+    /* THE ARROW SPRITE is the first of the style file's "arrow" category -
+     * 12x10, yellow, and the same category holds the whole HUD icon set. */
+    arrow_sprite = gta_tiles_sprite_base(&tiles, GTA_SPR_ARROW);
+    hud_icon = arrow_sprite;
+    printf("gta: HUD icons from sprite %d (%dx%d cop head, %dx%d pager)\n",
+           hud_icon,
+           gta_hud_sprite_w(&tiles, hud_icon + HUD_ICON_COP),
+           gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_COP),
+           gta_hud_sprite_w(&tiles, hud_icon + HUD_ICON_PAGER),
+           gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_PAGER));
+    fflush(stdout);
     have_pager      = gta_font_load(&pager_font, FONT_PAGER, tiles.palette) == 0;
     have_score_font = gta_font_load(&score_font, FONT_SCORE, tiles.palette) == 0;
     have_big        = gta_font_load(&big_font,   FONT_BIG,   tiles.palette) == 0;
+    have_mult       = gta_font_load(&mult_font,  FONT_MULT,  tiles.palette) == 0;
+    /* THE FRONT END. Its font is remapped into ITS OWN palette, not the
+     * game's - the title screen is up before the city is, and the two
+     * palettes have nothing to do with each other. */
+    if (gta_front_load(&front, FRONT_PATH) == 0)
+        have_menu_font = gta_font_load(&menu_font, FONT_MENU, front.pal) == 0;
     gta_text_load(&texts, FXT_PATH);
-    printf("gta: fonts - pager %s (%d px), score %s, big %s; %d texts\n",
+    printf("gta: fonts - pager %s (%d px), score %s, big %s, multiplier %s; "
+           "%d texts\n",
            have_pager ? "yes" : "no", pager_font.height,
-           have_score_font ? "yes" : "no", have_big ? "yes" : "no", texts.n);
+           have_score_font ? "yes" : "no", have_big ? "yes" : "no",
+           have_mult ? "yes" : "no", texts.n);
     fflush(stdout);
     /* THE LEVEL'S OPENING BRIEF - the first MOBILE_BRIEF of the script,
      * 1001: "Answer the South Park phones to get jobs..." */
@@ -2039,6 +3069,64 @@ int main(void)
             printf("gta: you start with your fists - the weapons are in the crates\n");
             fflush(stdout);
         }
+        if (gta_script_load(&script, INI_PATH, 1) == 0) {
+            static const int show[5] = { GTA_DECL_TELEPHONE, GTA_DECL_TRIGGER,
+                                         GTA_DECL_PARKED, GTA_DECL_DOOR,
+                                         GTA_DECL_SPRAY };
+            int k_, j_;
+            printf("gta: script - %d declarations in section [1]", script.n);
+            for (k_ = 0; k_ < 5; k_++) {
+                int c_ = 0;
+                for (j_ = 0; j_ < script.n; j_++)
+                    if (script.d[j_].type == show[k_]) c_++;
+                printf(", %d %s", c_, gta_script_type_name(show[k_]));
+            }
+            printf("%s\n", script.n_unknown ? " (some names unknown)" : "");
+            fflush(stdout);
+            gta_script_place(&script, &nav, &tiles);
+            if (gta_script_load_cmds(&script, INI_PATH, 1) == 0) {
+                gta_script_set_brief(&script, script_brief, 0);
+                gta_script_set_world(&script, &script_world, 0);
+                printf("gta: script - %d commands in the logic block, "
+                       "%d distinct names\n", script.n_cmds, script.n_cnames);
+                /* AND THE CRATES ARE THE SCRIPT'S NOW. The file reader above
+                 * put all 151 POWERUPs out at load, which is not what the
+                 * original does: a crate exists when a POWERUP_ON names it.
+                 * Empty the table and let the level's opening block fill it -
+                 * the fourteen powerups no path ever turns on then stay off,
+                 * as they do in the real game. */
+                gta_pickups_init(&pickups, &tiles);
+                printf("gta: pickups - cleared; the script's POWERUP_ON makes "
+                       "them now\n");
+                fflush(stdout);
+            }
+
+            /* WHERE THE LEVEL STARTS HIM. Until now the player was put down
+             * on the renderer's old downtown junction (64,64), which is a
+             * fine view and the wrong place: Liberty City's script has no
+             * entry point of its own - it runs because the PLAYER block is
+             * also TRIGGER 303 - so a player anywhere else never starts the
+             * level at all. */
+            {
+                int sbx_, sby_, sang_;
+                if (gta_script_player_start(&script, &sbx_, &sby_, &sang_)) {
+                    if (gta_player_init(&player, &map, &tiles, sbx_, sby_)) {
+                        player.angle = sang_;
+                        start_bx = sbx_;
+                        start_by = sby_;
+                        gta_render_look_at_block(&view, start_bx, start_by);
+                        printf("gta: script - the level starts the player on "
+                               "block (%d,%d) layer %d facing %d\n",
+                               sbx_, sby_, player.layer, sang_);
+                    } else {
+                        printf("gta: script - the PLAYER block (%d,%d) has no "
+                               "walkable layer; staying at (%d,%d)\n",
+                               sbx_, sby_, start_bx, start_by);
+                    }
+                    fflush(stdout);
+                }
+            }
+        }
         gta_peds_set_nav(&peds, &nav);
         gta_weapons_init(&weapons, &tiles);
         gta_weapons_set_pickups(&weapons, &pickups);
@@ -2050,10 +3138,10 @@ int main(void)
     }
     fflush(stdout);
     {
-        int parked = gta_traffic_park(&traffic, &map, START_BX, START_BY,
+        int parked = gta_traffic_park(&traffic, &map, start_bx, start_by,
                                       8, GTA_MAX_CARS);
         printf("gta: %d cars parked around (%d,%d)\n",
-               parked, START_BX, START_BY);
+               parked, start_bx, start_by);
         fflush(stdout);
     }
 
@@ -2067,6 +3155,25 @@ int main(void)
     fflush(stdout);
     dump_frame(GTA_DIR "frame.raw", chunky, pitch, SCREEN_W, SCREEN_H,
                tiles.palette);
+
+    /* THE TITLE SCREEN, and only when a person is at the keyboard. Every
+     * automated run in this project is driven by a script file and none of
+     * them can press a key, so a menu in front of them would hang the
+     * harness - see front_menu(). */
+    {
+        FILE *sf = fopen(GTA_DIR "autodrive.txt", "r");
+        if (!sf) sf = fopen(GTA_DIR "autowalk.txt", "r");
+        if (!sf) sf = fopen(GTA_DIR "autoinput.txt", "r");
+        if (sf) {
+            fclose(sf);
+            log_line("gta: front end skipped - a script is driving");
+        } else if (front_menu(chunky, pitch)) {
+            log_line("gta: front end - quit");
+            gta_front_free(&front);
+            amigagfx_close();
+            return g_reload ? 5 : 0;
+        }
+    }
 
     /* SELF-TEST OF THE F3 PATH, once, before anything depends on it.
      *
@@ -2580,10 +3687,17 @@ int main(void)
                      * leaning on a wall costs nothing on purpose. */
                     adq[adq_n].op = 12; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq_n++;
-                } else if (sscanf(ln, "brief %d", &a) == 1) {
-                    /* A TEST FIXTURE: show text `a` on the pager. */
+                } else if (sscanf(ln, "brief %d %d", &a, &b) == 2) {
+                    /* A TEST FIXTURE: show text `a` on display `b` -
+                     * GTA_BRIEF_*, so 0..5 are the brief box's six icons,
+                     * 6 the pager, 7 a timed pager line and 8 the big
+                     * centred card. */
                     adq[adq_n].op = 16; adq[adq_n].t = 1;
-                    adq[adq_n].thr = a; adq_n++;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b; adq_n++;
+                } else if (sscanf(ln, "brief %d", &a) == 1) {
+                    adq[adq_n].op = 16; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = GTA_BRIEF_PAGER;
+                    adq_n++;
                 } else if (sscanf(ln, "hurt %d", &a) == 1) {
                     /* A TEST FIXTURE: take `a` points of health. */
                     adq[adq_n].op = 15; adq[adq_n].t = 1;
@@ -2601,6 +3715,13 @@ int main(void)
                     adq[adq_n].op = 13; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq[adq_n].brk = b;
                     adq[adq_n].st = c; adq_n++;
+                } else if (sscanf(ln, "goto %d %d", &a, &b) == 2) {
+                    /* A TEST FIXTURE: put the player on block (a,b). The
+                     * city is 256 blocks across and a job crosses most of
+                     * it; walking there by script is not a test of the job.
+                     * On foot only - it does not move a car. */
+                    adq[adq_n].op = 17; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b; adq_n++;
                 } else if (strncmp(ln, "jump", 4) == 0) {
                     adq[adq_n].op = 7; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "dump", 4) == 0) {
@@ -2990,7 +4111,9 @@ int main(void)
                     case 6: player.angle = adq[adq_i].thr & 255; break;
                     case 7: jump_req = 1; break;
                     case 16:
-                        pager_brief(adq[adq_i].thr);
+                        script_brief(0, adq[adq_i].brk, adq[adq_i].thr,
+                                     adq[adq_i].brk == GTA_BRIEF_PAGER_T
+                                     ? 20 : 0);
                         break;
                     case 15:
                         player_health -= adq[adq_i].thr;
@@ -3066,6 +4189,36 @@ int main(void)
                     case 3:
                         dump_frame(GTA_DIR "frame_live.raw", chunky, pitch,
                                    SCREEN_W, SCREEN_H, tiles.palette);
+                        break;
+                    case 17:
+                        if (in_car) {
+                            /* WITH THE CAR. A job ends at a garage on the
+                             * other side of the city and the test has to be
+                             * able to arrive there. */
+                            veh.ox = veh.x = (((long)adq[adq_i].thr * 32 + 16) << 16);
+                            veh.oy = veh.y = (((long)adq[adq_i].brk * 32 + 16) << 16);
+                            veh.vx = veh.vy = 0;
+                            veh.omega = 0;
+                            player.x = veh.ox;
+                            player.y = veh.oy;
+                            gta_render_look_at_block(&view, adq[adq_i].thr,
+                                                     adq[adq_i].brk);
+                            printf("gta: goto (%d,%d) in the car\n",
+                                   adq[adq_i].thr, adq[adq_i].brk);
+                        } else if (gta_player_init(&player, &map, &tiles,
+                                                   adq[adq_i].thr,
+                                                   adq[adq_i].brk)) {
+                            gta_render_look_at_block(&view, adq[adq_i].thr,
+                                                     adq[adq_i].brk);
+                            printf("gta: goto (%d,%d) layer %d\n",
+                                   adq[adq_i].thr, adq[adq_i].brk,
+                                   player.layer);
+                        } else {
+                            printf("gta: goto (%d,%d) - nothing walkable "
+                                   "there\n",
+                                   adq[adq_i].thr, adq[adq_i].brk);
+                        }
+                        fflush(stdout);
                         break;
                     case 4: {
                         /* One numbered frame a tick - see `film` in the
@@ -3155,6 +4308,8 @@ int main(void)
                             long dx_, dy_;
 
                             enter_cop = gta_traffic_last_grab_cop(&traffic);
+                            veh_serial = gta_traffic_last_grab_serial(&traffic);
+                            veh_mission = gta_traffic_last_grab_mission(&traffic);
                             car_door_point(ci_, cx_, cy_, f_, &dx_, &dy_);
                             /* THE WRONG FLANK: HE GOES OVER THE CAR.
                              *
@@ -3326,10 +4481,9 @@ int main(void)
                              * it under him. */
                             long fx = gta_sin(a_), fy = -gta_cos(a_);
                             long hl = gta_car_world_len(ci_) / 2;
-                            if (!gta_traffic_abandon(&traffic, veh.model,
-                                                     veh.ox, veh.oy, a_,
-                                                     player.layer, veh.remap,
-                                                     veh.damage))
+                            if (!leave_car(veh.model, veh.ox, veh.oy, a_,
+                                           player.layer, veh.remap,
+                                           veh.damage))
                                 printf("gta: fleet full, car lost\n");
                             player.x = veh.ox + fx * hl * 2;
                             player.y = veh.oy + fy * hl * 2;
@@ -3495,10 +4649,15 @@ int main(void)
                             gta_score_crime(&score, GTA_CRIME_CARJACK);
                             if (enter_cop) {
                                 /* A POLICE CAR TAKEN: its driver is a cop
-                                 * and comes after him on foot, and the
-                                 * level is exactly 1 if it was 0. */
+                                 * and comes after him on foot. It is a
+                                 * carjacking and nothing more - the +15
+                                 * above. The head this used to force was
+                                 * the port's own invention; the original's
+                                 * two instant-level-1 triggers are HITTING
+                                 * a police car with your car and SHOOTING
+                                 * one, and the second of those is now where
+                                 * it belongs, in the weapon. */
                                 gta_peds_make_cop(&peds, peds.last_index);
-                                gta_score_force_level(&score, 1);
                                 printf("gta: police - the player took a cop"
                                        " car; its cop is on foot\n");
                             }
@@ -3596,10 +4755,9 @@ int main(void)
                             player.angle = (enter_a0
                                             + sgn * (enter_bike ? 64 : 32))
                                            & 255;
-                            if (!gta_traffic_abandon(&traffic, veh.model,
-                                                     veh.ox, veh.oy, enter_a0,
-                                                     player.layer, veh.remap,
-                                                     veh.damage))
+                            if (!leave_car(veh.model, veh.ox, veh.oy,
+                                           enter_a0, player.layer, veh.remap,
+                                           veh.damage))
                                 printf("gta: fleet full, car lost\n");
                             printf("gta: on foot at (%ld,%ld) facing %d\n",
                                    player.x >> 16, player.y >> 16,
@@ -3723,6 +4881,105 @@ int main(void)
                                  (right ? 1 : 0) - (left ? 1 : 0),
                                  handbrake, road_);
                     if (veh.sliding) veh_slide_ticks++;
+                    /* ---- THE JUMP ------------------------------------
+                     *
+                     * A ramp with a hole after it is a jump, and Liberty City
+                     * has several: (91,105..110) is two ramps and two blocks
+                     * of air over the water. The port used to stop dead at
+                     * the edge, because a car had a layer and no HEIGHT and
+                     * `gta_veh_wall` reads air as a wall.
+                     *
+                     * TAKING OFF: the car is on a ramp, driving UP it, and
+                     * the block it is about to enter has no surface on this
+                     * layer. Then it leaves the ground, and while it is off
+                     * the ground neither the wall test nor the layer test
+                     * runs - there is nothing under it to test against.
+                     *
+                     * The numbers are the original's, from
+                     * the original: lift 4 units a tick for
+                     * `speed / 4` ticks, gravity 8, height capped at five
+                     * blocks. */
+                    if (!veh_air) {
+                        int bx_ = (int)(veh.ox >> 21), by_ = (int)(veh.oy >> 21);
+                        int up_ = gta_map_slope_up_dir(&map, bx_, by_,
+                                                       player.layer);
+                        if (up_ >= 0) {
+                            static const int dxs[4] = { 0, 1, 0, -1 };
+                            static const int dys[4] = { -1, 0, 1, 0 };
+                            long vx_ = veh.vx < 0 ? -veh.vx : veh.vx;
+                            long vy_ = veh.vy < 0 ? -veh.vy : veh.vy;
+                            long sp_ = (vx_ > vy_ ? vx_ : vy_) >> 16;
+                            /* Going the way the ramp rises? */
+                            int going = (dxs[up_] > 0 && veh.vx > 0)
+                                     || (dxs[up_] < 0 && veh.vx < 0)
+                                     || (dys[up_] > 0 && veh.vy > 0)
+                                     || (dys[up_] < 0 && veh.vy < 0);
+                            int ax_ = bx_ + dxs[up_], ay_ = by_ + dys[up_];
+                            /* ...and is there anything to drive on to? */
+                            int solid = gta_script_stand_layer(&nav, ax_, ay_)
+                                        >= player.layer;
+                            if (going && !solid && sp_ >= 4) {
+                                veh_air = 1;
+                                /* `speed / 4` of the original's ticks, in
+                                 * ours - see the note on VEH_GRAVITY. */
+                                veh_lift = (int)sp_ * 2;
+                                veh_vz = VEH_LIFT;
+                                veh_z = 0;
+                                veh_air_from = 0;
+                                printf("gta: JUMP from (%d,%d) layer %d at "
+                                       "%ld px/tick - %d ticks of climb\n",
+                                       bx_, by_, player.layer, sp_, veh_lift);
+                                fflush(stdout);
+                            }
+                        }
+                    }
+
+                    if (veh_air) {
+                        /* THE ARC. Nothing under the car is touched while it
+                         * is up here: no wall, no layer, no road snap. */
+                        long dax_ = veh.ox - wox0_, day_ = veh.oy - woy0_;
+                        veh_z += veh_vz;
+                        veh_air_from += (dax_ < 0 ? -dax_ : dax_)
+                                      + (day_ < 0 ? -day_ : day_);
+                        if (veh_lift > 0) veh_lift--;
+                        else              veh_vz -= VEH_GRAVITY;
+                        if (veh_z > VEH_Z_MAX) { veh_z = VEH_Z_MAX; veh_vz = 0; }
+                        if (veh_z <= 0 && veh_vz <= 0) {
+                            /* DOWN - but only where there is something to
+                             * land ON. Over the gap there is not, and the car
+                             * keeps falling; a block below the layer it left,
+                             * it is in the water. */
+                            int bx_ = (int)(veh.ox >> 21);
+                            int by_ = (int)(veh.oy >> 21);
+                            int lz_ = gta_script_stand_layer(&nav, bx_, by_);
+                            /* ANY SURFACE AT OR BELOW THE LAYER IT LEFT.
+                             * The first version compared against
+                             * `player.layer + (veh_z >> 21)`, and veh_z is
+                             * NEGATIVE by the time it is falling - so the
+                             * landing ramp, on the layer it took off from,
+                             * failed the test and the car flew through it. */
+                            if (lz_ >= 0 && lz_ <= player.layer) {
+                                veh_air = 0;
+                                veh_z = 0;
+                                veh_vz = 0;
+                                if (lz_ != player.layer)
+                                    player.layer = lz_;
+                                printf("gta: LANDED at (%d,%d) layer %d after "
+                                       "%ld px\n", bx_, by_,
+                                       player.layer, veh_air_from >> 16);
+                                fflush(stdout);
+                            } else if (veh_z < -(long)GTA_TILE_DIM << 16) {
+                                /* Short. Whatever is down there takes it. */
+                                veh_air = 0;
+                                veh_z = 0;
+                                veh_vz = 0;
+                                printf("gta: jump fell short at (%d,%d)\n",
+                                       bx_, by_);
+                                fflush(stdout);
+                            }
+                        }
+                    }
+
                     /* AND THE CAR CLIMBS. Until now the layer under a driven
                      * car was frozen at whatever the player was standing on
                      * when he got in, because nothing but gta_player_update()
@@ -3731,7 +4988,7 @@ int main(void)
                      *
                      * Resolved BEFORE the wall test, so the test runs on the
                      * layer the car has arrived at. */
-                    {
+                    if (!veh_air) {
                         long nx0_, ny0_, nx1_, ny1_;
                         int nz_;
                         gta_veh_nose(&veh, wox0_, woy0_, wang0_,
@@ -3754,7 +5011,8 @@ int main(void)
                      * nose test could not see a car reversing into a wall at
                      * all, and a bus is longer than the blocks it drives
                      * between. */
-                    wdmg_ = gta_veh_wall(&veh, &nav, player.layer,
+                    wdmg_ = veh_air ? 0
+                          : gta_veh_wall(&veh, &nav, player.layer,
                                          wx0_, wy0_, wox0_, woy0_, wang0_);
                     if (wdmg_) {
                         /* Item 3c's other half: a wall costs bodywork too.
@@ -3847,6 +5105,13 @@ int main(void)
                                        veh.vx, veh.vy, veh.mass,
                                        player.layer, &rvx, &rvy, &ryaw,
                                        &rpx, &rpy);
+                        /* TOUCHING A POLICE CAR IS A HEAD AT ONCE, and it
+                         * is not gated on the impact being hard enough to
+                         * cost bodywork - see gta_traffic_ram(). */
+                        if (traffic.stat_ram_cop != ram_cop_seen) {
+                            ram_cop_seen = traffic.stat_ram_cop;
+                            gta_score_force_level(&score, 1);
+                        }
                         if (rvx || rvy || ryaw) {
                             veh.vx += rvx;
                             veh.vy += rvy;
@@ -3876,7 +5141,12 @@ int main(void)
                             veh.y += rpy;  veh.oy += rpy;
                         }
                         if (nhit) {
-                            veh.damage += nhit;
+                            /* THE PLAYER'S OWN SHARE, by the same formula
+                             * and his own car's mass - see
+                             * gta_traffic_ram(). It used to be one point a
+                             * car touched, whatever hit what at whatever
+                             * speed. */
+                            veh.damage += traffic.pl_damage;
                             /* The panel that took it: the resolution vector
                              * points out of the other body, so the contact is
                              * the other way. */
@@ -3885,8 +5155,10 @@ int main(void)
                                 gta_veh_angle(&veh),
                                 veh.ox - rpx * 8, veh.oy - rpy * 8);
                             printf("gta: ram x%d - player dv (%ld,%ld) "
-                                   "damage %d\n", nhit,
-                                   rvx >> 16, rvy >> 16, veh.damage);
+                                   "damage %d (+%d this crash), police cars "
+                                   "hit %ld\n", nhit,
+                                   rvx >> 16, rvy >> 16, veh.damage,
+                                   traffic.pl_damage, traffic.stat_ram_cop);
                             fflush(stdout);
                         }
                     }
@@ -3927,6 +5199,22 @@ int main(void)
                                           (right ? 1 : 0) - (left ? 1 : 0),
                                           (up ? 1 : 0) - (down ? 1 : 0),
                                           fast);
+                        /* THE SPEED-UP: A SECOND STEP. He covers a fixed
+                         * distance per tick, so "twice as fast" is two
+                         * ticks - and the collision, the layer change and
+                         * the walk cycle all run again with it, which
+                         * simply doubling the step would not. He does not
+                         * turn twice: that would spin him. */
+                        if (player_speed > 0) {
+                            player_speed--;
+                            gta_player_update(&player, &map, 0,
+                                              (up ? 1 : 0) - (down ? 1 : 0),
+                                              fast);
+                            if (player_speed == 0) {
+                                printf("gta: the speed wears off\n");
+                                fflush(stdout);
+                            }
+                        }
                     }
                 }
                 /* THE FIRE LATCH - the original's, once a
@@ -3994,11 +5282,47 @@ int main(void)
                  * this cars vanish and pop into existence in plain sight the
                  * moment the camera pulls back. */
                 if (opt_traffic) {
+                    script_in_car = in_car;
+                    script_veh_model = in_car ? veh.model : -1;
+                    script_veh_damage = in_car ? veh.damage : 0;
+                    script_veh_x = veh.ox;
+                    script_veh_y = veh.oy;
+                    {
+                        /* THE CAR'S SPEED is its velocity, which the physics
+                         * keeps as a vector of 16.16 pixels per step; the
+                         * larger component is enough to say "stopped". */
+                        long ax_ = veh.vx < 0 ? -veh.vx : veh.vx;
+                        long ay_ = veh.vy < 0 ? -veh.vy : veh.vy;
+                        script_veh_speed = ax_ > ay_ ? ax_ : ay_;
+                    }
+                    script_pl_x = player.x;
+                    script_pl_y = player.y;
+                    gta_script_tick(&script, in_car ? veh.ox : player.x,
+                                    in_car ? veh.oy : player.y,
+                                    !in_car && !enter_anim);
+                    if (script_respray_to >= 0) {
+                        if (in_car) {
+                            veh.remap = script_respray_to;
+                            veh.dmg_bits = 0;      /* out of the shop clean */
+                            veh.damage = 0;
+                            gta_score_clear_heat(&score);
+                            printf("gta: resprayed - colour %d, and the heat "
+                                   "is gone\n", script_respray_to);
+                            fflush(stdout);
+                        }
+                        script_respray_to = -1;
+                    }
+                    arrow_tick(&view, in_car ? veh.ox : player.x,
+                               in_car ? veh.oy : player.y,
+                               in_car, veh.len);
                     gta_traffic_set_wanted(&traffic, score.level,
                                            in_car || enter_anim == 2);
                     gta_peds_set_player(&peds, in_car ? veh.ox : player.x,
                                         in_car ? veh.oy : player.y,
-                                        player.layer, in_car);
+                                        player.layer, in_car,
+                                        in_car ? veh.len / 2 : 0,
+                                        in_car ? veh.wid / 2 : 0,
+                                        in_car ? gta_veh_angle(&veh) : 0);
                     {
                         long cx_, cy_;
                         int cl_, ca_;
@@ -4013,13 +5337,17 @@ int main(void)
                         }
                     }
                     if (peds.stat_cops_killed != cops_killed_seen) {
-                        /* A COP KILLED: a hundred more heat on top of the
-                         * murder, and every car standing with its driver
-                         * out gives up. */
-                        long k_ = peds.stat_cops_killed - cops_killed_seen;
+                        /* A COP KILLED. Every car standing with its driver
+                         * out gives up - and that is all: killing a cop
+                         * costs exactly what killing anybody costs, which
+                         * the weapon has already filed. The extra hundred
+                         * that used to be added here was read off the
+                         * original's cop bonus, and that bonus is passed
+                         * the DEAD COP's ped index rather than the
+                         * killer's, so it lands on no player at all
+                         * at all. A bug in the original is not a rule to
+                         * copy. */
                         cops_killed_seen = peds.stat_cops_killed;
-                        while (k_-- > 0)
-                            gta_score_crime(&score, GTA_CRIME_MURDER);
                         gta_traffic_cops_give_up(&traffic);
                         printf("gta: police - a cop was killed\n");
                         fflush(stdout);
@@ -4066,9 +5394,9 @@ int main(void)
                         long fy_ = in_car ? veh.oy : player.y;
                         if (in_car) {
                             int a_ = gta_veh_angle(&veh);
-                            if (!gta_traffic_abandon(&traffic, veh.model, veh.ox,
-                                                     veh.oy, a_, player.layer,
-                                                     veh.remap, veh.damage))
+                            if (!leave_car(veh.model, veh.ox, veh.oy, a_,
+                                           player.layer, veh.remap,
+                                           veh.damage))
                                 printf("gta: fleet full, car lost\n");
                             in_car = 0;
                             enter_anim = 0;
@@ -4276,6 +5604,25 @@ int main(void)
                             score.multiplier++;
                         } else if (kind_ == GTA_PICKUP_JAILFREE) {
                             jail_free = 1;
+                        } else if (kind_ >= GTA_PICKUP_SPEED && kind_ <= 8) {
+                            if (in_car) {
+                                /* "car speed!" - the car keeps it. */
+                                veh.vmax += veh.vmax / 4;
+                                printf("gta: car speed!\n");
+                            } else {
+                                player_speed = SPEED_TICKS;
+                                printf("gta: speed! for %d ticks\n",
+                                       player_speed);
+                            }
+                        } else if (kind_ == GTA_PICKUP_FRENZY) {
+                            /* THE KILL FRENZY IS THE SCRIPT'S. Case 0xe of
+                             * the original's handler only puts a message on
+                             * the brief line; what arms the frenzy is the
+                             * script noticing the crate has gone
+                             * (`9006 IS_POWERUP_DONE 271 0 9025 200 0`),
+                             * which this port already answers. */
+                            printf("gta: kill frenzy crate taken - the script "
+                                   "has it now\n");
                         } else if (kind_ == GTA_PICKUP_ARMOUR) {
                             player_armour = 3;
                         } else if (kind_ == GTA_PICKUP_LIFE || kind_ == 15) {
@@ -4356,12 +5703,22 @@ int main(void)
                             award = gta_score_event(&score,
                                         GTA_SCORE_TYPE_CIVILIAN,
                                         GTA_SCORE_REASON_RUNOVER);
-                            /* The original files the hit AND the death: a
-                             * man run over at speed is dead, and the two
-                             * reports together are what make one run-over
-                             * a level on its own (150 of 151). */
-                            gta_score_crime(&score, GTA_CRIME_RUNOVER);
-                            gta_score_crime(&score, GTA_CRIME_MURDER);
+                            /* ONE CRIME, NOT TWO. This used to file the
+                             * death as well, 150 of the 151 heat the first
+                             * head costs, so two pedestrians - and they
+                             * spawn in pairs - were two heads. The original
+                             * files kind 3 "Hit 'n' Run", +50, and nothing
+                             * else: its kind 8 "Murder One" is reachable
+                             * only from a bullet, a fire or a blast
+                             * - every caller of the crime report was
+                             * checked. Four run-overs are one
+                             * head, which is the game the developer
+                             * remembers.
+                             *
+                             * A MOTORCYCLE FILES NOTHING - the original
+                             * skips the report when the vehicle is one. */
+                            if (tiles.cars[veh.model].vtype != GTA_VEH_BIKE)
+                                gta_score_crime(&score, GTA_CRIME_RUNOVER);
                         }
                         printf("gta: ran over %d - %ld so far, %ld points"
                                " (score %ld, heat %d)\n", ph,
@@ -4432,6 +5789,18 @@ int main(void)
                            traffic.n_cop_patrol, traffic.stat_cops_sent,
                            traffic.stat_cops_made, traffic.stat_cops_released);
                     gta_traffic_police_report(&traffic);
+                    gta_script_report(&script);
+                    if (!script_triggers_listed) {
+                        script_triggers_listed = 1;
+                        gta_script_live_triggers(&script,
+                                                 in_car ? veh.ox : player.x,
+                                                 in_car ? veh.oy : player.y, 25);
+                    }
+                    printf("gta: crates - %d out, %ld made by the script, "
+                           "%ld already there, %ld opened, %ld taken\n",
+                           pickups.n, script_crates_made,
+                           script_crates_refused, pickups.stat_opened,
+                           pickups.stat_taken);
                     printf("gta: peds at the lights - %ld set off, %ld crossed\n",
                            peds.stat_crossings, peds.stat_crossed);
                     snprintf(ln, sizeof ln,
@@ -4683,7 +6052,31 @@ int main(void)
          * at it from above" possible. */
         /* The splats are ground marks: under everybody. */
         gta_weapons_draw_ground(&weapons, &view);
+        /* THE MISSION CARS ARRIVE WHEN HE DOES. One a frame at most, and
+         * each only once - see gta_mcar for why they cannot just be parked
+         * at load time. */
+        {
+            int mc_ = gta_script_due_car(&script,
+                            in_car ? veh.ox : player.x,
+                            in_car ? veh.oy : player.y, 11);
+            if (mc_ >= 0) {
+                const gta_mcar *c_ = &script.mcar[mc_];
+                if (gta_traffic_abandon(&traffic, c_->model, c_->x, c_->y,
+                                        c_->angle, c_->layer, -1, 0))
+                    printf("gta: script - mission car (line %d, model %d) "
+                           "put down at (%ld,%ld)\n", c_->line, c_->model,
+                           c_->x >> 16, c_->y >> 16);
+                else
+                    printf("gta: script - no room for mission car line %d\n",
+                           c_->line);
+                fflush(stdout);
+            }
+        }
         gta_pickups_draw(&pickups, &view, 12);
+        gta_script_draw(&script, &view, 12);
+        arrow_draw(&view, in_car ? veh.ox : player.x,
+                   in_car ? veh.oy : player.y, player.layer,
+                   in_car, veh.len);
         gta_peds_draw(&peds, &view);
         /* THE CAR BEING ENTERED IS STILL A CAR.
          *
@@ -4743,15 +6136,35 @@ int main(void)
                                       armed_sprite(&player, punch_left,
                                                    ARMED_NOW),
                                       gta_player_draw_angle(&player));
-            if (car_shown && pi->sprite_index >= 0)
-                gta_render_add_sprite_dm(&view, car_x, car_y, player.layer,
-                                      player.layer, pi->sprite_index,
-                                      (car_ang + GTA_SPRITE_ART_SOUTH) & 255,
-                                      car_remap >= 0
-                                          && car_remap < GTA_CAR_REMAPS
-                                          ? (int)pi->remap8[car_remap] : 0,
-                                      door_now,
-                                      use_veh ? veh.dmg_bits : 0);
+            if (car_shown && pi->sprite_index >= 0) {
+                int car_pal = car_remap >= 0 && car_remap < GTA_CAR_REMAPS
+                            ? (int)pi->remap8[car_remap] : 0;
+                int car_art = (car_ang + GTA_SPRITE_ART_SOUTH) & 255;
+                if (use_veh && veh_air) {
+                    /* IN THE AIR: the height is the port's own, not something
+                     * the renderer can read off a block - there is no block
+                     * under it. A grid level is a block tall, so the whole
+                     * levels go into `grid` and the remainder into eighths,
+                     * and the car grows all the way up the arc and shrinks
+                     * all the way down it. */
+                    long zp = veh_z >> 16;
+                    int gz = player.layer + (int)(zp / GTA_TILE_DIM);
+                    int sub = (int)(((zp % GTA_TILE_DIM) * 8) / GTA_TILE_DIM);
+                    if (gz >= GTA_GRID_LEVELS - 1) {
+                        gz = GTA_GRID_LEVELS - 1;
+                        sub = 0;
+                    }
+                    gta_render_add_sprite_air(&view, car_x, car_y,
+                                              GTA_MAP_LAYERS - 1, gz, sub,
+                                              pi->sprite_index, car_art,
+                                              car_pal, door_now, veh.dmg_bits);
+                } else {
+                    gta_render_add_sprite_dm(&view, car_x, car_y, player.layer,
+                                          player.layer, pi->sprite_index,
+                                          car_art, car_pal, door_now,
+                                          use_veh ? veh.dmg_bits : 0);
+                }
+            }
             /* ...and if it is a write-off, it burns while its fuse runs. */
             if (car_shown && use_veh && veh.fuse > 0) {
                 int fs_ = gta_tiles_object_sprite(&tiles, GTA_OBJ_FIRE);

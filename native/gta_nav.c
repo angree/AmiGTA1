@@ -17,8 +17,15 @@ static unsigned char nav_byte(const gta_map *m, int bx, int by, int bz)
 {
     gta_block b;
 
-    if (!gta_map_block(m, bx, by, bz, &b))
-        return 0;
+    if (!gta_map_block(m, bx, by, bz, &b)) {
+        /* NOT IN THE FILE. An empty block inside a surface is still that
+         * surface - see gta_map_ground_type(), and the invisible wall on
+         * the pavement at (25,17) that it exists to answer. It gets the
+         * ground type and no direction bits: a car may stand on it and be
+         * pushed across it, and no route is planned through it. */
+        return gta_map_ground_type(m, bx, by, bz) == 3
+               ? (unsigned char)0x30 : (unsigned char)0;
+    }
 
     /* AND A RAILWAY BLOCK IS NOTHING AT ALL, which is our deviation from the
      * original's grid and it is a deliberate one.

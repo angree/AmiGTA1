@@ -175,6 +175,23 @@ void gta_weapons_explode(gta_weapons *w, long x, long y, int layer,
     }
 }
 
+/* WHAT ONE BULLET COSTS A VEHICLE, as the original charges it.
+ *
+ * Five points, or TWO when the vehicle's class is a bus or one of the
+ * juggernaut halves - the heavy bodies. Sixteen pistol shots wreck a saloon
+ * or a police car, thirty-nine wreck a tanker, a bus or a firetruck; the
+ * port charged five to everything, so the police took a tanker apart in
+ * twenty ("teraz tez jezdzilem cysterna i dosyc szybko mi ja zniszczyla
+ * policja"). Above seventy-five the next hit finishes it outright, which is
+ * the original's own rule and not a rounding of ours. */
+int gta_weapons_bullet_damage(const gta_car_info *ci, int damage)
+{
+    int step = (ci && ci->vtype <= GTA_VEH_JUGG_BACK) ? 2 : 5;
+    if (damage >= 75)
+        return GTA_CAR_WRECKED - damage;    /* the finisher */
+    return step;
+}
+
 void gta_weapons_wreck_car(gta_weapons *w, const gta_car_info *ci,
                            long cx, long cy, int face, int layer,
                            gta_peds *peds, gta_traffic *tr, gta_score *sc,
@@ -185,17 +202,36 @@ void gta_weapons_wreck_car(gta_weapons *w, const gta_car_info *ci,
     long hl = gta_car_world_len(ci) / 2, hw = gta_car_world_wid(ci) / 2;
     int q;
 
-    /* The centre first - it is the one that does the damage that matters -
-     * and then the four corners, which is what gives a burning car its
-     * spread of fire rather than a single ball. */
+    /* HOW MANY BLASTS, and it is the vehicle's class that says
+     * as the original does it: a bike or a car goes up in
+     * ONE, anything heavier in THREE - the centre and both ends of the body
+     * - and the TANKER in FIVE, the three plus a pair a quarter of its
+     * length either side. The five corners this used to draw are the
+     * original's BOMB, not an ordinary wreck, so every burning saloon threw
+     * a spread that only a tanker should.
+     *
+     * The tanker is the one vehicle with a bus class and a body over a
+     * hundred and ten world pixels long; testing the shape rather than a
+     * model number keeps the rule with the data, where the three cities
+     * disagree about model ids. */
+    int n = 1;
+    if (ci->vtype <= GTA_VEH_JUGG_BACK || ci->vtype == GTA_VEH_TRAIN ||
+        ci->vtype == GTA_VEH_TRAM || ci->vtype == GTA_VEH_BOAT ||
+        ci->vtype == GTA_VEH_TANK)
+        n = (ci->vtype <= GTA_VEH_JUGG_BACK && hl * 2 >= 110) ? 5 : 3;
+
     gta_weapons_explode(w, cx, cy, layer, peds, tr, sc, by_player);
-    for (q = 0; q < 4; q++) {
+    for (q = 1; q < n; q++) {
+        /* 1,2 are the two ends; 3,4 the tanker's extra pair at a quarter. */
         long a = (q & 1) ? hl : -hl;
-        long b = (q & 2) ? hw : -hw;
-        long ex = cx + fx * (a * 4) + rx * (b * 4);
-        long ey = cy + fy * (a * 4) + ry * (b * 4);
-        gta_weapons_explode(w, ex, ey, layer, peds, tr, sc, by_player);
+        if (q >= 3) a /= 2;
+        {
+            long ex = cx + fx * (a * 4);
+            long ey = cy + fy * (a * 4);
+            gta_weapons_explode(w, ex, ey, layer, peds, tr, sc, by_player);
+        }
     }
+    (void)rx; (void)ry; (void)hw;
 }
 
 /* THE FUSES, once a tick. A car that has taken a hundred points burns for
@@ -474,6 +510,12 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 if (sc && b->owner < 0) {
                     gta_score_add(sc, 10);
                     gta_score_crime(sc, GTA_CRIME_FIREARM);
+                    /* AND A POLICE CAR IS A HEAD ON ITS OWN. The original
+                     * forces the level to 1 when a bullet lands on a
+                     * model-4 car, whatever the heat says
+                     * as the original does. */
+                    if (tr->cars[ci].model == GTA_COP_MODEL)
+                        gta_score_force_level(sc, 1);
                 }
                 b->alive = 0;
                 w->stat_car++;
@@ -519,11 +561,15 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                     if (sc && b->owner < 0) {
                         gta_score_add(sc, 100);
                         gta_score_crime(sc, GTA_CRIME_FIREARM);
+                        if (tr->cars[ci].model == GTA_COP_MODEL)
+                            gta_score_force_level(sc, 1);
                     }
                     printf("gta: rocket burst on car %d (model %d)\n", ci,
                            tr->cars[ci].model);
                 } else {
-                    tr->cars[ci].damage += 5;
+                    tr->cars[ci].damage += gta_weapons_bullet_damage(
+                            &t->cars[tr->cars[ci].model],
+                            tr->cars[ci].damage);
                     tr->cars[ci].dmg_bits |= 1UL << gta_car_panel_delta(
                         &t->cars[tr->cars[ci].model], tr->cars[ci].x,
                         tr->cars[ci].y, tr->cars[ci].face, b->x, b->y);
@@ -531,6 +577,12 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                     if (sc && b->owner < 0) {
                         gta_score_add(sc, 10);
                         gta_score_crime(sc, GTA_CRIME_FIREARM);
+                        /* A POLICE CAR IS A HEAD ON ITS OWN - see the
+                         * shotgun branch above. Every way of putting a
+                         * bullet into a car goes through one of these
+                         * three, and the rule belongs on all of them. */
+                        if (tr->cars[ci].model == GTA_COP_MODEL)
+                            gta_score_force_level(sc, 1);
                     }
                     printf("gta: bullet %d hit car %d (model %d) at (%ld,%ld),"
                            " damage %d, panels %04lx\n", i, ci,

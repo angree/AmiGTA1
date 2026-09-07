@@ -23,6 +23,7 @@
 #include "../native/gta_trig.h"
 #include "../native/gta_nav.h"
 #include "../native/gta_vehphys.h"
+#include "../native/gta_script.h"
 #include "../native/gta_font.h"
 #include "../native/gta_text.h"
 #include "../native/gta_peds.h"
@@ -4454,6 +4455,111 @@ static int cmd_view(const char *mapPath, const char *tilesPath,
 /* Every block of one column, decoded. The renderer draws black wherever a
  * column has no lid, and "is that the map or is that us?" is a question that
  * only the raw numbers answer. */
+/* EVERY BLOCK THE MAP FILE LEAVES OUT OF A SURFACE, at one layer.
+ *
+ * The invisible wall on the pavement at (25,17): a column two blocks high
+ * between columns three blocks high, so the pavement block above the lid is
+ * simply not in the file and the port read "air" where the player sees
+ * pavement. gta_map_ground_type() fills those in; this counts them and says
+ * where they are, so the rule can be judged against the whole city rather
+ * than against the one the developer drove into.
+ */
+static int cmd_holes(const char *mapPath, int z)
+{
+    gta_map mp;
+    int x, y, n = 0;
+
+    if (gta_map_load(mapPath, &mp) != 0)
+        return 1;
+
+    for (y = 0; y < GTA_MAP_DIM; y++) {
+        for (x = 0; x < GTA_MAP_DIM; x++) {
+            gta_block b;
+            if (gta_map_block(&mp, x, y, z, &b))
+                continue;
+            if (gta_map_ground_type(&mp, x, y, z) != 3)
+                continue;
+            if (n < 40)
+                printf("  (%3d,%3d) filled in as pavement\n", x, y);
+            n++;
+        }
+    }
+    printf("layer %d: %d blocks absent from the file inside a walkable "
+           "surface\n", z, n);
+    return 0;
+}
+
+/* HOW MANY BULLETS EACH VEHICLE TAKES, straight through the game's own
+ * gta_weapons_bullet_damage(). The original's answer is sixteen for a saloon
+ * or a police car and thirty-nine for a bus, a tanker or a firetruck
+ * as the original charges it; this is where that is checked without an
+ * emulator.
+ */
+static int cmd_bullets(const char *tilesPath)
+{
+    gta_tiles ti;
+    int m;
+
+    if (gta_tiles_load(tilesPath, &ti) != 0)
+        return 1;
+
+    printf("  # class  mass  bullets to wreck\n");
+    for (m = 0; m < ti.n_cars; m++) {
+        int dmg = 0, n = 0;
+        while (dmg < GTA_CAR_WRECKED && n < 500) {
+            dmg += gta_weapons_bullet_damage(&ti.cars[m], dmg);
+            n++;
+        }
+        printf(" %2d  %5d %5ld  %d\n", m, ti.cars[m].vtype,
+               ti.cars[m].mass >> 16, n);
+    }
+    return 0;
+}
+
+/* THE LEVEL SCRIPT'S DECLARATION BLOCK, as the port reads it.
+ *
+ * Every line of section [N] that carries coordinates, counted by type and
+ * listed. The point of the command is that the counts can be checked against
+ * the file itself with grep, which is the only way to know a parser is right
+ * rather than merely quiet - this project has shipped two readers that
+ * compiled and were wrong (the .GRY header, the 10-byte sprite record).
+ */
+static int cmd_script(const char *iniPath, int level, int want)
+{
+    gta_script sc;
+    int i, shown = 0;
+    long hist[256];
+
+    if (gta_script_load(&sc, iniPath, level) != 0) {
+        fprintf(stderr, "script: nothing read from %s section [%d]\n",
+                iniPath, level);
+        return 1;
+    }
+    memset(hist, 0, sizeof hist);
+    for (i = 0; i < sc.n; i++)
+        hist[sc.d[i].type]++;
+
+    printf("script: %s section [%d] - %d lines, %d declarations, "
+           "%d of a name this port does not know\n",
+           iniPath, level, sc.n_lines, sc.n, sc.n_unknown);
+    for (i = 0; i < 256; i++)
+        if (hist[i])
+            printf("  %4ld  %-24s (type %d, coords in %s)\n", hist[i],
+                   gta_script_type_name(i), i,
+                   gta_script_is_block(i) ? "blocks" : "pixels");
+
+    for (i = 0; i < sc.n && shown < 12; i++) {
+        if (want >= 0 && sc.d[i].type != want) continue;
+        printf("  line %-5d %-12s flag %d at (%d,%d,%d)  %d %d %d %d [%d]\n",
+               sc.d[i].line, gta_script_type_name(sc.d[i].type),
+               sc.d[i].flag, sc.d[i].x, sc.d[i].y, sc.d[i].z,
+               sc.d[i].a, sc.d[i].b, sc.d[i].c, sc.d[i].d, sc.d[i].n_num);
+        shown++;
+    }
+    gta_script_free(&sc);
+    return 0;
+}
+
 static int cmd_column(const char *mapPath, int bx, int by)
 {
     gta_map mp;
@@ -5153,6 +5259,9 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
         nh = gta_traffic_ram(&tr, v.ox, v.oy, gta_veh_angle(&v),
                              v.len / 2, v.wid / 2, v.vx, v.vy, v.mass, 2,
                              &rvx, &rvy, &ryaw, &rpx, &rpy);
+        /* The game side charges the striker its own share - see
+         * gta_traffic_ram() and gta_main.c - so the harness must too. */
+        if (nh) v.damage += tr.pl_damage;
         /* WHAT THE COLLISION DOES TO THE PLAYER'S OWN CAR, in pixels, in the
          * tick it happens. The developer feels this one in his hands:
          * "teleportuje mnie o 10 pikseli w 1 klatce". The victim's jump was
@@ -5300,6 +5409,17 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
      * that was rammed carries the impulse into whatever is in front of it. */
     printf("hitcar: fleet hits %ld, cars knocked loose %ld\n",
            tr.stat_fleet_hits, tr.stat_knocked);
+    /* WHAT THE CRASH COST EACH OF THEM. The mass is what decides it - see
+     * gta_traffic_ram() - so this line is the one
+     * that says whether a tanker is tougher than a saloon. */
+    if (victim >= 0)
+        printf("hitcar: damage - player (model %d, mass %ld) %d, "
+               "victim (model %d, mass %ld) %d, rams %ld\n",
+               pmodel, ti.cars[pmodel].mass >> 16, v.damage,
+               tr.cars[victim].model,
+               ti.cars[tr.cars[victim].model].mass >> 16,
+               tr.cars[victim].damage, tr.stat_rams);
+    printf("hitcar: police cars touched %ld\n", tr.stat_ram_cop);
     if (victim < 0)
         printf("hitcar: never touched anything - move the start block\n");
     else
@@ -5584,6 +5704,16 @@ int main(int argc, char **argv)
 {
     if (argc >= 4 && strcmp(argv[1], "stats") == 0)
         return cmd_stats(argv[2], argv[3]);
+
+    if (argc >= 3 && strcmp(argv[1], "script") == 0)
+        return cmd_script(argv[2], argc >= 4 ? atoi(argv[3]) : 1,
+                          argc >= 5 ? atoi(argv[4]) : -1);
+
+    if (argc >= 3 && strcmp(argv[1], "bullets") == 0)
+        return cmd_bullets(argv[2]);
+
+    if (argc >= 3 && strcmp(argv[1], "holes") == 0)
+        return cmd_holes(argv[2], argc >= 4 ? atoi(argv[3]) : 2);
 
     if (argc >= 5 && strcmp(argv[1], "column") == 0)
         return cmd_column(argv[2], atoi(argv[3]), atoi(argv[4]));

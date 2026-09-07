@@ -1,4 +1,17 @@
 #!/bin/sh
+
+# THE TEST SCRIPTS ARE NOT PART OF A DEPLOY ANY MORE.
+#
+# The front end (PROGRESS.md 157) is skipped whenever autoinput.txt,
+# autowalk.txt or autodrive.txt is in Work: - an automated run cannot press
+# a key, so a menu in front of one would hang the harness. That means a
+# plain deploy has to leave NO script behind, or the title screen would
+# never be seen. `--scripts` puts the camera tour and the walk script back
+# for a scripted run.
+SCRIPTS=0
+for a in "$@"; do
+    [ "$a" = "--scripts" ] && SCRIPTS=1
+done
 # Deploy the test machine's shared folder.
 #
 #   tools/bin/deploy.sh [--data]
@@ -54,13 +67,21 @@ fi
 # The scripted camera path the game replays before going interactive. Same rule
 # as `run`: the template in the repo is the original, the copy in Work: is
 # disposable. Delete Work:autoinput.txt to get a purely interactive session.
-cp "$ROOT/winuae/work-template/autoinput.txt" "$WORK/autoinput.txt"
-echo "deployed: autoinput.txt"
+if [ "$SCRIPTS" = 1 ]; then
+    cp "$ROOT/winuae/work-template/autoinput.txt" "$WORK/autoinput.txt"
+    echo "deployed: autoinput.txt"
+else
+    rm -f "$WORK/autoinput.txt"
+fi
 
 # The scripted WALK, replayed after the camera tour. Same format as the host
 # harness so one script runs in both places; see the file's own header.
-cp "$ROOT/winuae/work-template/autowalk.txt" "$WORK/autowalk.txt"
-echo "deployed: autowalk.txt"
+if [ "$SCRIPTS" = 1 ]; then
+    cp "$ROOT/winuae/work-template/autowalk.txt" "$WORK/autowalk.txt"
+    echo "deployed: autowalk.txt"
+else
+    rm -f "$WORK/autowalk.txt"
+fi
 
 # ONE GAME BINARY since v0.0.4 - the screen size is a setting, not a build.
 # Any leftover gta-aga / gta-rtg* in the shared folder is deleted rather than
@@ -152,6 +173,30 @@ if [ -f "$TIL" ]; then
     cp "$TIL" "$WORK/GTADATA/style001.til"
     echo "deployed: GTADATA/style001.til"
 fi
+
+# THE FRONT END, baked the same way: the title screen's 640x480 art squashed
+# to the Amiga's 320x200 and its palette carried with it. See native/
+# gta_front.h - the format is not documented anywhere and was worked out
+# from the file sizes.
+FNT="$ROOT/build/data/front.fnt"
+if [ ! -f "$FNT" ] && [ -x "$ROOT/build/host/gtabake" ] && \
+   [ -f "$DATA/f_pal.raw" ]; then
+    mkdir -p "$ROOT/build/data"
+    "$ROOT/build/host/gtabake" -front "$DATA" "$FNT" >/dev/null &&
+        echo "baked:    build/data/front.fnt"
+fi
+if [ -f "$FNT" ]; then
+    mkdir -p "$WORK/GTADATA"
+    cp "$FNT" "$WORK/GTADATA/front.fnt"
+    echo "deployed: GTADATA/front.fnt"
+fi
+# ...and the two fonts nothing else deploys: the menu's and the multiplier's.
+for f in f_mtext.fon missmul1.fon; do
+    if [ -f "$DATA/$f" ]; then
+        mkdir -p "$WORK/GTADATA"
+        cp -u "$DATA/$f" "$WORK/GTADATA/$f"
+    fi
+done
 
 # THE SOUND BANK, baked the same way and for the same reason.
 #

@@ -60,6 +60,32 @@ typedef struct {
     long stat_opened, stat_taken;
 } gta_pickups;
 
+/* Empty the table and bind the sprites, with no crates in it at all. THE
+ * SCRIPT IS WHAT CREATES THEM in the original: the 151 POWERUP declarations
+ * are only positions, and a crate appears when a POWERUP_ON command names
+ * one - 175 of those in Liberty City, on 137 distinct powerups, most of them
+ * in the level's opening block and the rest as missions unlock. Reading the
+ * file and putting all 151 out at load, which is what this port did first,
+ * is a visible difference: the fourteen that no path ever turns on were
+ * standing in the street from the start. */
+void gta_pickups_init(gta_pickups *pk, const gta_tiles *t);
+
+/* Create a crate at the CENTRE of block (bx,by), on the lowest layer there a
+ * person can stand on. A block that already has one is left alone rather
+ * than given a second - the script turns some powerups on twice and the
+ * original only gets away with it because a mission RESET removes them
+ * first. Returns 1 when a crate was made. */
+int  gta_pickups_add_block(gta_pickups *pk, const gta_nav *nav,
+                           int bx, int by, int kind, int amount);
+
+/* POWERUP_OFF: the crate on that block is gone, open or not. The original
+ * finds it by position too. 1 when there was
+ * one. */
+int  gta_pickups_remove_block(gta_pickups *pk, int bx, int by);
+
+/* IS_POWERUP_DONE asks the other way round: is one still there? */
+int  gta_pickups_at_block(const gta_pickups *pk, int bx, int by);
+
 /* Read the POWERUP lines of section [level] of `ini_path`. Every crate is
  * put at the centre of its block, on the lowest layer there that a person
  * can stand on. Returns how many, 0 when the file is absent. */

@@ -55,6 +55,50 @@ static const unsigned char glyph[][GH] = {
     { 5, 5, 2, 2, 2 }    /* Y  index 37 */
 };
 
+int gta_hud_sprite_w(const gta_tiles *t, int index)
+{
+    if (!t || index < 0 || index >= t->n_sprites)
+        return 0;
+    return t->sprites[index].w;
+}
+
+int gta_hud_sprite_h(const gta_tiles *t, int index)
+{
+    if (!t || index < 0 || index >= t->n_sprites)
+        return 0;
+    return t->sprites[index].h;
+}
+
+void gta_hud_sprite(unsigned char *dst, int pitch, int w, int h,
+                    int x, int y, const gta_tiles *t, int index)
+{
+    const gta_tile_sprite *sp;
+    const unsigned char *src;
+    int row, col;
+
+    if (!t || index < 0 || index >= t->n_sprites)
+        return;
+    sp = &t->sprites[index];
+    if (sp->w <= 0 || sp->h <= 0)
+        return;
+    src = t->sprite_pixels + sp->off;
+    for (row = 0; row < sp->h; row++) {
+        int py = y + row;
+        unsigned char *d;
+        const unsigned char *s2 = src + (long)row * sp->w;
+        if (py < 0 || py >= h)
+            continue;
+        d = dst + (long)py * pitch;
+        for (col = 0; col < sp->w; col++) {
+            int px = x + col;
+            if (px < 0 || px >= w)
+                continue;
+            if (s2[col])                /* 0 is clear, as everywhere else */
+                d[px] = s2[col];
+        }
+    }
+}
+
 static unsigned char hud_ink = 255;
 static unsigned char hud_shadow;
 

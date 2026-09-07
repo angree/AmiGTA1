@@ -65,14 +65,9 @@
 
 static int ground_at(const gta_map *m, int bx, int by, int z)
 {
-    gta_block b;
-    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM)
-        return GTA_GROUND_AIR;
-    if (z < 0 || z >= GTA_MAP_LAYERS)
-        return GTA_GROUND_AIR;
-    if (!gta_map_block(m, bx, by, z, &b))
-        return GTA_GROUND_AIR;
-    return gta_block_ground_type(&b);
+    /* gta_map_ground_type(), not the block's bits: a block the file leaves
+     * out of a pavement is still pavement. See gta_map.c. */
+    return gta_map_ground_type(m, bx, by, z);
 }
 
 static int walkable_at(const gta_map *m, int bx, int by, int z)

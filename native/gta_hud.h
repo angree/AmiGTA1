@@ -17,6 +17,36 @@
 #ifndef GTA_HUD_H
 #define GTA_HUD_H
 
+#include "gta_tiles.h"
+
+/* ONE SPRITE, AT SCREEN COORDINATES, 1:1 AND UNROTATED.
+ *
+ * Everything else in this port draws a sprite through the renderer, which
+ * puts it in the world and scales it with the layer. The HUD is not in the
+ * world: the original's icons are blitted straight to the screen at their
+ * own size, straight to the screen. Palette index 0 is clear.
+ *
+ * `index` is an absolute sprite index. The HUD icon set is the style file's
+ * "arrow" category, whose base is gta_tiles_sprite_base(t, GTA_SPR_ARROW):
+ *
+ *   +0  the mission arrow          +11 a mobile phone   (BRIEF)
+ *   +3  the PAGER, 80x30           +12 a handset        (MOBILE_BRIEF)
+ *   +4  the pager's blinking light +13 a policeman      (brief kind 4)
+ *   +5..+8 pistol, machine gun,    +14 a blue "i"       (brief kind 3)
+ *         rocket, flamethrower     +15 a skull          (FRENZY_BRIEF)
+ *   +10 a mouth  (SPEECH_BRIEF)    +16,+17 the WANTED cop head, two states
+ *   +18,+19 body armour, two       +20,+21 a key - the jail-free card
+ *   +22,+23 a gun - the frenzy / infinite ammo
+ *
+ * The PAIRS are why the original's indicators flash: it draws one or the
+ * other every couple of frames. */
+void gta_hud_sprite(unsigned char *dst, int pitch, int w, int h,
+                    int x, int y, const gta_tiles *t, int index);
+
+/* How wide and tall that sprite is, 0 when there is no such sprite. */
+int gta_hud_sprite_w(const gta_tiles *t, int index);
+int gta_hud_sprite_h(const gta_tiles *t, int index);
+
 /* Pick the ink and shadow colours out of a 768-byte RGB palette: the brightest
  * entry and the darkest. Doing it by search rather than by hard-coded index
  * means the readout stays legible whichever style file is loaded. */

@@ -55,14 +55,9 @@ int gta_pickups_add(gta_pickups *pk, long x, long y, int layer, int kind, int am
     return 1;
 }
 
-int gta_pickups_load(gta_pickups *pk, const char *ini_path, int level,
-                     const gta_nav *nav, const gta_tiles *t)
+void gta_pickups_init(gta_pickups *pk, const gta_tiles *t)
 {
-    FILE *f;
-    char line[160];
-    int sec = -1, k;
-    int no_layer = 0;
-
+    int k;
     memset(pk, 0, sizeof *pk);
     pk->tiles = t;
     pk->spr_crate = gta_tiles_object_sprite(t, 0x54);
@@ -71,6 +66,59 @@ int gta_pickups_load(gta_pickups *pk, const char *ini_path, int level,
         int o = item_object(k);
         pk->spr_item[k] = o >= 0 ? gta_tiles_object_sprite(t, o) : -1;
     }
+}
+
+/* The centre of a block in 16.16 world pixels - the same arithmetic the
+ * script's own gta_script_centre() does, kept here so this module does not
+ * have to include the script. */
+#define BLOCK_CENTRE(b)  ((((long)(b) * 32 + 16)) << 16)
+
+int gta_pickups_at_block(const gta_pickups *pk, int bx, int by)
+{
+    long cx = BLOCK_CENTRE(bx), cy = BLOCK_CENTRE(by);
+    int i;
+    for (i = 0; i < pk->n; i++)
+        if (pk->p[i].state != 0 && pk->p[i].x == cx && pk->p[i].y == cy)
+            return 1;
+    return 0;
+}
+
+int gta_pickups_remove_block(gta_pickups *pk, int bx, int by)
+{
+    long cx = BLOCK_CENTRE(bx), cy = BLOCK_CENTRE(by);
+    int i, n = 0;
+    for (i = 0; i < pk->n; i++)
+        if (pk->p[i].state != 0 && pk->p[i].x == cx && pk->p[i].y == cy) {
+            pk->p[i].state = 0;
+            n++;
+        }
+    return n;
+}
+
+int gta_pickups_add_block(gta_pickups *pk, const gta_nav *nav,
+                          int bx, int by, int kind, int amount)
+{
+    int lz;
+    if (bx < 0 || by < 0 || bx >= GTA_MAP_DIM || by >= GTA_MAP_DIM)
+        return 0;
+    if (gta_pickups_at_block(pk, bx, by))
+        return 0;
+    lz = stand_layer(nav, bx, by);
+    if (lz < 0)
+        return 0;
+    return gta_pickups_add(pk, BLOCK_CENTRE(bx), BLOCK_CENTRE(by),
+                           lz, kind, amount);
+}
+
+int gta_pickups_load(gta_pickups *pk, const char *ini_path, int level,
+                     const gta_nav *nav, const gta_tiles *t)
+{
+    FILE *f;
+    char line[160];
+    int sec = -1;
+    int no_layer = 0;
+
+    gta_pickups_init(pk, t);
 
     f = fopen(ini_path, "r");
     if (!f) {
@@ -102,13 +150,9 @@ int gta_pickups_load(gta_pickups *pk, const char *ini_path, int level,
             w = strstr(b, "POWERUP");
             if (!w || sscanf(w + 7, "%d %d", &kind, &amount) != 2) continue;
             if (x < 0 || y < 0 || x >= GTA_MAP_DIM || y >= GTA_MAP_DIM) continue;
-            {
-                int lz = stand_layer(nav, x, y);
-                if (lz < 0) { no_layer++; continue; }
-                if (!gta_pickups_add(pk, (((long)x * 32 + 16) << 16),
-                                     (((long)y * 32 + 16) << 16), lz, kind, amount))
-                    break;
-            }
+            if (stand_layer(nav, x, y) < 0) { no_layer++; continue; }
+            if (!gta_pickups_add_block(pk, nav, x, y, kind, amount))
+                break;
         }
     }
     fclose(f);

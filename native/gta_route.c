@@ -272,6 +272,20 @@ static int route_bfs(const gta_nav *nav, int sx, int sy, int z,
             if (i == back2 && !g_allow_reverse)
                 continue;
 
+            /* AND NOT UP OFF THE TOP OF A RAMP. A slope climbing the way
+             * this step goes puts the car on the layer ABOVE, and this search
+             * is single-layer: the edge does not exist here. Without this a
+             * car on the row-44 ramp routed through (19,44) - which on
+             * layer 2 is the avenue under the truss bridge - and down the
+             * avenue, so the bridge behaved like a junction. The map is
+             * asked only on the 193 ramp blocks; everywhere else this is one
+             * bit test. */
+            if (gta_nav_sloped(here) && nav->map) {
+                static const int ang_of[4] = { 0, 128, 192, 64 };
+                if (gta_map_slope_up_dir(nav->map, cx, cy, z) == ang_of[i])
+                    continue;
+            }
+
             nx = cx + step_x[i];
             ny = cy + step_y[i];
             if (nx < lox || nx >= hix || ny < loy || ny >= hiy)

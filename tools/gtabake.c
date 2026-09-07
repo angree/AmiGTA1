@@ -31,6 +31,7 @@
 #include "../native/gta_style.h"
 #include "../native/gta_tiles.h"
 #include "../native/gta_sfx.h"
+#include "../native/gta_front.h"
 
 #define SRC_DIM  GTA_BLOCK_DIM      /* 64 */
 #define DST_DIM  GTA_TILE_DIM       /* 32 */
@@ -99,6 +100,431 @@ static const unsigned char *fetch(const gta_style *st, gta_block_type type,
     return small_;
 }
 
+
+/* ---- THE FRONT END'S ART ------------------------------------------------
+ *
+ * See gta_front.h for the format of what this writes and for how the .rat /
+ * .raw pair was decoded. Everything here is nearest-pixel on purpose: the
+ * source is PALETTE INDICES, and the average of two indices is a colour
+ * neither of them was.
+ */
+#define FRONT_SRC_W   640
+#define FRONT_SRC_H   480
+#define FRONT_UP_H    168               /* the logo strip, source rows */
+#define FRONT_LOW_H   312               /* the background, source rows */
+
+static int front_read(const char *dir, const char *name, unsigned char *dst,
+                      long want)
+{
+    char path[512];
+    FILE *f;
+    long got;
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "gtabake: cannot open %s\n", path);
+        return 1;
+    }
+    got = (long)fread(dst, 1, (size_t)want, f);
+    fclose(f);
+    if (got != want) {
+        fprintf(stderr, "gtabake: %s is %ld bytes, expected %ld\n",
+                path, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+
+/* ---- THE FRONT END'S OWN PALETTE ----------------------------------------
+ *
+ * See gta_front.h. The picture is quantised rather than pushed through
+ * f_pal.raw, and the first GTA_FRONT_RESERVED entries are left to Intuition:
+ *
+ *    0  black          the screen's background and the bar's trim
+ *    1  white          the bar's text, and the pointer's own white
+ *    2  dark grey      the bar's fill
+ *    3  mid grey
+ *   17  white          the mouse pointer, which Intuition draws out of
+ *   18  black          17..19 on an 8-bit screen whatever else is loaded
+ *   19  light grey
+ *
+ * The rest of 0..19 are a small grey ramp, so anything else the system draws
+ * lands on something sensible rather than on a piece of the artwork.
+ */
+#define FRONT_HIST_BITS 5
+#define FRONT_HIST      (1 << (FRONT_HIST_BITS * 3))   /* 32768 */
+#define FRONT_KEY(r, g, b) \
+    ((((r) >> 3) << 10) | (((g) >> 3) << 5) | ((b) >> 3))
+
+typedef struct {
+    long n;                             /* pixels in the cell */
+    long r, g, b;                       /* their sum */
+} front_cell;
+
+typedef struct {
+    int lo, hi;                         /* range of `order` this box owns */
+    long n;                             /* pixels in it */
+    int wr, wg, wb;                     /* its extent, for the split */
+} front_box;
+
+static front_cell *front_hist;
+static int *front_order;                /* cell indices, sorted per box */
+static int front_sort_axis;
+
+static int front_cmp(const void *a, const void *b)
+{
+    int ia = *(const int *)a, ib = *(const int *)b;
+    int va, vb;
+    switch (front_sort_axis) {
+    case 0:  va = (ia >> 10) & 31; vb = (ib >> 10) & 31; break;
+    case 1:  va = (ia >> 5)  & 31; vb = (ib >> 5)  & 31; break;
+    default: va = ia & 31;         vb = ib & 31;         break;
+    }
+    return va - vb;
+}
+
+/* The extent of a box and which axis is longest. */
+static void front_extent(front_box *bx)
+{
+    int i, r0 = 31, r1 = 0, g0 = 31, g1 = 0, b0 = 31, b1 = 0;
+    bx->n = 0;
+    for (i = bx->lo; i <= bx->hi; i++) {
+        int c = front_order[i];
+        int r = (c >> 10) & 31, g = (c >> 5) & 31, b = c & 31;
+        if (r < r0) r0 = r;  if (r > r1) r1 = r;
+        if (g < g0) g0 = g;  if (g > g1) g1 = g;
+        if (b < b0) b0 = b;  if (b > b1) b1 = b;
+        bx->n += front_hist[c].n;
+    }
+    /* Weighted the way the eye is - green carries most of the luminance, so
+     * a box that is long in green is worth splitting before one long in
+     * blue. Without it the sky and the rust share entries and the wall goes
+     * flat. */
+    bx->wr = (r1 - r0) * 3;
+    bx->wg = (g1 - g0) * 6;
+    bx->wb = (b1 - b0) * 1;
+}
+
+/* MEDIAN CUT down to `want` colours, written into pal[first..]. Returns how
+ * many it actually made. */
+static int front_quantise(unsigned char *pal, int first, int want)
+{
+    front_box *box;
+    int n_box = 0, n_used = 0, i, k;
+
+    box = (front_box *)calloc((size_t)want, sizeof *box);
+    front_order = (int *)calloc(FRONT_HIST, sizeof *front_order);
+    if (!box || !front_order) { free(box); free(front_order); return 0; }
+
+    for (i = 0; i < FRONT_HIST; i++)
+        if (front_hist[i].n)
+            front_order[n_used++] = i;
+    if (n_used <= 0) { free(box); free(front_order); return 0; }
+
+    box[0].lo = 0;
+    box[0].hi = n_used - 1;
+    front_extent(&box[0]);
+    n_box = 1;
+
+    while (n_box < want) {
+        /* The box worth splitting: the biggest extent, and among equals the
+         * one with the most pixels in it. */
+        int best = -1;
+        long best_score = -1;
+        for (i = 0; i < n_box; i++) {
+            int w = box[i].wr > box[i].wg ? box[i].wr : box[i].wg;
+            long score;
+            if (box[i].wb > w) w = box[i].wb;
+            if (box[i].hi <= box[i].lo || w <= 0)
+                continue;
+            score = (long)w * 1024 + (box[i].n > 1024 ? 1024 : box[i].n);
+            if (score > best_score) { best_score = score; best = i; }
+        }
+        if (best < 0)
+            break;
+        /* Split it at the MEDIAN of its longest axis - the pixel count's
+         * median, not the range's, which is what makes this median cut and
+         * not a uniform subdivision. */
+        {
+            front_box *bx = &box[best];
+            long half = bx->n / 2, run = 0;
+            int cut;
+            front_sort_axis = bx->wr >= bx->wg && bx->wr >= bx->wb ? 0
+                            : (bx->wg >= bx->wb ? 1 : 2);
+            qsort(front_order + bx->lo, (size_t)(bx->hi - bx->lo + 1),
+                  sizeof *front_order, front_cmp);
+            cut = bx->lo;
+            for (i = bx->lo; i < bx->hi; i++) {
+                run += front_hist[front_order[i]].n;
+                cut = i;
+                if (run >= half)
+                    break;
+            }
+            box[n_box].lo = cut + 1;
+            box[n_box].hi = bx->hi;
+            bx->hi = cut;
+            front_extent(bx);
+            front_extent(&box[n_box]);
+            n_box++;
+        }
+    }
+
+    for (k = 0; k < n_box; k++) {
+        long r = 0, g = 0, b = 0, n = 0;
+        for (i = box[k].lo; i <= box[k].hi; i++) {
+            int c = front_order[i];
+            r += front_hist[c].r; g += front_hist[c].g; b += front_hist[c].b;
+            n += front_hist[c].n;
+        }
+        if (n < 1) n = 1;
+        pal[(first + k) * 3 + 0] = (unsigned char)(r / n);
+        pal[(first + k) * 3 + 1] = (unsigned char)(g / n);
+        pal[(first + k) * 3 + 2] = (unsigned char)(b / n);
+    }
+    free(box);
+    free(front_order);
+    front_order = 0;
+    return n_box;
+}
+
+/* THE NEAREST ENTRY OF THE PALETTE to an 8-bit RGB triple. Linear search
+ * over 256, which is nothing at build time and keeps the palette the
+ * original's rather than inventing one. */
+static int front_nearest(const unsigned char *pal, int r, int g, int b)
+{
+    int i, best = GTA_FRONT_RESERVED;
+    long bd = -1;
+    /* THE RESERVED ENTRIES ARE NOT CANDIDATES. They are the title bar's and
+     * the pointer's, and a picture that maps onto them changes colour the
+     * moment Intuition redraws either. */
+    for (i = GTA_FRONT_RESERVED; i < 256; i++) {
+        long dr = r - pal[i * 3], dg = g - pal[i * 3 + 1],
+             db = b - pal[i * 3 + 2];
+        long d = dr * dr + dg * dg + db * db;
+        if (bd < 0 || d < bd) { bd = d; best = i; }
+        if (d == 0) break;
+    }
+    return best;
+}
+
+/* One 24-bit source strip, downscaled, as 8-bit RGB in `rgb`.
+ *
+ * `dst_row0` is where this strip starts on the 200-row screen and `src_row0`
+ * where it starts in the 480-row original; the source rows for one output
+ * row are everything between this row's place and the next one's, which is
+ * two or three of them, and they are AVERAGED - the art is dithered and
+ * picking one pixel out of a dither is noise. */
+static void front_scale(const unsigned char *src, int src_h, int src_row0,
+                        int dst_row0, unsigned char *rgb, int rows)
+{
+    int y, x;
+    for (y = 0; y < rows; y++) {
+        int y0 = ((dst_row0 + y) * FRONT_SRC_H) / GTA_FRONT_H - src_row0;
+        int y1 = ((dst_row0 + y + 1) * FRONT_SRC_H) / GTA_FRONT_H - src_row0;
+        unsigned char *d = rgb + (long)y * GTA_FRONT_W * 3;
+        if (y0 < 0) y0 = 0;
+        if (y1 > src_h) y1 = src_h;
+        if (y1 <= y0) y1 = y0 + 1;
+        for (x = 0; x < GTA_FRONT_W; x++) {
+            long r = 0, g = 0, b = 0, n = 0;
+            int sy, sx;
+            for (sy = y0; sy < y1; sy++) {
+                const unsigned char *s = src + ((long)sy * FRONT_SRC_W
+                                                + x * 2) * 3;
+                for (sx = 0; sx < 2; sx++) {
+                    /* EIGHT BITS A COMPONENT, NOT SIX. Measured: the largest
+                     * byte in f_logo0.raw and f_lower0.raw is 255. The first
+                     * version scaled them as if they were VGA's 0..63 and
+                     * everything brighter than 63 wrapped round in the byte -
+                     * which is why the wall came out right and the lettering
+                     * and the glow came out as confetti. */
+                    r += s[sx * 3];
+                    g += s[sx * 3 + 1];
+                    b += s[sx * 3 + 2];
+                    n++;
+                }
+            }
+            d[x * 3 + 0] = (unsigned char)(r / n);
+            d[x * 3 + 1] = (unsigned char)(g / n);
+            d[x * 3 + 2] = (unsigned char)(b / n);
+        }
+    }
+}
+
+/* Count one scaled strip into the 5:5:5 histogram. */
+static void front_count(const unsigned char *rgb, int rows)
+{
+    long i, n = (long)rows * GTA_FRONT_W;
+    for (i = 0; i < n; i++) {
+        int r = rgb[i * 3], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2];
+        front_cell *c = &front_hist[FRONT_KEY(r, g, b)];
+        c->n++; c->r += r; c->g += g; c->b += b;
+    }
+}
+
+/* ...and map it into the quantised palette, with an ordered dither. The
+ * lookup is cached per 5:5:5 cell, so the 236-entry search runs at most
+ * 32768 times for the whole title screen instead of once per pixel. */
+static void front_map(const unsigned char *rgb, unsigned char *dst, int rows,
+                      const unsigned char *pal, short *cache)
+{
+    static const signed char bayer[16] = {
+        -10,   4,  -8,   6,
+          8,  -6,  10,  -3,
+         -7,   7,  -9,   3,
+         11,  -2,   9,  -4 };
+    int y, x;
+    for (y = 0; y < rows; y++)
+        for (x = 0; x < GTA_FRONT_W; x++) {
+            long i = (long)y * GTA_FRONT_W + x;
+            int t = bayer[(y & 3) * 4 + (x & 3)];
+            int r = rgb[i * 3] + t, g = rgb[i * 3 + 1] + t,
+                b = rgb[i * 3 + 2] + t;
+            int key;
+            if (r < 0) r = 0; if (r > 255) r = 255;
+            if (g < 0) g = 0; if (g > 255) g = 255;
+            if (b < 0) b = 0; if (b > 255) b = 255;
+            key = FRONT_KEY(r, g, b);
+            if (cache[key] < 0)
+                cache[key] = (short)front_nearest(pal, r, g, b);
+            dst[i] = (unsigned char)cache[key];
+        }
+}
+
+/* THE RESERVED ENTRIES: what Intuition draws its title bar and its mouse
+ * pointer with. A small grey ramp, so anything else the system paints lands
+ * on something sensible rather than on a piece of the artwork. */
+static void front_reserved(unsigned char *pal)
+{
+    static const unsigned char fixed[GTA_FRONT_RESERVED][3] = {
+        {   0,   0,   0 },   /*  0 black - the screen's ground, the bar's trim */
+        { 255, 255, 255 },   /*  1 white - the bar's text */
+        {  72,  76,  88 },   /*  2 the bar's fill, a dark neutral */
+        { 170, 170, 170 },   /*  3 */
+        {  32,  32,  32 }, {  64,  64,  64 }, {  96,  96,  96 },
+        { 128, 128, 128 }, { 160, 160, 160 }, { 192, 192, 192 },
+        { 224, 224, 224 }, {  48,  48,  48 }, {  80,  80,  80 },
+        { 112, 112, 112 }, { 144, 144, 144 }, { 176, 176, 176 },
+        { 208, 208, 208 },
+        { 255, 255, 255 },   /* 17 the mouse pointer, white */
+        {   0,   0,   0 },   /* 18 the mouse pointer, black */
+        { 187, 187, 187 }    /* 19 the mouse pointer, grey */
+    };
+    int i;
+    for (i = 0; i < GTA_FRONT_RESERVED; i++) {
+        pal[i * 3 + 0] = fixed[i][0];
+        pal[i * 3 + 1] = fixed[i][1];
+        pal[i * 3 + 2] = fixed[i][2];
+    }
+}
+
+static int bake_front(const char *dir, const char *outpath)
+{
+    static unsigned char strip[FRONT_SRC_W * FRONT_LOW_H * 3];
+    static unsigned char rgb_up[GTA_FRONT_W * GTA_FRONT_UP * 3];
+    static unsigned char rgb_low[GTA_FRONT_W * GTA_FRONT_LOW * 3];
+    static unsigned char out_up[GTA_FRONT_W * GTA_FRONT_UP];
+    static unsigned char out_low[GTA_FRONT_W * GTA_FRONT_LOW];
+    /* Every logo frame is scaled once, counted, and kept - the palette has to
+     * be chosen for all eight together or the animation would shimmer as the
+     * colours moved under it. */
+    static unsigned char rgb_frames[GTA_FRONT_FRAMES]
+                                   [GTA_FRONT_W * GTA_FRONT_UP * 3];
+    unsigned char pal[768];
+    unsigned char hdr[GTA_FRONT_HDR];
+    short *cache;
+    FILE *f;
+    int i, ncol;
+
+    front_hist = (front_cell *)calloc(FRONT_HIST, sizeof *front_hist);
+    cache = (short *)malloc(FRONT_HIST * sizeof *cache);
+    if (!front_hist || !cache) {
+        fprintf(stderr, "gtabake: out of memory for the front end\n");
+        free(front_hist); free(cache);
+        return 1;
+    }
+    for (i = 0; i < FRONT_HIST; i++) cache[i] = -1;
+
+    /* ---- pass one: scale everything and count its colours --------------- */
+    for (i = 0; i < GTA_FRONT_FRAMES; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "f_logo%d.raw", i);
+        if (front_read(dir, name, strip,
+                       (long)FRONT_SRC_W * FRONT_UP_H * 3)) {
+            free(front_hist); free(cache);
+            return 1;
+        }
+        front_scale(strip, FRONT_UP_H, 0, 0, rgb_frames[i], GTA_FRONT_UP);
+        front_count(rgb_frames[i], GTA_FRONT_UP);
+    }
+    if (front_read(dir, "f_lower0.raw", strip,
+                   (long)FRONT_SRC_W * FRONT_LOW_H * 3)) {
+        free(front_hist); free(cache);
+        return 1;
+    }
+    front_scale(strip, FRONT_LOW_H, FRONT_UP_H, GTA_FRONT_UP,
+                rgb_low, GTA_FRONT_LOW);
+    front_count(rgb_low, GTA_FRONT_LOW);
+
+    /* ---- the palette ---------------------------------------------------- */
+    memset(pal, 0, sizeof pal);
+    front_reserved(pal);
+    ncol = front_quantise(pal, GTA_FRONT_RESERVED, 256 - GTA_FRONT_RESERVED);
+    if (ncol <= 0) {
+        fprintf(stderr, "gtabake: the front end's art has no colours\n");
+        free(front_hist); free(cache);
+        return 1;
+    }
+    /* Any entry the cut did not reach repeats the last one it did, so a
+     * nearest-colour search can never land on an uninitialised black. */
+    for (i = GTA_FRONT_RESERVED + ncol; i < 256; i++) {
+        pal[i * 3 + 0] = pal[(GTA_FRONT_RESERVED + ncol - 1) * 3 + 0];
+        pal[i * 3 + 1] = pal[(GTA_FRONT_RESERVED + ncol - 1) * 3 + 1];
+        pal[i * 3 + 2] = pal[(GTA_FRONT_RESERVED + ncol - 1) * 3 + 2];
+    }
+
+    /* ---- pass two: write ------------------------------------------------ */
+    f = fopen(outpath, "wb");
+    if (!f) {
+        fprintf(stderr, "gtabake: cannot write %s\n", outpath);
+        free(front_hist); free(cache);
+        return 1;
+    }
+    memset(hdr, 0, sizeof hdr);
+    hdr[0] = 'G'; hdr[1] = 'T'; hdr[2] = 'A'; hdr[3] = 'F';
+    hdr[4] = 1;
+    hdr[5] = GTA_FRONT_FRAMES;
+    hdr[6] = (unsigned char)(GTA_FRONT_W >> 8);
+    hdr[7] = (unsigned char)(GTA_FRONT_W & 255);
+    hdr[8] = (unsigned char)GTA_FRONT_UP;
+    hdr[9] = (unsigned char)GTA_FRONT_LOW;
+    fwrite(hdr, 1, sizeof hdr, f);
+    fwrite(pal, 1, 768, f);
+
+    for (i = 0; i < GTA_FRONT_FRAMES; i++) {
+        front_map(rgb_frames[i], out_up, GTA_FRONT_UP, pal, cache);
+        fwrite(out_up, 1, sizeof out_up, f);
+    }
+    front_map(rgb_low, out_low, GTA_FRONT_LOW, pal, cache);
+    fwrite(out_low, 1, sizeof out_low, f);
+    fclose(f);
+
+    printf("front: %d logo frames %dx%d, background %dx%d, %d colours "
+           "(%d..%d), %ld bytes\n",
+           GTA_FRONT_FRAMES, GTA_FRONT_W, GTA_FRONT_UP,
+           GTA_FRONT_W, GTA_FRONT_LOW, ncol,
+           GTA_FRONT_RESERVED, GTA_FRONT_RESERVED + ncol - 1,
+           (long)(GTA_FRONT_HDR + 768 +
+                  (long)GTA_FRONT_FRAMES * GTA_FRONT_W * GTA_FRONT_UP +
+                  (long)GTA_FRONT_W * GTA_FRONT_LOW));
+    free(front_hist);
+    free(cache);
+    front_hist = 0;
+    (void)rgb_up;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     gta_style st;
@@ -128,9 +554,13 @@ int main(int argc, char **argv)
         return gta_sfx_bake(sdt, raw, argv[3], stdout) == 0 ? 0 : 1;
     }
 
+    if (argc == 4 && strcmp(argv[1], "-front") == 0)
+        return bake_front(argv[2], argv[3]);
+
     if (argc != 3) {
         fprintf(stderr, "usage: %s <style.gry> <out.til>\n", argv[0]);
         fprintf(stderr, "       %s -sfx <audio/level001> <out.snd>\n", argv[0]);
+        fprintf(stderr, "       %s -front <gtadata> <out.fnt>\n", argv[0]);
         return 2;
     }
 

@@ -7,11 +7,15 @@ hardware — 68020 and up, AGA or RTG. Not PiStorm, not Vampire, not Emu68.
 It contains no game code and no game data. You supply your own copy of GTA and
 the port converts it on your own machine.
 
-Current release: **v0.2.0** — you start with your fists and a pager message,
-find the weapons in crates, and the police come for you: patrol cars,
-pursuit, roadblocks, a cop on foot who arrests you or shoots you, BUSTED and
-WASTED in the original's letters. Traffic lights work and pedestrians cross
-at them. See [what is and is not in it](#what-v020-actually-is).
+Current release: **v0.4.0 — the missions work.** The game opens on its own
+title screen; the level starts where the script says; the South Park phones
+ring; answering one gives you a job, an arrow and a car to steal, and
+delivering it pays. Liberty City's first two missions play from the phone to
+the pay-out, including the second one's passenger. The HUD is the original's
+own — the wanted level's flashing cop heads, the weapon in hand, the pager
+scrolling through its device, the brief box with its icon, MISSION COMPLETE
+across the middle. And a car can jump a gap. See
+[what is and is not in it](#what-v040-actually-is).
 
 ---
 
@@ -67,7 +71,7 @@ files, so that works too. Two files are required (the art and the map); five
 more are optional and make the game whole — the level script for the crates,
 the texts for the pager, and three fonts. The README in the archive lists them.
 
-## What v0.2.0 actually is
+## What v0.4.0 actually is
 
 **Works:** the city renders in 2.5D with correct projection and no gaps in the
 geometry; you walk, run and turn; pedestrians keep to the pavements, turn
@@ -102,10 +106,39 @@ wait at the kerb and cross on the green; the score, the pager line and the
 BUSTED / WASTED cards are drawn in the original's own fonts from its own
 text file.
 
-**Not there yet:** no missions — the phones do not ring and the guide arrow is
-not there (the script interpreter is the next item, and its texts and fonts
-are in); no sound; the police cars have no siren; tyre marks, blood and oil
-are not drawn; only Liberty City.
+**THE MISSIONS.** The level script is read and run — both halves of it: the
+575 objects a level is played with, and the 2116 commands of its logic, at
+the original's own rate of one command per process per tick. The level starts
+itself, because the block the script puts you on is also the trigger that
+begins it. The four South Park telephones ring; walk up to one on foot and
+the job starts; the arrow points the way the original places it, out in the
+street rather than over the target; the car appears where the script parks
+it and stays there however far away you are; stealing it pays, delivering it
+to the right garage pays more, and the game rings you back on another phone
+for the next job. Missions 1 and 2 of Liberty City play end to end, the
+second with a passenger to pick up on the way.
+
+**THE UI IS THE ORIGINAL'S.** Its icons were in the art all along, in a
+sprite category nothing had opened: the wanted level's cop heads flashing
+across the top, the weapon in hand with its ammunition, armour and the
+jail-free card down the left, and the three text displays the game actually
+has — the brief box along the bottom with an icon and its text wrapped above
+it, the pager at the top left with the line scrolling through the device, and
+the big two-line card in the middle. The score has the multiplier under it in
+the font the original keeps for nothing else.
+
+**THE FRONT END.** The game starts on the title screen, logo animating, with
+START GAME and QUIT in the game's own menu font.
+
+**And a car can jump.** A ramp with a hole after it is a jump, and the arc is
+the original's: it clears the water at (91,105..108) and lands on the far
+ramp. Spray shops work too — drive in, the car changes colour and the police
+lose interest.
+
+**Not there yet:** missions past the second — the rest of the script's
+vocabulary is written up and the game's own log says which commands it
+reaches next; no sound; the police cars have no siren; tyre marks, blood and
+oil are not drawn; only Liberty City.
 
 **Speed:** 60.3 fps at 320x200 on the project's calibration machine — a 68020
 core with the throttle set to stand in for a faster CPU, JIT off. That number is

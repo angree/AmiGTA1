@@ -1,0 +1,22 @@
+# measure.txt - THE COST OF THE POLICE AND THE WEAPONS ON gta-test.uae.
+# Thirty seconds of ordinary driving at level 0, then level 4 and the chase.
+park 0 0 -26 0
+enter
+wait 200
+run 300 1 0 0 0
+run 300 1 0 0 0
+run 300 1 0 0 0
+run 300 1 0 0 0
+run 300 1 0 0 0
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+ped 3 -230 128
+ped -3 -270 128
+wait 5
+run 150 1 0 0 0
+run 300 1 0 0 0
+run 300 1 0 0 0
+run 300 1 0 0 0
+run 100 0 1 0 0
+wait 900

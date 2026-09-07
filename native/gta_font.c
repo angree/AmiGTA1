@@ -98,32 +98,50 @@ void gta_font_free(gta_font *f)
     f->n_chars = 0;
 }
 
-int gta_font_draw(const gta_font *f, unsigned char *dst, int pitch, int w, int h,
-                  int x, int y, const char *s)
+int gta_font_draw(const gta_font *f, unsigned char *dst, int pitch, int w,
+                  int h, int x, int y, const char *s)
 {
+    return gta_font_draw_clip(f, dst, pitch, w, h, x, y, s, 0, 0, w, h);
+}
+
+int gta_font_draw_clip(const gta_font *f, unsigned char *dst, int pitch,
+                       int w, int h, int x, int y, const char *s,
+                       int cx0, int cy0, int cx1, int cy1)
+{
+    if (cx0 < 0) cx0 = 0;
+    if (cy0 < 0) cy0 = 0;
+    if (cx1 > w) cx1 = w;
+    if (cy1 > h) cy1 = h;
+
     for (; *s; s++) {
         int c = (unsigned char)*s - '!';
         /* No lower case in the pager and score fonts (their widths are 0):
          * the original prints those in capitals, and so does this. */
         if (*s >= 'a' && *s <= 'z' && (c >= f->n_chars || f->blank[c]))
             c = (*s - 'a' + 'A') - '!';
-        int gw, row, col;
-        const unsigned char *g;
-        if (c < 0 || c >= f->n_chars) { x += f->space; continue; }
-        gw = f->widths[c];
-        g = f->pixels + f->offsets[c];
-        for (row = 0; row < f->height; row++) {
-            int py = y + row;
-            unsigned char *d;
-            if (py < 0 || py >= h) continue;
-            d = dst + (long)py * pitch;
-            for (col = 0; col < gw; col++) {
-                int px = x + col;
-                unsigned char v = g[row * gw + col];
-                if (v && px >= 0 && px < w) d[px] = v;
+        {
+            int gw, row, col;
+            const unsigned char *g;
+            if (c < 0 || c >= f->n_chars) { x += f->space; continue; }
+            gw = f->widths[c];
+            g = f->pixels + f->offsets[c];
+            /* Whole glyphs off the window cost nothing but the advance -
+             * which matters, because a pager line is scrolled through a
+             * hole sixty pixels wide and most of it is outside. */
+            if (x + gw <= cx0 || x >= cx1) { x += gw + 1; continue; }
+            for (row = 0; row < f->height; row++) {
+                int py = y + row;
+                unsigned char *d;
+                if (py < cy0 || py >= cy1) continue;
+                d = dst + (long)py * pitch;
+                for (col = 0; col < gw; col++) {
+                    int px = x + col;
+                    unsigned char v = g[row * gw + col];
+                    if (v && px >= cx0 && px < cx1) d[px] = v;
+                }
             }
+            x += gw + 1;
         }
-        x += gw + 1;
     }
     return x;
 }

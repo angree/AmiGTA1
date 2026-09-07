@@ -65,8 +65,27 @@
 #define GTA_PED_MODE_IDLE  2
 #define GTA_PED_MODE_COP   3      /* a policeman on foot, after the player */
 #define GTA_PED_MODE_CROSS 4      /* at a lit crossing: waiting, then over */
+#define GTA_PED_MODE_MISSION 5    /* the script put him here; he waits */
 
 #define GTA_COP_ARREST_PX  10     /* the original's 20 units */
+
+/* A COP WHO HAS JUST APPEARED CANNOT ARREST FOR HALF A SECOND.
+ *
+ * "2x dostalem busted kiedy nikt mnie nie wyjal z samochodu ... nie widac
+ * zadnego ludzika co podchodzi i nagle mam busted." The log has it exactly:
+ *
+ *     police - a cop is on foot at (2732,2617), 1 out
+ *     police - the cop has him, 5 px away
+ *     BUSTED
+ *
+ * three consecutive lines. The cop gets out at his own car's flank, and
+ * when that car has stopped against the player's the flank is already on
+ * top of him: he materialised in contact and the card came up in the same
+ * tick, with nothing on screen to see. The original never does this - the
+ * exit is an animation (state 0x6e -> 0x6f) and only then is the cop sent
+ * to the door (0xd3), which takes it several frames whatever the geometry.
+ * This is that delay, and it is also what makes the arrest visible. */
+#define GTA_COP_ARREST_WAIT 25
 #define GTA_COP_GIVE_UP_PX 400    /* farther than this, he walks back (retired) */
 
 /* The gait sub-modes - the original's `ped+0x72`. */
@@ -92,6 +111,11 @@ typedef struct {
 
     /* THE BRAIN. */
     int  mode;              /* GTA_PED_MODE_* */
+    /* THE SCRIPT'S OWN PERSON. `serial` names him - the mission cars work
+     * the same way (PROGRESS.md 154) - and `mission` keeps the recycler off
+     * him however far the player drives. */
+    unsigned long serial;
+    unsigned char mission;
     int  sub;               /* GTA_PED_SUB_* */
     int  speed;             /* 0..4, the original's units per frame */
     int  timer;             /* ticks left in the current gait */
@@ -141,6 +165,7 @@ typedef struct {
     int  cop;
     int  arrest;
     int  cop_cool;          /* ticks before this cop may fire again */
+    int  arrest_wait;       /* ticks before he may arrest - see below */
     int  shoot_req;         /* 1: fire a pistol at shoot_angle this tick */
     int  shoot_angle;
     int  execute;           /* level 4: the caught player is shot, not arrested */
@@ -178,6 +203,7 @@ typedef struct {
 
 typedef struct {
     gta_ped p[GTA_MAX_PEDS];
+    unsigned long next_ped_serial;
     const gta_tiles *tiles;
     const gta_nav *nav;
     int ped_base, ped_count;
@@ -206,6 +232,8 @@ typedef struct {
      * a car (then the cop walks to the car and pulls him out). */
     long pl_x, pl_y;
     int  pl_layer, pl_in_car;
+    int  pl_hl, pl_hw, pl_face;  /* his car's half extents and heading: a cop
+                                  * arrests AT the body, not at the middle */
     long stat_cops_out, stat_cops_killed;
     int  last_index;        /* the slot the last pull used, -1 */
 
@@ -227,6 +255,20 @@ typedef struct {
 } gta_peds;
 
 void gta_peds_init(gta_peds *ps, const gta_tiles *t, unsigned long seed);
+
+/* PED_ON: the script's own person, standing at (x,y) facing `angle` and
+ * staying there. Returns a serial to name him by, or 0 when the pool is
+ * full of other people the script owns. */
+unsigned long gta_peds_spawn_mission(gta_peds *ps, long x, long y, int layer,
+                                     int angle);
+
+/* Where he is and whether he is still alive. 0 when there is no such ped -
+ * which, for one the script made, means he is dead and gone. */
+int gta_peds_find(const gta_peds *ps, unsigned long serial,
+                  long *x, long *y, int *layer, int *alive);
+
+/* He has got into a car: take him out of the world. 1 when he was there. */
+int gta_peds_take_mission(gta_peds *ps, unsigned long serial);
 void gta_peds_set_nav(gta_peds *ps, const gta_nav *nav);
 
 /* Every tick before gta_peds_tick(): the view's half-extents in blocks and
@@ -295,7 +337,8 @@ void gta_peds_kill(gta_peds *ps, int i);
 /* ---- THE POLICE ON FOOT (Phase 5 item 5(d)) ---------------------------- */
 
 /* Where the player is, every tick. */
-void gta_peds_set_player(gta_peds *ps, long x, long y, int layer, int in_car);
+void gta_peds_set_player(gta_peds *ps, long x, long y, int layer, int in_car,
+                         int hl, int hw, int face);
 
 /* A policeman steps out at (x,y) facing `angle` and goes after the player.
  * Returns 0 when the pool is full (the farthest civilian is evicted first). */

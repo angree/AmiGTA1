@@ -232,6 +232,9 @@ void gta_weapons_explode(gta_weapons *w, long x, long y, int layer,
 
 /* The five bursts of a car coming apart: its centre and its four corners,
  * as the original does it. */
+/* What one bullet costs a vehicle of this class - see the definition. */
+int gta_weapons_bullet_damage(const gta_car_info *ci, int damage);
+
 void gta_weapons_wreck_car(gta_weapons *w, const gta_car_info *ci,
                            long cx, long cy, int face, int layer,
                            gta_peds *peds, gta_traffic *tr, gta_score *sc,
