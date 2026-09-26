@@ -1,0 +1,17 @@
+# ESC ASKS BEFORE IT QUITS (218). quitask raises the card ESC raises in play;
+# the world must stand still under it (two dumps 100 ticks apart show the
+# same street), quitno plays on, quittest is Y - the same way out, with the
+# reload code so the run script starts the game again in this emulator.
+# Pass: "quit? - asking", "quit - cancelled", "quit - confirmed", then
+# "exit - screen", "exit - audio", "exit - data", "clean exit".
+wait 100
+quitask
+wait 10
+film 1
+wait 100
+film 1
+quitno
+wait 50
+quitask
+wait 10
+quittest

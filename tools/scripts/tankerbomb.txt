@@ -1,0 +1,28 @@
+# THE TANKER BOMB (mission.ini 1004..1020): PARKED_ON 230 puts the tanker
+# (FUTURECAR 44) at (159,133); STEAL 230 when he drives it; SETBOMB 230 type 4
+# - it goes off when its damage passes 10 (the original's table). Full throttle up the
+# street until it hits something, then back off (the brake, held, reverses)
+# and ram it again, six times -
+# one hit on a tanker is about 3 of damage, so it takes four.
+wait 100
+script 1004
+wait 40
+goto 159 133
+wait 30
+enter
+wait 120
+run 250 1 0 0 0
+run 90 0 1 0 0
+run 120 1 0 0 0
+run 90 0 1 0 0
+run 120 1 0 0 0
+run 90 0 1 0 0
+run 120 1 0 0 0
+run 90 0 1 0 0
+run 120 1 0 0 0
+run 90 0 1 0 0
+run 120 1 0 0 0
+run 90 0 1 0 0
+run 120 1 0 0 0
+wait 100
+dump

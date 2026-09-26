@@ -1,0 +1,6 @@
+# THE TRAFFIC A/B ON THE PROFILING GUEST (217). Same place as litetraffic.txt
+# (the level-1 start, the parked car in the lane) but without the filming,
+# which costs seconds a frame on a throttled 68020. opts.txt's `trafficlite`
+# picks the arm; the "gta: profile" lines every 100 frames are the numbers.
+wait 300
+wait 1500

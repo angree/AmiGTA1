@@ -1,0 +1,14 @@
+# THE ENGINE, THE DOOR, THE SKID (205, 203, 206). A model-0 saloon parked
+# beside the start (the pedcross fixture), a short run, then a handbrake
+# turn. Pass: "gta: engine - sound 47 looping" (45 + model 0's engine 2),
+# and 1, 5 and 65 in the report's "asked for" line.
+# (The car beside the start in speedbomb_drive.txt is model 8, a bus: engine
+# 51 and the air brake 41 - checked that way first, 208.)
+wait 100
+park 0 0 -26 0
+enter
+wait 150
+run 40 1 0 0 0
+run 60 1 0 1 1
+wait 60
+dump

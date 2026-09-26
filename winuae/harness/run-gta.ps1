@@ -37,12 +37,22 @@ param(
   [string]$Config = "I:\GITHUB\Amiga_GTA\winuae\gta-aga.uae",
   [int]$TimeoutSec = 90,
   [string]$WaitFor = "gta: interactive",
-  [switch]$KeepRunning,
+  [switch]$KeepRunning,   # accepted for old callers; keeping the guest is the DEFAULT now
+  [switch]$KillAfter,     # the old default: kill this config's guest once WaitFor is seen
   [switch]$Force
 )
 
 $exe = "I:\GITHUB\Amiga_OpenTTD\tools\winuae281\winuae-gta.exe"
 $wd  = "I:\GITHUB\Amiga_OpenTTD\tools\winuae281"
+# 2026-09-25, the developer: run it from C: so the network drive is spared
+# and the tests are not disturbed by it. C:\temp\amiga_gta\uae holds a copy
+# of winuae-gta.exe and winuae.ini, C:\temp\amiga_gta\gta-aga.uae a copy of
+# the config with sound_output=interrupts (Paula emulated, nothing to the
+# speakers - the game can run with audio ON and still be silent).
+if (Test-Path "C:\temp\amiga_gta\uae\winuae-gta.exe") {
+  $exe = "C:\temp\amiga_gta\uae\winuae-gta.exe"
+  $wd  = "C:\temp\amiga_gta\uae"
+}
 # The runtime (Work:, the hardfile, the Kickstart) lives on the SSD, not in the
 # repository on the network drive - see the note in gta-aga.uae.
 $log = "C:\temp\amiga_gta\work\gta.log"
@@ -50,10 +60,16 @@ $log = "C:\temp\amiga_gta\work\gta.log"
 if (-not (Test-Path $exe)) { Write-Output "ERROR: WinUAE not found at $exe"; exit 1 }
 if (-not (Test-Path $Config)) { Write-Output "ERROR: config not found: $Config"; exit 1 }
 
-# Only this config's own instances - see rule 1 at the top.
+# NOTHING IS KILLED ON THE WAY IN - not even this config's own instance.
+# 2026-09-16: this line used to be `kill_ours.ps1 -Config $cfgName`, and it
+# shot down the developer's own game on gta-aga.uae while he was checking a
+# build in it. A live guest of this config is the developer's until proven
+# otherwise; the refusal below covers it, and -Force is the only way past.
 $cfgName = [System.IO.Path]::GetFileName($Config)
-& (Join-Path $PSScriptRoot "kill_ours.ps1") -Config $cfgName | Out-Null
-Start-Sleep 3
+if ($Force) {
+  & (Join-Path $PSScriptRoot "kill_ours.ps1") -Config $cfgName | Out-Null
+  Start-Sleep 3
+}
 
 # Rule 2: anything else of ours still alive shares Work: with us.
 $others = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'winuae%.exe'" |
@@ -146,7 +162,7 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep 2
     Write-Output "--- gta.log ---"
     Get-Content $log
-    if (-not $KeepRunning) {
+    if ($KillAfter) {   # 2026-09-16: the default used to kill here, two seconds after the game came up
       & (Join-Path $PSScriptRoot "kill_ours.ps1") -Config $cfgName | Out-Null  # this config only
     }
     exit 0
@@ -163,7 +179,7 @@ if (Test-Path $uaelog) {
   Write-Output "--- winuaelog.txt (last 60 lines) ---"
   Get-Content $uaelog -Tail 60
 }
-if (-not $KeepRunning) {
+if ($KillAfter) {
   & (Join-Path $PSScriptRoot "kill_ours.ps1") -Config $cfgName | Out-Null  # this config only
 }
 exit 1

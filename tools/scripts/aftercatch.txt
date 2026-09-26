@@ -1,0 +1,11 @@
+# AFTER THE ARREST OR THE HOSPITAL THE CHASE IS OVER (215): level 4 by the
+# bank robbery, the player put beside the chasing car so its cop arrests
+# him, then half a minute at the police station. Pass: "gta: police - the
+# chase is over", and no second BUSTED in the half minute after.
+wait 500
+script 350
+wait 900
+goto 114 114
+wait 900
+wait 1500
+dump

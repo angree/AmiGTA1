@@ -187,7 +187,7 @@
  * which is lost in the noise beside 2700 map lookups. A hundred pedestrians
  * would want a bucket per layer instead, and that is the change to make when
  * there are a hundred pedestrians - not before. */
-#define GTA_MAX_SPRITES 64
+#define GTA_MAX_SPRITES 128
 
 /* One sprite queued for this frame.
  *
@@ -229,6 +229,14 @@ typedef struct {
     /* ...and a SET of them, laid over the same copy: a car wears one dent per
      * damaged panel and an open door at the same time. Bit N = delta N. */
     unsigned long delta_mask;
+    /* SIZE, as a percentage of the sprite's own. 100 is what everything in
+     * the city uses: art at its stored size, scaled only by how far down the
+     * grid it sits. The mission ARROW is not part of the city - it is a
+     * marker the game puts over it - and at its stored size it is a few
+     * pixels of yellow that the developer could not see. Applied to the
+     * sprite's SIZE only, never to where it lands, so a scaled sprite still
+     * points at the same spot. */
+    int  scale;
 } gta_sprite_req;
 
 typedef struct {
@@ -454,6 +462,17 @@ int gta_render_add_sprite(gta_view *v, long wx, long wy, int layer, int grid,
 
 /* The same, with a palette remap table - see gta_sprite_req.remap. Pass 0 and
  * it is exactly gta_render_add_sprite(). */
+/* HOW FAR UP A RAMP A POINT IS, in eighths of a grid level, and the raw
+ * slope type of the block it is in. Both are what the sprite path already
+ * uses for a sprite's height; they are exported so the game can LOG the
+ * sequence of them while a car climbs. See `rampdbg` in opts.txt. */
+/* Resize the sprite just added, as a percentage of its stored size. Applied
+ * to the art only, never to where it lands. */
+void gta_render_sprite_scale(gta_view *v, int percent);
+
+int gta_render_sub_at(const gta_view *v, long wx, long wy, int grid);
+int gta_render_slope_at(const gta_view *v, long wx, long wy, int grid);
+
 int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap);
 

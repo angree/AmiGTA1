@@ -1,0 +1,8 @@
+# THE SIREN (PROGRESS 195): `script 350` is BANK_ROBBERY - wanted level 4 at
+# once - so the police dispatch cars at the player; a dispatched car (cop >= 2)
+# has its siren on, and the nearest sounds GTA_SND_SIREN (0x43) once every 90
+# ticks. Muted runs prove it by the audio report's request counts.
+wait 500
+script 350
+wait 900
+dump

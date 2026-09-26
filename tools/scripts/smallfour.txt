@@ -1,0 +1,16 @@
+# END, KILL_CAR, SET_PED_SPEED, KILL_OBJ (PROGRESS 187), each started on its
+# own with `script <line>`:
+#   1250 PED_ON 237, 1251 SET_PED_SPEED 237 3, 1252 PED_SENDTO 389 - he jogs
+#   5271 KILL_CAR 485 - the tanker PARKED at (209,75), put down when he is near
+#   8180 END 1 - the process just stops
+wait 100
+script 1250
+wait 300
+goto 209 75
+wait 60
+dump
+script 5271
+wait 30
+dump
+script 8180
+wait 50

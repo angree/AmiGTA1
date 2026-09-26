@@ -44,6 +44,18 @@ gcc -O2 $WARN -o build/host/vehruler tools/vehruler.c $SRC_COMMON
 echo "--- gtabake (release) ---"
 gcc -O2 $WARN -o build/host/gtabake tools/gtabake.c $SRC_COMMON
 
+# The soundtrack converter. It shares nothing with the game: it reads a
+# PCM WAV and writes the IMA-ADPCM one native/amiga_adpcm.c streams.
+echo "--- gtamusic ---"
+gcc -O2 $WARN -o build/host/gtamusic tools/gtamusic.c
+
+# THE MUSIC EXTRACTOR, and it is the SAME SOURCE the game runs on the Amiga -
+# native/gta_iff.c - with a main() around it. Built here so a conversion can
+# be checked in a second instead of a two-minute emulator round trip, which is
+# the same reason the renderer has no Amiga headers.
+echo "--- gtaiff ---"
+gcc -O2 $WARN -o build/host/gtaiff tools/gtaiff.c native/gta_iff.c
+
 # THE SETTINGS FILE'S REGRESSION TEST, and it earned its place the same day it
 # was written. The first version of the reader used fscanf("%s %s"), which does
 # not know what a line is, so the multi-word comment header that the WRITER

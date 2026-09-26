@@ -21,6 +21,7 @@ typedef struct {
     unsigned long size;
     int  n;
     int  keys[GTA_TEXT_MAX];    /* numeric key of string i, -1 for none */
+    unsigned long names[GTA_TEXT_MAX];  /* hash of a NAMED key ("bomb_on"), 0 for none */
     unsigned long offs[GTA_TEXT_MAX];
 } gta_text;
 
@@ -30,5 +31,9 @@ void gta_text_free(gta_text *t);
 
 /* The text for numeric key `key`, or NULL. */
 const char *gta_text_get(const gta_text *t, int key);
+
+/* The text for a NAMED key - the original's own strings the code asks for by
+ * name ("bomb_on", "crane_nobomb"), not the script by number. NULL if none. */
+const char *gta_text_get_name(const gta_text *t, const char *name);
 
 #endif /* GTA_TEXT_H */

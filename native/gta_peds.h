@@ -66,6 +66,19 @@
 #define GTA_PED_MODE_COP   3      /* a policeman on foot, after the player */
 #define GTA_PED_MODE_CROSS 4      /* at a lit crossing: waiting, then over */
 #define GTA_PED_MODE_MISSION 5    /* the script put him here; he waits */
+/* AND THE TWO THINGS A JOB ASKS OF HIM BESIDES STANDING THERE.
+ *
+ * HUNT is CHANGE_PED_TYPE's attacking family - the original's AI types
+ * 0x15..0x2e, which all take a TARGET and go for it. Liberty City's second
+ * job turns four men into it at once with the player as the target, and they
+ * shoot: a hunter fires the same pistol shot a policeman does, through the
+ * same request, so the bullet is the weapons module's and it hurts.
+ *
+ * SENDTO is PED_SENDTO: walk to a point and stop there. WAIT_FOR_PED is the
+ * script asking whether that has happened, and the original writes it as a
+ * command that simply does not advance until it has. */
+#define GTA_PED_MODE_HUNT   6
+#define GTA_PED_MODE_SENDTO 7
 
 #define GTA_COP_ARREST_PX  10     /* the original's 20 units */
 
@@ -116,6 +129,12 @@ typedef struct {
      * him however far the player drives. */
     unsigned long serial;
     unsigned char mission;
+    /* HUNT: the target is the PLAYER declaration, so it is not a point that
+     * can be resolved once - it has to be re-read every tick. */
+    unsigned char hunt_pl;
+    /* SET_PED_SPEED: the pace PED_SENDTO walks him at (the original's
+     * ped+8); 0 = the default 2, a brisk walk. 3 jogs, 4 runs. */
+    unsigned char send_speed;
     int  sub;               /* GTA_PED_SUB_* */
     int  speed;             /* 0..4, the original's units per frame */
     int  timer;             /* ticks left in the current gait */
@@ -123,6 +142,20 @@ typedef struct {
     long tx, ty;            /* walk target, 0 = none */
     long gx, gy;            /* flee point */
     int  stuck;             /* ticks the step went nowhere */
+    int  dodge;             /* ticks left of a sidestep round somebody ahead */
+    int  dodge_side;        /* +1 = to his right, -1 = to his left */
+    /* THE STUCK LOGGER (the developer's idea, 2026-09-16): a man who WANTS
+     * to move and has not left his 32-pixel block for PED_STUCK_TICKS is
+     * written to the log with everything that decides his next step, and
+     * again every second until he gets out - so a knot seen on the screen
+     * can be read afterwards instead of guessed at. blk_* is the block he
+     * was last seen in, blk_ticks the ticks he spent in it wanting to move,
+     * ang_hist the heading every fourth tick (oscillation shows here). */
+    int  blk_x, blk_y;
+    int  blk_ticks;
+    int  blk_logged;
+    unsigned char ang_hist[16];
+    int  ang_hist_i;
     int  offscreen;         /* ticks outside the view rect */
     int  flee_aim;          /* the "every 5th frame" re-aim counter */
 
@@ -236,6 +269,14 @@ typedef struct {
                                   * arrests AT the body, not at the middle */
     long stat_cops_out, stat_cops_killed;
     int  last_index;        /* the slot the last pull used, -1 */
+    /* WHO THE LAST gta_peds_panic() FRIGHTENED - the first few, for the
+     * screams (the original's routine plays one per ped it panics). */
+#define GTA_PANIC_LIST 4
+    int  panic_n;
+    int  panic_idx[GTA_PANIC_LIST];
+    int  stuck_report;      /* set when the stuck logger wrote a FIRST report this
+                             * tick: the main loop dumps pedstuck.raw and clears it */
+    long stat_stuck_reports, stat_stuck_freed;
 
     /* THE LIGHTS, asked through the traffic module: is the axis green for
      * the cars at (bx,by)? A ped crosses a road when the cars ALONG his
@@ -269,6 +310,24 @@ int gta_peds_find(const gta_peds *ps, unsigned long serial,
 
 /* He has got into a car: take him out of the world. 1 when he was there. */
 int gta_peds_take_mission(gta_peds *ps, unsigned long serial);
+
+/* CHANGE_PED_TYPE and PED_SENDTO: give the script's own person a mode and
+ * something to aim at. `mode` is GTA_PED_MODE_HUNT, _SENDTO or _MISSION (the
+ * last is "stand still again"); (tx,ty) is the target in 16.16 world pixels
+ * and `on_player` makes it follow the player instead. 1 when there was such
+ * a person. */
+int gta_peds_mission_ai(gta_peds *ps, unsigned long serial, int mode,
+                        long tx, long ty, int on_player);
+
+/* REMAP_PED, and PED_ON's own `p4`: what he is wearing. */
+int gta_peds_set_remap(gta_peds *ps, unsigned long serial, int remap);
+
+/* SET_PED_SPEED - see gta_ped.send_speed. 1 when there was such a ped. */
+int gta_peds_set_speed(gta_peds *ps, unsigned long serial, int speed);
+
+/* WAIT_FOR_PED: is he within `tol_px` of (x,y) yet? */
+int gta_peds_at(const gta_peds *ps, unsigned long serial, long x, long y,
+                int tol_px);
 void gta_peds_set_nav(gta_peds *ps, const gta_nav *nav);
 
 /* Every tick before gta_peds_tick(): the view's half-extents in blocks and

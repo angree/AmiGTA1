@@ -1,0 +1,15 @@
+# THE IMPACTS (197, rescaled 205) AND THE YELL (199). The saloon of
+# engine.txt, a parked car on each side of it along its length, and a run
+# forward: whichever is ahead gets rammed. Pass: one of 6/7/8 in the
+# report's "asked for" line; above speed 10, one time in two, a voice line
+# 30..50 ("voice asked for").
+wait 100
+park 0 0 -26 0
+enter
+wait 150
+park 1 0 -140 0
+park 1 0 90 0
+wait 20
+run 120 1 0 0 0
+wait 300
+dump

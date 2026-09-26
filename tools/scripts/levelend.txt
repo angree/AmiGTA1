@@ -1,0 +1,10 @@
+# END 1 (PROGRESS 196): line 8180 run on its own - the level is over, and
+# the card says so ("m22success"). `film 1` rather than `dump`: the live
+# dump is overwritten every ten seconds by the timer, so it may show the
+# city after the card has gone (208).
+wait 100
+script 8180
+wait 20
+film 1
+wait 60
+dump

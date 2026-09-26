@@ -108,6 +108,28 @@ void gta_weapons_set_pickups(gta_weapons *w, gta_pickups *pk)
     w->pk = pk;
 }
 
+void gta_weapons_explode_face(gta_weapons *w, int bx, int by, int layer,
+                              int face, gta_peds *peds, gta_traffic *tr,
+                              gta_score *sc, int by_player,
+                              long *wx, long *wy)
+{
+    /* just OUTSIDE the block's side, so the blast and the fires stand in
+     * the street and not inside the wall they are burning */
+    long cx = ((long)bx * 32 + 16) << 16, cy = ((long)by * 32 + 16) << 16;
+    long ox = 0, oy = 0, sx = 0, sy = 0;
+    switch (face & 3) {
+    case 0:  ox = -(20L << 16); sy = 10L << 16; break;     /* west  */
+    case 1:  ox =  (20L << 16); sy = 10L << 16; break;     /* east  */
+    case 2:  oy = -(20L << 16); sx = 10L << 16; break;     /* north */
+    default: oy =  (20L << 16); sx = 10L << 16; break;     /* south */
+    }
+    gta_weapons_explode(w, cx + ox, cy + oy, layer, peds, tr, sc, by_player);
+    fire_light(w, cx + ox + sx, cy + oy + sy, layer);
+    fire_light(w, cx + ox - sx, cy + oy - sy, layer);
+    if (wx) *wx = cx + ox;
+    if (wy) *wy = cy + oy;
+}
+
 void gta_weapons_explode(gta_weapons *w, long x, long y, int layer,
                          gta_peds *peds, gta_traffic *tr, gta_score *sc,
                          int by_player)

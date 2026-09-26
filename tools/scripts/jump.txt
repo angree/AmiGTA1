@@ -1,0 +1,14 @@
+# THE JUMP AND THE LANDING (161, 201): the take-off ramp at (91,108) layer
+# 3, the landing at (91,105), two blocks of water between. A saloon parked at
+# the start, entered, and carried to (91,112) (`goto` takes the car when he
+# is driving), then flat out north. Pass: "gta: JUMP from", "gta: LANDED"
+# and 14 in "asked for"; a short jump into the river asks for 18 (0x12).
+wait 100
+park 0 0 -26 0
+enter
+wait 150
+goto 91 112
+wait 20
+run 120 1 0 0 0
+wait 200
+dump

@@ -117,7 +117,16 @@ typedef struct {
     int screen;     /* GTA_SCR_*    */
     int music_vol;  /* 0..64, Paula's own hardware scale; AHI is scaled to it */
     int sfx_vol;    /* 0..64 */
+    int cars;       /* traffic cars with a driver, GTA_CARS_MIN..MAX - the
+                     * in-game Amiga options; above it nothing is spawned */
 } gta_prefs;
+
+/* The developer's range: 6 to 50 in steps of 4. The fleet is the CPU on a
+ * slow Amiga, so this is the one setting that buys frame rate there. */
+#define GTA_CARS_MIN     6
+#define GTA_CARS_MAX     50
+#define GTA_CARS_STEP    4
+#define GTA_CARS_DEFAULT 18
 
 /* The shipped state: automatic everything, full volume. */
 void gta_prefs_defaults(gta_prefs *p);

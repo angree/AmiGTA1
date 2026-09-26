@@ -29,7 +29,8 @@
 
 #include "gta_map.h"
 
-#define GTA_NAV_BYTES ((long)GTA_MAP_DIM * GTA_MAP_DIM * GTA_MAP_LAYERS)
+#define GTA_NAV_LAYERS_ALLOC GTA_MAP_LAYERS
+#define GTA_NAV_BYTES ((long)GTA_MAP_DIM * GTA_MAP_DIM * GTA_NAV_LAYERS_ALLOC)
 
 typedef struct {
     unsigned char *b;           /* NULL until gta_nav_build() succeeds */
@@ -68,6 +69,21 @@ unsigned char gta_nav_at(const gta_nav *nav, int bx, int by, int bz);
  * the grid exists. Arguments are evaluated more than once - pass plain
  * variables, never expressions with side effects. */
 #define gta_nav_at_m(nav, bx, by, bz)     (((nav)->b != 0 &&       (unsigned)(bx) < (unsigned)GTA_MAP_DIM &&       (unsigned)(by) < (unsigned)GTA_MAP_DIM &&       (unsigned)(bz) < (unsigned)GTA_MAP_LAYERS)      ? (nav)->b[((long)(bz) << 16) | ((long)(by) << 8) | (long)(bx)]      : (unsigned char)0)
+
+/* THE CHEAPER READ, for the traffic tick (PERF.md 7 step 4, PROGRESS 183).
+ * Two tests instead of four: (x | y) has a bit above the low eight exactly
+ * when either is negative or 256 or more, so one AND is the whole x/y
+ * bounds test; z keeps its own. The b != 0 test is dropped - the caller
+ * must know the grid exists, and every traffic caller tests g_nav once.
+ * Same answer as gta_nav_at_m for every input. (A version that masked x
+ * and y to the grid and wrapped to the far edge was tried first; it
+ * CHANGED the traffic on all four seeds - the far edge is not all sea -
+ * and a merged x/y test inside is_junction() changed it too, which is not
+ * understood and is why is_junction keeps its two compares.) */
+#define gta_nav_at_f(nav, bx, by, bz) \
+    ((((bx) | (by)) & ~255) == 0 && (unsigned)(bz) < (unsigned)GTA_MAP_LAYERS \
+     ? (nav)->b[((long)(bz) << 16) | ((long)(by) << 8) | (long)(bx)] \
+     : (unsigned char)0)
 
 #define gta_nav_dirs(v)    ((v) & 0x0f)
 #define gta_nav_ground(v)  (((v) >> 4) & 0x07)

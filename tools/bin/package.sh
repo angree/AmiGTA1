@@ -8,9 +8,9 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.4.0.zip    the game, the settings editor, the tile converter,
+#   AmiGTA-v0.6.1.zip    the game, the settings editor, the tile converter,
 #                        icons, run
-#   AmiGTA-v0.4.0.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.6.1.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -44,7 +44,7 @@ DIST=/mnt/c/temp/amiga_gta/dist
 # instead of three. gta-aga / gta-rtg240 / gta-rtg480 were the same program
 # built with different screen sizes; the size is a setting in gtaprefs now, so
 # the archive carries `AmiGTA` and nothing else has to be chosen by icon.
-VER=v0.4.0
+VER=v0.6.1
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory
@@ -104,6 +104,17 @@ if [ -f "$ROOT/build/gtabake" ]; then
 else
     echo "package: no build/gtabake - run build.sh"
     exit 1
+fi
+
+# THE MUSIC EXTRACTOR, for the same reason and with the same rule: no audio
+# derived from the game leaves this machine either. The game converts the
+# player's own soundtrack on its first run, with a progress bar; this is that
+# converter as a Shell program, for one track at a time or for looking at what
+# came out (-info). Not fatal if it is missing - a player without it still
+# gets the first-run extraction.
+if [ -f "$ROOT/build/gtaiff" ]; then
+    cp "$ROOT/build/gtaiff" "$STAGE/gtaiff"
+    echo "package: gtaiff"
 fi
 
 # THE GTADATA DRAWER SHIPS, EMPTY.

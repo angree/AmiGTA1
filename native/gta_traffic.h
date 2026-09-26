@@ -41,7 +41,9 @@
 /* The renderer takes GTA_MAX_SPRITES per frame and walks the list once per
  * layer, so the fleet is deliberately smaller than that budget - the player
  * and, later, pedestrians need room in the same list. */
-#define GTA_MAX_CARS 20
+#define GTA_MAX_CARS 60     /* 50 with a driver at most (gta_prefs cars) + parked, wrecks */
+#define GTA_CRUISE_MAX 3            /* coast at most this many ticks in a row */
+#define GTA_CRUISE_LOOK 3           /* blocks ahead that must hold no junction */
 #define GTA_MAX_LIGHTS 512
 
 /* THE FLEET FOLLOWS THE CAMERA.
@@ -59,6 +61,11 @@
  * than driving the whole fleet does. Twice a second is far quicker than cars
  * can leave the area. */
 #define GTA_TRAFFIC_DESPAWN     14
+/* Blocks beyond the screen's half-width inside which a car is still driven
+ * every tick (opt_halfrate). Three is a block more than the lookahead an
+ * on-screen car uses to judge a gap, so a car it can see ahead of it is
+ * always one that moves at full rate. */
+#define GTA_HALFRATE_MARGIN     3
 #define GTA_TRAFFIC_SPAWN_LO     7
 #define GTA_TRAFFIC_SPAWN_HI    11
 #define GTA_TRAFFIC_SPAWN_TICKS 25
@@ -1344,6 +1351,12 @@ typedef struct {
      * "when we get out the car disappears". */
     unsigned char abandoned;
 
+    /* ...AND SOMEBODY IS STILL SITTING IN IT. `abandoned` says the car does
+     * not drive; this says there is a driver to drag out of it anyway. The
+     * script's own "a car with a man in it, parked" is the only thing that
+     * sets it, and getting in is then a carjacking rather than an entry. */
+    unsigned char driver;
+
     /* BURNT OUT. What is left after the fuse above runs down: the car stays
      * exactly where it died, wearing every damage panel, solid, in the way,
      * and not going anywhere ever again.
@@ -1404,6 +1417,10 @@ typedef struct {
      * be used for that - a car stopped behind a man on a junction block is
      * stamped GTA_HOLD_BOX by the box logic that ran before the gap did. */
     int  lead_kind;
+    /* THE HORN - see gta_snd.h's note on the AI cars' horns: frames of
+     * honking left (the original's +0x12d, set to 40) and the pattern it
+     * honks in, 1..10 (its +0x12f plus one; 0 = not picked yet). */
+    unsigned char honk, honk_pat;
 
     /* KNOCKED LOOSE BY A COLLISION.
      *
@@ -1682,6 +1699,18 @@ typedef struct {
      * car is a place on the map, not traffic - and so does the fleet's
      * eviction. Cleared when the job is over (RESET). */
     unsigned char mission;
+    /* DID IT MOVE SINCE LAST TICK? `still` is set at the top of the tick by
+     * comparing the pose with the snapshot the previous tick took (st_*).
+     * A car that did not move cannot have changed which squares its body
+     * covers, so the occupancy scan (occ_mask, valid while occ_ser is this
+     * car's serial) and the booked-square release reuse last tick's answers
+     * - exact, because both are pure functions of the pose. PERF.md 7. */
+    long st_x, st_y;
+    int  st_face;
+    int  still;
+    unsigned long  occ_ser;
+    unsigned short occ_mask;        /* bit (dy+1)*3+(dx+1): the body covers it */
+    int  cruise;                    /* ticks left to coast - see opt_cruise */
 } gta_car;
 
 typedef struct {
@@ -1774,6 +1803,34 @@ typedef struct {
      * taken when a car enters a crossing, held until it is out the other side,
      * and every other arm is refused entry while it stands. */
     int opt_holdbox;
+    /* HALF-RATE DRIVING OUT OF VIEW (PERF.md section 6, item 5). A car more
+     * than view_blocks + GTA_HALFRATE_MARGIN blocks from the camera on
+     * either axis gets drive_one() on alternate ticks only - its own serial
+     * decides which - so the far half of the fleet costs half. Police and
+     * mission cars are never rated down: a chase that slowed outside the
+     * frame would be a chase that let you go. Positions, claims and
+     * occupancy are still kept every tick; only the decisions and the
+     * motion of a far car run at 25 Hz. `halfrate 0` in opts.txt turns it
+     * off; the flow battery is the judge of what it costs the traffic. */
+    int opt_halfrate;
+    /* COAST WITHOUT DECIDING. A car on a straight, empty stretch - nobody
+     * within the lookahead, at its cruising speed, on its line, no junction
+     * within three blocks ahead, not on a ramp - would reach the same
+     * decision on each of the next few ticks. drive_one() says how many
+     * ticks that holds for (at most GTA_CRUISE_MAX, and never past the
+     * edge of the current block) and the tick loop only integrates the
+     * motion for those ticks. Police and mission cars decide every tick.
+     * PERF.md section 7 step 1. */
+    int opt_cruise;             /* 0 off; 1 coast only on an empty straight
+                                 * (drive_one decides how long); 2 ALSO decide
+                                 * on alternate ticks only for every ordinary
+                                 * car that is not in a manoeuvre - the
+                                 * motion step runs on the other tick, so
+                                 * nothing slows down; a decision is at most
+                                 * one tick (20 ms) late. Police and mission
+                                 * cars, a car turning, crossing, swapping
+                                 * lanes, recovering, reversing or knocked
+                                 * loose decide every tick. */
     int opt_lights;     /* traffic lights - OFF until they are drawn: an
                          * invisible red reads as a car stopping for nothing
                          * ("nie wlaczaj sygnalizacji") */
@@ -1877,6 +1934,11 @@ typedef struct {
     unsigned long claim_car[GTA_CLAIM_MAX];   /* gta_car.serial, never index */
     short         claim_ttl[GTA_CLAIM_MAX];
     unsigned char claim_seen[GTA_CLAIM_MAX];  /* owner's body has covered it */
+    /* Last tick's car_on_block() answer for this booking and the serial it
+     * was computed for; reused while that car stands still (gta_car.still).
+     * 0 in claim_on_ser = never computed. */
+    unsigned char claim_on[GTA_CLAIM_MAX];
+    unsigned long claim_on_ser[GTA_CLAIM_MAX];
 
     /* The occupancy matrix, rebuilt every tick - see GTA_OCC_MAX. */
     unsigned char occ_x[GTA_OCC_MAX], occ_y[GTA_OCC_MAX];
@@ -2240,6 +2302,10 @@ typedef struct {
     long stat_joins;
     long stat_rams;                     /* player-vs-fleet hits, item 3c */
     long stat_ram_cop;                  /* ...of which were police cars */
+    long stat_halfrate;                 /* car-ticks skipped out of view */
+    long stat_still;                    /* car-ticks whose pose did not change */
+    long stat_cruise;                   /* car-ticks coasted without deciding */
+    long stat_cr[16];                    /* why a car could NOT coast - see drive_one */
     int  pl_damage;                     /* the player's own share of the last
                                          * ram - gta_traffic_ram() clears it
                                          * and the game side charges it */                    /* convoy joins granted */
@@ -2296,7 +2362,24 @@ typedef struct {
      *   prof_us[3] route_tick
      *   prof_us[4] despawn + park_band */
     unsigned long (*prof_clock)(void);
+    /* A cheaper clock for prof_d[]: raw E-clock ticks (amiga_uclock_raw),
+     * converted once at print time. 0 = the sections are not timed. */
+    unsigned long (*prof_raw)(void);
     unsigned long prof_us[5];
+    /* INSIDE drive_one, by section of the ladder (PROGRESS 181 said this
+     * is the measurement that was missing):
+     *   prof_d[0] the early outs: knock, abandoned, done, stuck, reverse
+     *   prof_d[1] section 0, the layer, and the crossing measurement
+     *   prof_d[2] section 1, the turn in progress
+     *   prof_d[3] section 2, where the route says to go
+     *   prof_d[4] section 3, starting a turn (corner set-up, reservation)
+     *   prof_d[5] section 4, the block ahead and its claims
+     *   prof_d[6] section 5, speed (gap_ahead, the light, the box)
+     *   prof_d[7] section 6, the move, steering, lane swap, coast */
+    unsigned long prof_d[9];        /* [8]: an EMPTY section right after the
+                                     * first read - the cost of one read in situ,
+                                     * to subtract from the other eight */
+    unsigned long prof_dn;          /* drive_one calls that were sampled */
 
     /* One past the highest live claim slot - see the sweep in
      * gta_traffic_tick() for the invariant. Scans run to here, not to
@@ -2381,6 +2464,16 @@ typedef struct {
 
     int  stat_moving, stat_stopped;     /* cars, this tick */
     long stat_hold[GTA_HOLD_COUNT];     /* why the stopped ones are stopped */
+
+    /* THE HORN'S OWN DICE, so that honking cannot change how the fleet
+     * drives (every seeded traffic measurement stays what it was), and the
+     * YELL it throws instead one time in four: set here, taken and cleared
+     * by the game, which owns the voice. */
+    unsigned long honk_rng;
+    int  yell_req;
+    long yell_x, yell_y;
+    int  yell_layer;
+    long stat_honks, stat_yells;
 } gta_traffic;
 
 extern unsigned long gta_traffic_trace_serial;  /* host diagnostics, 0 = off */
@@ -2492,7 +2585,13 @@ void gta_traffic_set_player(gta_traffic *tr, int active, long x, long y,
 #define GTA_ROADBLOCK_LEVEL  3
 #define GTA_ROADBLOCK_TICKS  400        /* the original's zone timer */
 #define GTA_ROADBLOCK_CHECK  100
-#define GTA_COP_NEAR_FOOT    2          /* blocks: stop this close to a man */
+/* blocks: stop this close to a man on foot. The original's reach is its
+ * 0xd1 range, under five blocks: a target on foot sends the car to 0xd2,
+ * and 0xd2 goes back to chasing only past six blocks or with the target in
+ * a car - so under five, on the same floor, the car stops and lets its cop
+ * out (POLICE.md). It was 2, and a car held in a queue five blocks short
+ * never did (209). */
+#define GTA_COP_NEAR_FOOT    4
 #define GTA_COP_COUNTDOWN    150        /* the original's 100 frames */
 #define GTA_COP_COUNTDOWN_FOOT 300      /* ...and 200 for a crime on foot */
 #define GTA_COP_SPAWN_COOL   100
@@ -2539,6 +2638,9 @@ int gta_traffic_light_state(const gta_traffic *tr, int bx, int by, int along_x);
 /* Every car standing with its driver out gives up: parked for good. The
  * original does this when the foot cop is killed. */
 void gta_traffic_cops_give_up(gta_traffic *tr);
+/* The wanted level is gone: every pursuer back to patrol, the roadblocks
+ * down. See the note in gta_traffic.c. */
+void gta_traffic_police_reset(gta_traffic *tr);
 
 /* A roadblock car wants its cop: where and facing which way. One per
  * call; 0 when none is waiting. */
@@ -2576,6 +2678,15 @@ int gta_traffic_last_grab_mission(const gta_traffic *tr);
 /* Mark the car with this serial as the script's, or stop doing so. 1 when
  * there was such a car. */
 int gta_traffic_set_mission(gta_traffic *tr, unsigned long serial, int on);
+
+/* KILL_CAR: the car with this serial is taken out of the world - not
+ * wrecked, gone, as the original's the original's routine does. 1 when there was one. */
+int gta_traffic_remove_car(gta_traffic *tr, unsigned long serial);
+
+/* PUT A DRIVER IN A PARKED CAR (HELL_ON). It still does not drive; what
+ * changes is that the player has to pull him out to take it. 1 when there
+ * was such a car. */
+int gta_traffic_set_driver(gta_traffic *tr, unsigned long serial, int on);
 
 /* GIVE A CAR BACK ITS OLD NAME. The player gets out, abandon() puts a fresh
  * car in the fleet with a fresh serial, and this renames it to the one it had

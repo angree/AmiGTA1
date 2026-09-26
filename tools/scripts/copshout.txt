@@ -1,0 +1,10 @@
+# THE COP'S SHOUT (199): the bank robbery's level 4 (`script 350`, as
+# siren.txt), and time for a chasing car to reach him. The first try (208)
+# had the car held in a queue five blocks short, never letting its cop out;
+# 209 made the on-foot reach the original's (under five blocks). Pass:
+# "gta: police - a cop is on foot" and a voice line 18, 22 or 26 (0x12 +
+# (ped % 3) * 4) in "voice asked for".
+wait 500
+script 350
+wait 2000
+dump

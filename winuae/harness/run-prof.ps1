@@ -26,6 +26,14 @@ param(
 $exe = "I:\GITHUB\Amiga_OpenTTD\tools\winuae281\winuae-gta.exe"
 $wd  = "I:\GITHUB\Amiga_OpenTTD\tools\winuae281"
 $cfg = Join-Path "I:\GITHUB\Amiga_GTA\winuae" $Config
+# 2026-09-25: from C: when the copies are there (the developer: spare I:),
+# and the config's copy there has sound_output=interrupts - silent.
+if (Test-Path "C:\temp\amiga_gta\uae\winuae-gta.exe") {
+  $exe = "C:\temp\amiga_gta\uae\winuae-gta.exe"
+  $wd  = "C:\temp\amiga_gta\uae"
+}
+$ccfg = Join-Path "C:\temp\amiga_gta_prof" $Config
+if (Test-Path $ccfg) { $cfg = $ccfg }
 # Each prof config mounts its own runtime; the log lives beside that Work.
 # Derived from the config name: gta-prof80b.uae -> amiga_gta_prof2.
 $log = if ($Config -match "80b") { "C:\temp\amiga_gta_prof2\work\gta.log" }
@@ -74,7 +82,38 @@ if ($stray.Count -gt 0) {
 }
 
 Remove-Item $log -ErrorAction SilentlyContinue
-Start-Process -FilePath $exe -ArgumentList '-log', '-f', $cfg -WorkingDirectory $wd
+# NEVER TAKE THE DEVELOPER'S KEYBOARD: started minimised, then shown WITHOUT
+# activation (a minimised WinUAE 2.8.1 is paused) - run-gta.ps1's way. The
+# plain Start-Process that was here put the window in front of whatever the
+# developer was doing.
+$proc = Start-Process -FilePath $exe -ArgumentList '-log', '-f', $cfg -WorkingDirectory $wd -WindowStyle Minimized -PassThru
+Add-Type -Name WinShowP -Namespace GtaHarnessP -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int c);
+public delegate bool EnumProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr l);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint wp);
+[DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+'@
+$shown = $false
+for ($try = 0; $try -lt 20 -and -not $shown; $try++) {
+  Start-Sleep -Milliseconds 500
+  $cb = [GtaHarnessP.WinShowP+EnumProc]{
+    param($h, $l)
+    [uint32]$wp = 0
+    [GtaHarnessP.WinShowP]::GetWindowThreadProcessId($h, [ref]$wp) | Out-Null
+    if ($wp -eq $proc.Id) {
+      $cn = New-Object System.Text.StringBuilder 64
+      [GtaHarnessP.WinShowP]::GetClassName($h, $cn, 64) | Out-Null
+      if ($cn.ToString() -eq 'PCsuxRox') {
+        [GtaHarnessP.WinShowP]::ShowWindowAsync($h, 4) | Out-Null   # SW_SHOWNOACTIVATE
+        Set-Variable -Name shown -Value $true -Scope 1
+      }
+    }
+    return $true
+  }
+  [GtaHarnessP.WinShowP]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+}
+if (-not $shown) { Write-Output "WARNING: emulation window not found to show - a minimised WinUAE 2.8.1 is PAUSED" }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $seen = $false

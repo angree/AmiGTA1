@@ -1,0 +1,13 @@
+# THE GAP AT CONTACT (215): ram.txt filmed tick by tick - the developer sees
+# cars stop short of each other, "like magnets". live00..live39 from the
+# start of the run; the log beside each frame gives the player's position.
+wait 100
+park 0 0 -26 0
+enter
+wait 150
+park 1 0 -140 0
+park 1 0 90 0
+wait 20
+run 10 1 0 0 0
+film 40
+wait 50

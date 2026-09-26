@@ -1,0 +1,19 @@
+# A CAR IS SOLID TO A MAN ON FOOT (218). The level starts him on block
+# (105,119) facing east; a saloon parked 40 px WEST of him, crosswise
+# (facing north), and he runs west into its side.
+# Pass: "live00 player" stops short of the car (x about car - 13 - 3), not
+# through it; then SPACE while running: "gta: jump - vaulting fleet car",
+# "landed", and "live01 player" is on the far side of the car.
+wait 50
+park 0 -40 0 0
+face 192
+run 60 1 0 0 0
+film 1
+run 6 1 0 0 0
+jump
+wait 60
+film 1
+face 192
+run 30 1 0 0 0
+film 1
+dump

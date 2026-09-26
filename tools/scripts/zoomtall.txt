@@ -1,0 +1,12 @@
+# THE TALL MODES WITH THE WIDTH ZOOM (216): F4's 320x256 and 352x272 open
+# another screen; the camera must still show the same stretch across (352
+# is wider, so it zooms in a little: 35 px a block).
+wait 100
+mode 4
+wait 10
+film 1
+mode 5
+wait 10
+film 1
+mode 3
+wait 10

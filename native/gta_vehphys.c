@@ -19,6 +19,7 @@
  *
  * Licence: MIT (ours).
  */
+#include <string.h>
 #include "gta_vehphys.h"
 #include "gta_nav.h"
 #include "gta_trig.h"
@@ -255,6 +256,14 @@ void gta_veh_init(gta_veh *v, const gta_tiles *t, int model,
     long cy;
 
     if (m8 < 1) m8 = 1;
+
+    /* EVERY FIELD FROM ZERO. This used to set the ones it thought of, and
+     * `have_safe` / `safe_*` were not among them - so a car got into on a
+     * spot where veh_settle() could not push it clear (a 64-long car in the
+     * 32-wide crane bay at (13,218), walls on three sides) "went back" to a
+     * safe position nobody had ever written: whatever the stack held, which
+     * was (4096,0). PROGRESS 191. The main loop's `veh` is a local. */
+    memset(v, 0, sizeof *v);
 
     v->model = model;
     v->model_id = ci->model_id;

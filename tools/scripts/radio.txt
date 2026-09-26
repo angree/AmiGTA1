@@ -1,0 +1,10 @@
+# ANOTHER CAR'S RADIO (211): a model-0 saloon WITH A DRIVER parked beside the
+# start (`park` with a fifth number), and the player takes it: the door opens
+# on its radio. Model 0's radio byte is 0, so the sample is 0x7e (126). Pass:
+# 126 in the report's "asked for" line, beside the door 1 and the start 5.
+wait 100
+park 0 0 -26 0 1
+enter
+wait 200
+wait 200
+dump

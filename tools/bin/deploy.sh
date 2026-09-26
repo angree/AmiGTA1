@@ -90,9 +90,12 @@ fi
 for b in gta-aga gta-rtg240 gta-rtg480 gta-rtg; do
     rm -f "$WORK/$b" "$WORK/$b.info"
 done
-for b in AmiGTA gtaprefs gtabake; do
-    if [ -f "$ROOT/build/$b" ]; then
-        cp "$ROOT/build/$b" "$WORK/$b"
+# GTA_BUILD: where the binaries are, when they were built on C: by
+# tools/bin/cbuild.sh (GTA_BUILD=/c/temp/amiga_gta_build/build).
+BIN="${GTA_BUILD:-$ROOT/build}"
+for b in AmiGTA gtaprefs gtabake gtaiff; do
+    if [ -f "$BIN/$b" ]; then
+        cp "$BIN/$b" "$WORK/$b"
         echo "deployed: $b"
     fi
 done
@@ -217,6 +220,115 @@ if [ -f "$SND" ]; then
     mkdir -p "$WORK/GTADATA"
     cp "$SND" "$WORK/GTADATA/level001.snd"
     echo "deployed: GTADATA/level001.snd"
+fi
+
+# THE VOICE BANK - vocalcom, the announcer, the cops and the pedestrians.
+# Same baker; the game reads only its index and takes each line off the disk
+# when it is said (gta_sfx_open_index). Baked by the host gtabake from C:
+# when cbuild.sh made one (GTA_BUILD), because the halving of the two
+# 32000 Hz lines is newer than the copy in build/host.
+BAKE="$ROOT/build/host/gtabake"
+[ -n "$GTA_BUILD" ] && [ -x "$GTA_BUILD/host/gtabake" ] && BAKE="$GTA_BUILD/host/gtabake"
+VOC="$ROOT/build/data/vocalcom.snd"
+VOCSRC="$ROOT/dos/Grand_Theft_Auto/gtadata/audio/vocalcom"
+if [ ! -f "$VOC" ] || [ "$VOCSRC.raw" -nt "$VOC" ]; then
+    if [ -x "$BAKE" ] && [ -f "$VOCSRC.sdt" ]; then
+        mkdir -p "$ROOT/build/data"
+        "$BAKE" -sfx "$VOCSRC" "$VOC"
+        echo "baked:    build/data/vocalcom.snd"
+    fi
+fi
+if [ -f "$VOC" ]; then
+    mkdir -p "$WORK/GTADATA"
+    cp -u "$VOC" "$WORK/GTADATA/vocalcom.snd"
+    echo "deployed: GTADATA/vocalcom.snd"
+fi
+
+# THE TITLE MUSIC. One track out of the 2002 release's soundtrack, converted
+# to the IMA-ADPCM the port streams. Only one, and only if it is not already
+# there: the nine tracks are 270 MB of source and the conversion is not free,
+# so the rest are a deliberate step (`gtamusic <in.wav> <out.mus>`) and not
+# something a deploy does behind your back. Optional throughout - no
+# title.mus, no music, and nothing else changes.
+#
+# TRACK 1, NOT TRACK 9. It used to be Track9 because Track9 is the shortest
+# and the deploy stayed quick - and Track9 is the POLICE BAND (61 s, one
+# block in six silence: speech with pauses). The measurements that settle
+# which track is what are in the table at the bottom of native/gta_iff.c.
+MUS="$ROOT/build/data/title.mus"
+MUSSRC="$ROOT/pc/GTA/Music/Track1.wav"
+if [ ! -f "$MUS" ] && [ -x "$ROOT/build/host/gtamusic" ] && [ -f "$MUSSRC" ]; then
+    mkdir -p "$ROOT/build/data"
+    "$ROOT/build/host/gtamusic" "$MUSSRC" "$MUS" >/dev/null
+    echo "converted: build/data/title.mus"
+fi
+if [ -f "$MUS" ]; then
+    mkdir -p "$WORK/GTADATA"
+    cp "$MUS" "$WORK/GTADATA/title.mus"
+    echo "deployed: GTADATA/title.mus"
+fi
+
+# TESTING THE FIRST-RUN EXTRACTOR (nothing is deployed for it on purpose).
+#
+# The game converts GTADATA/Music/Track*.wav into GTADATA/radioN.8svx the
+# first time it starts. The real files are 270 MB and converting them inside
+# an emulator is minutes of nothing, so a deploy does NOT copy them; a test
+# cuts short pieces instead and drops them straight into the work folder:
+#
+#   python3 - <<'EOF'      # ...cut 20 s out of Track9 into Music/Track1.wav
+#   ...see PROGRESS.md (173) for the snippet that made the test sources
+#   EOF
+#   rm <work>/GTADATA/radio1.8svx     # so the scan has something to do
+#
+# A file the game is STREAMING cannot be deleted from the host - Windows
+# reports "device or resource busy" - so stop the music (or reload the game)
+# before deleting a radio track, or the deletion silently does not happen and
+# the next run reports one fewer track to convert than you expect.
+
+# THE CAR RADIO. Three of the STATIONS - Track2, Track3 and Track5 - as
+# radio1..3.mus. The game plays the next one each time the player gets into a
+# car. Convert more by hand if you want them:
+# `build/host/gtamusic pc/GTA/Music/TrackN.wav <work>/GTADATA/radioK.mus`
+# and the game finds them at startup.
+#
+# IT USED TO BE "THE THREE SHORTEST, SO THE DEPLOY STAYS QUICK" (9, 10, 7)
+# AND THAT WAS THE BUG. The short files are short because they are not
+# stations: Track9 is the POLICE BAND and Track10 is quieter still. The
+# developer got into an ordinary saloon and heard police dispatch, which the
+# original never did. A station is seven to eleven minutes long, which is
+# exactly what makes it slow to convert - the two facts are the same fact,
+# and convenience picked against the content. See native/gta_iff.c.
+RN=1
+for T in 2 3 5; do
+    RM="$ROOT/build/data/radio$RN.mus"
+    RS="$ROOT/pc/GTA/Music/Track$T.wav"
+    if [ ! -f "$RM" ] && [ -x "$ROOT/build/host/gtamusic" ] && [ -f "$RS" ]; then
+        mkdir -p "$ROOT/build/data"
+        "$ROOT/build/host/gtamusic" "$RS" "$RM" >/dev/null
+        echo "converted: build/data/radio$RN.mus (Track$T)"
+    fi
+    if [ -f "$RM" ]; then
+        mkdir -p "$WORK/GTADATA"
+        cp "$RM" "$WORK/GTADATA/radio$RN.mus"
+        echo "deployed: GTADATA/radio$RN.mus"
+    fi
+    RN=$((RN + 1))
+done
+
+# AND THE POLICE BAND ITSELF, which is Track9 and belongs in a POLICE CAR.
+# It is a minute long, so it costs nothing to convert; the game plays it when
+# the player is driving the cop model and never otherwise.
+PMUS="$ROOT/build/data/police.mus"
+PSRC="$ROOT/pc/GTA/Music/Track9.wav"
+if [ ! -f "$PMUS" ] && [ -x "$ROOT/build/host/gtamusic" ] && [ -f "$PSRC" ]; then
+    mkdir -p "$ROOT/build/data"
+    "$ROOT/build/host/gtamusic" "$PSRC" "$PMUS" >/dev/null
+    echo "converted: build/data/police.mus (Track9)"
+fi
+if [ -f "$PMUS" ]; then
+    mkdir -p "$WORK/GTADATA"
+    cp "$PMUS" "$WORK/GTADATA/police.mus"
+    echo "deployed: GTADATA/police.mus"
 fi
 
 if [ "$1" = "--data" ]; then

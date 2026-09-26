@@ -13,7 +13,7 @@ int gta_text_load(gta_text *t, const char *path)
     FILE *f;
     long len;
     unsigned char *raw;
-    unsigned long i, o = 0, n = 0;
+    unsigned long i, o = 0, n = 0, khash = 0;
     int key, off, in_key = 0, keyval = 0, at_start = 1;
 
     memset(t, 0, sizeof *t);
@@ -49,20 +49,23 @@ int gta_text_load(gta_text *t, const char *path)
         c = (c + off) & 0xff;
 
         /* "[key]" opens a string; the number is what the script uses. */
-        if (at_start && c == '[') { in_key = 1; keyval = 0; at_start = 0; continue; }
+        if (at_start && c == '[') { in_key = 1; keyval = 0; khash = 2166136261UL;
+                                    at_start = 0; continue; }
         if (in_key) {
             if (c == ']') {
                 in_key = 0;
                 if (t->n < GTA_TEXT_MAX) {
                     t->keys[t->n] = keyval;
+                    t->names[t->n] = keyval < 0 ? (khash ? khash : 1UL) : 0UL;
                     t->offs[t->n] = o;
                     t->n++;
                 }
-            } else if (c >= '0' && c <= '9') {
+            } else if (c >= '0' && c <= '9' && keyval >= 0) {
                 keyval = keyval * 10 + (c - '0');
             } else {
-                keyval = -1;                /* a named key: not indexed */
+                keyval = -1;                /* a named key: hashed below */
             }
+            khash = ((khash ^ (unsigned long)(c & 0xff)) * 16777619UL) & 0xFFFFFFFFUL;
             continue;
         }
         t->buf[o++] = (char)c;
@@ -80,6 +83,20 @@ void gta_text_free(gta_text *t)
     free(t->buf);
     t->buf = NULL;
     t->n = 0;
+}
+
+const char *gta_text_get_name(const gta_text *t, const char *name)
+{
+    unsigned long h = 2166136261UL;
+    int i;
+    if (!t->buf || !name) return NULL;
+    while (*name)
+        h = ((h ^ (unsigned long)(*name++ & 0xff)) * 16777619UL) & 0xFFFFFFFFUL;
+    if (!h) h = 1UL;
+    for (i = 0; i < t->n; i++)
+        if (t->keys[i] < 0 && t->names[i] == h)
+            return t->buf + t->offs[i];
+    return NULL;
 }
 
 const char *gta_text_get(const gta_text *t, int key)

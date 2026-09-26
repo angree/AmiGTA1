@@ -210,6 +210,59 @@ int gta_pickups_open_at(gta_pickups *pk, long x, long y, int layer, int radius)
     return n;
 }
 
+int gta_pickups_peek(const gta_pickups *pk, long x, long y, int layer,
+                     int radius, int *kind, int *amount)
+{
+    int i;
+    long r = (long)radius << 16;
+    for (i = 0; i < pk->n; i++) {
+        const gta_pickup *p = &pk->p[i];
+        long dx, dy;
+        if (p->state != GTA_PICKUP_OPEN || p->layer != layer) continue;
+        dx = p->x - x; if (dx < 0) dx = -dx;
+        dy = p->y - y; if (dy < 0) dy = -dy;
+        if (dx > r || dy > r) continue;
+        if (kind)   *kind = p->kind;
+        if (amount) *amount = p->amount;
+        return 1;
+    }
+    return 0;
+}
+
+int gta_pickups_peek_from(const gta_pickups *pk, long x, long y, int layer,
+                          int radius, int from, int *kind, int *amount)
+{
+    int i;
+    long r = (long)radius << 16;
+    for (i = from < 0 ? 0 : from; i < pk->n; i++) {
+        const gta_pickup *p = &pk->p[i];
+        long dx, dy;
+        if (p->state != GTA_PICKUP_OPEN || p->layer != layer) continue;
+        dx = p->x - x; if (dx < 0) dx = -dx;
+        dy = p->y - y; if (dy < 0) dy = -dy;
+        if (dx > r || dy > r) continue;
+        if (kind)   *kind = p->kind;
+        if (amount) *amount = p->amount;
+        return i;
+    }
+    return -1;
+}
+
+int gta_pickups_take_index(gta_pickups *pk, int index, int *kind, int *amount)
+{
+    gta_pickup *p;
+    if (index < 0 || index >= pk->n)
+        return 0;
+    p = &pk->p[index];
+    if (p->state != GTA_PICKUP_OPEN)
+        return 0;
+    p->state = 0;
+    pk->stat_taken++;
+    if (kind)   *kind = p->kind;
+    if (amount) *amount = p->amount;
+    return 1;
+}
+
 int gta_pickups_take(gta_pickups *pk, long x, long y, int layer, int radius,
                      int *kind, int *amount)
 {

@@ -70,50 +70,47 @@ static int period_for(unsigned long rate)
     return (int)p;
 }
 
+/* TOO FAST FOR PAULA. Two entries of vocalcom are at 32000 Hz, above the DMA
+ * floor's 28.6 kHz; played at the floor they would come out 11% slow and a
+ * tone lower. They are halved here instead - each pair of samples averaged
+ * into one, at half the rate - which keeps the pitch and the length and
+ * costs only the top of the spectrum, above 8 kHz, where there is little of
+ * a voice. The level banks never need it (22050 is their fastest). */
+static int too_fast(unsigned long rate)
+{
+    return rate > 0 && (PAULA_PAL_CLOCK + rate / 2) / rate < PAULA_MIN_PERIOD;
+}
+
 /* ---- loading the baked bank --------------------------------------------- */
 
 #define HDR_BYTES   16          /* magic, version, count, data bytes */
 #define ENTRY_BYTES 12          /* offset, length, period, rate */
 
-int gta_sfx_load(const char *path, gta_sfx *sfx)
+/* The header and the index, shared by the whole load and the index-only open.
+ * Leaves `f` positioned at the first sample byte. `sfx` must be zeroed; on
+ * failure the caller closes `f` and frees `sfx`. */
+static int read_head(FILE *f, gta_sfx *sfx)
 {
     unsigned char hdr[HDR_BYTES];
     unsigned char *idx = NULL;
-    FILE *f;
     int i, count;
     unsigned long bytes;
 
-    if (sfx == NULL) return 1;
-    memset(sfx, 0, sizeof *sfx);
-    if (path == NULL) return 1;
-
-    f = fopen(path, "rb");
-    if (f == NULL) return 1;
-
-    if (fread(hdr, 1, HDR_BYTES, f) != HDR_BYTES) { fclose(f); return 1; }
-    if (rd_be32(hdr) != GTA_SFX_MAGIC)            { fclose(f); return 2; }
-    if (rd_be32(hdr + 4) != (unsigned long)GTA_SFX_VERSION) {
-        fclose(f); return 3;
-    }
+    if (fread(hdr, 1, HDR_BYTES, f) != HDR_BYTES) return 1;
+    if (rd_be32(hdr) != GTA_SFX_MAGIC)            return 2;
+    if (rd_be32(hdr + 4) != (unsigned long)GTA_SFX_VERSION) return 3;
     count = (int)rd_be32(hdr + 8);
     bytes = rd_be32(hdr + 12);
-    if (count <= 0 || count > GTA_SFX_MAX || bytes == 0) { fclose(f); return 4; }
+    if (count <= 0 || count > GTA_SFX_MAX || bytes == 0) return 4;
 
     idx = (unsigned char *)malloc((size_t)count * ENTRY_BYTES);
     sfx->entry = (gta_sfx_entry *)malloc((size_t)count * sizeof(gta_sfx_entry));
-    sfx->data  = (signed char *)malloc((size_t)bytes);
-    if (idx == NULL || sfx->entry == NULL || sfx->data == NULL) {
-        free(idx); fclose(f); gta_sfx_free(sfx); return 5;
-    }
+    if (idx == NULL || sfx->entry == NULL) { free(idx); return 5; }
 
     if (fread(idx, 1, (size_t)count * ENTRY_BYTES, f)
             != (size_t)count * ENTRY_BYTES) {
-        free(idx); fclose(f); gta_sfx_free(sfx); return 6;
+        free(idx); return 6;
     }
-    if (fread(sfx->data, 1, (size_t)bytes, f) != (size_t)bytes) {
-        free(idx); fclose(f); gta_sfx_free(sfx); return 7;
-    }
-    fclose(f);
 
     for (i = 0; i < count; i++) {
         const unsigned char *e = idx + (long)i * ENTRY_BYTES;
@@ -137,9 +134,67 @@ int gta_sfx_load(const char *path, gta_sfx *sfx)
     return 0;
 }
 
+int gta_sfx_load(const char *path, gta_sfx *sfx)
+{
+    FILE *f;
+    int rc;
+
+    if (sfx == NULL) return 1;
+    memset(sfx, 0, sizeof *sfx);
+    if (path == NULL) return 1;
+
+    f = fopen(path, "rb");
+    if (f == NULL) return 1;
+    rc = read_head(f, sfx);
+    if (rc == 0) {
+        sfx->data = (signed char *)malloc((size_t)sfx->bytes);
+        if (sfx->data == NULL) rc = 5;
+        else if (fread(sfx->data, 1, (size_t)sfx->bytes, f)
+                 != (size_t)sfx->bytes) rc = 7;
+    }
+    fclose(f);
+    if (rc != 0) gta_sfx_free(sfx);
+    return rc;
+}
+
+int gta_sfx_open_index(const char *path, gta_sfx *sfx)
+{
+    FILE *f;
+    int rc;
+
+    if (sfx == NULL) return 1;
+    memset(sfx, 0, sizeof *sfx);
+    if (path == NULL) return 1;
+
+    f = fopen(path, "rb");
+    if (f == NULL) return 1;
+    rc = read_head(f, sfx);
+    if (rc != 0) { fclose(f); gta_sfx_free(sfx); return rc; }
+    sfx->file = f;
+    sfx->data_pos = (unsigned long)HDR_BYTES
+                  + (unsigned long)sfx->count * ENTRY_BYTES;
+    return 0;
+}
+
+unsigned long gta_sfx_read(const gta_sfx *sfx, int n, signed char *dst,
+                           unsigned long max)
+{
+    unsigned long len;
+    if (sfx == NULL || sfx->file == NULL || dst == NULL) return 0;
+    if (n < 0 || n >= sfx->count) return 0;
+    len = sfx->entry[n].length;
+    if (len == 0 || len > max) return 0;
+    if (fseek(sfx->file, (long)(sfx->data_pos + sfx->entry[n].offset),
+              SEEK_SET) != 0)
+        return 0;
+    if (fread(dst, 1, (size_t)len, sfx->file) != (size_t)len) return 0;
+    return len;
+}
+
 void gta_sfx_free(gta_sfx *sfx)
 {
     if (sfx == NULL) return;
+    if (sfx->file) fclose(sfx->file);
     free(sfx->entry);
     free(sfx->data);
     memset(sfx, 0, sizeof *sfx);
@@ -258,6 +313,13 @@ int gta_sfx_bake(const char *sdt_path, const char *raw_path, const char *out_pat
                              "(off %lu len %lu) - dropped\n", i, off, len);
             continue;
         }
+        if (too_fast(rate)) {
+            if (log)
+                fprintf(log, "gtabake: sound %d is %lu Hz, over Paula's "
+                             "limit - halved to %lu Hz\n", i, rate, rate / 2);
+            len /= 2;
+            rate /= 2;
+        }
         even = (len + 1UL) & ~1UL;
         wr_be32(idx + (long)i * ENTRY_BYTES,     out_bytes);
         wr_be32(idx + (long)i * ENTRY_BYTES + 4, even);
@@ -289,10 +351,14 @@ int gta_sfx_bake(const char *sdt_path, const char *raw_path, const char *out_pat
         unsigned long off = rd_le32(sdt + (long)i * 12);
         unsigned long len = rd_le32(sdt + (long)i * 12 + 4);
         unsigned long j, even;
+        int half = too_fast(rd_le32(sdt + (long)i * 12 + 8));
         if (rd_be32(idx + (long)i * ENTRY_BYTES + 4) == 0) continue;
+        if (half) len /= 2;
         even = (len + 1UL) & ~1UL;
         for (j = 0; j < len; j++) {
-            int v = (int)raw[off + j] - 128;
+            int v = half ? ((int)raw[off + 2 * j] + (int)raw[off + 2 * j + 1]
+                            + 1) / 2 - 128
+                         : (int)raw[off + j] - 128;
             if (fputc(v & 0xff, f) == EOF) goto writefail;
         }
         for (j = len; j < even; j++)

@@ -230,6 +230,18 @@ void gta_weapons_explode(gta_weapons *w, long x, long y, int layer,
                          gta_peds *peds, gta_traffic *tr, gta_score *sc,
                          int by_player);
 
+/* THE SCRIPT'S EXPLOSION - EXPLODE and PLAIN_EXPL_BUILDING (MISSIONS.md,
+ * the original's 0x43e30 and 0x440e0). It goes off on one FACE of a block:
+ * face 0 is the west side, 1 the east, 2 the north, 3 the south; the blast
+ * is the ordinary one and two fires are left against the wall either side of
+ * it. The original's EXPLODE also scatters four debris objects (map objects
+ * 0x2b..0x2e and two 5s); this port has no debris objects yet, so both
+ * commands look the same here. (wx,wy) come back as where it went off. */
+void gta_weapons_explode_face(gta_weapons *w, int bx, int by, int layer,
+                              int face, gta_peds *peds, gta_traffic *tr,
+                              gta_score *sc, int by_player,
+                              long *wx, long *wy);
+
 /* The five bursts of a car coming apart: its centre and its four corners,
  * as the original does it. */
 /* What one bullet costs a vehicle of this class - see the definition. */

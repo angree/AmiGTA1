@@ -1,0 +1,38 @@
+# ITEM A's ACCEPTANCE TEST (PROGRESS 170): Liberty City's first three jobs in
+# one run - four phones, two MISSION_ENDs, 220 200 points at x2. Taken out of
+# LEFTOFF.md so it can be re-run: reload-gta.ps1 -WaitFor "autodrive done" -TimeoutSec 500
+wait 500
+goto 122 136      phone 68
+wait 250
+goto 167 97       car 189
+enter
+wait 160
+goto 115 104      the garage trigger at Dulli's
+wait 260
+enter
+wait 100
+goto 109 121      phone 72 - it rings you back
+wait 800
+goto 77 216       car 253
+enter
+wait 160
+goto 128 141      the passenger
+wait 260
+goto 173 80       door 254
+wait 320
+enter
+wait 120
+goto 123 136      phone 69 - the SECOND job
+wait 300
+goto 55 34        the ambush and the hell cars
+enter
+wait 150
+goto 110 7        the garage
+wait 220
+enter
+wait 120
+goto 81 56        phone 105
+wait 1500
+goto 105 41       the drop-off
+wait 2600
+

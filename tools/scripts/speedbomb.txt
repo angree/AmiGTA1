@@ -1,0 +1,14 @@
+# THE SPEED BOMB (mission.ini 3515..3590): car 297 is `PARKED 9` at (120,56).
+# The player gets into it, `script 3516` runs FREEZE_ENTER, two SURVIVEs, then
+# SETBOMB 297 type 6 and ARMEDMESS. Standing still is below half the car's top
+# speed, so the bomb must go off; the RETURN in between must be refused.
+wait 100
+goto 120 56
+wait 20
+enter
+wait 80
+script 3516
+wait 60
+enter
+wait 400
+dump

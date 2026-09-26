@@ -1,0 +1,26 @@
+# THE CRANE DEMAND MET (PROGRESS 190): as crane.txt, but both cars are record
+# 17 - the original's model 22 - so DO_GTA 270 ("two of model 22") is met
+# with the second one and line 1509 pays its 20000.
+wait 500
+script 1509
+goto 13 217
+wait 20
+park 17 0 32 0
+wait 10
+enter
+wait 150
+enter
+wait 200
+film 1
+wait 450
+goto 13 217
+wait 20
+park 17 0 32 0
+wait 10
+enter
+wait 150
+enter
+wait 200
+film 1
+wait 450
+dump

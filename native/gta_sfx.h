@@ -84,12 +84,33 @@ typedef struct {
     gta_sfx_entry *entry;   /* count of them */
     signed char *data;      /* the samples, 8-bit SIGNED, one block */
     unsigned long bytes;    /* how many of them */
+    /* A bank opened by gta_sfx_open_index() has no `data`: its samples stay
+     * in the file, which is held open here, and `data_pos` is where they
+     * start in it. NULL/0 for a bank loaded whole. */
+    FILE *file;
+    unsigned long data_pos;
 } gta_sfx;
 
 /* Load a baked bank. 0 on success, non-zero on failure; the struct is zeroed
  * either way, so gta_sfx_free() is always safe afterwards. */
 int  gta_sfx_load(const char *path, gta_sfx *sfx);
 void gta_sfx_free(gta_sfx *sfx);
+
+/* THE SPEECH BANK IS NOT LOADED, IT IS READ - the way the original reads it.
+ *
+ * vocalcom is 1.3 MB of voice (71 entries): the announcer, the cops' shouts,
+ * the pedestrians. The DOS game keeps the file open and, for every line it
+ * says, seeks to the entry and reads it into its one speech buffer
+ * (the original's routine: the original's routine = seek, the original's routine = read). A 68020 with a
+ * few MB of Fast RAM should not hold a megabyte of voice it says one line of
+ * every few seconds, so this port does the same: the index is read, the file
+ * stays open, and gta_sfx_read() fetches one entry into the caller's buffer.
+ * Same return codes as gta_sfx_load(). */
+int  gta_sfx_open_index(const char *path, gta_sfx *sfx);
+/* Entry `n` of an index-only bank into `dst` (at most `max` bytes). Returns
+ * the bytes read - the entry's whole length - or 0 on any failure. */
+unsigned long gta_sfx_read(const gta_sfx *sfx, int n, signed char *dst,
+                           unsigned long max);
 
 /* One sound: pointer into the bank and its length, or NULL/0 for a bad index
  * or a zero-length entry (the original has those - they are holes in the

@@ -1,0 +1,15 @@
+# THE SAME STREET IN EVERY WINDOW (216): the camera zooms with the window
+# width (zoom_eff, reference 320). One frame in F4's 192x168, 256x200 and
+# 320x200 modes from the same spot: the three pictures must show the same
+# stretch of city across, at different sizes.
+wait 100
+mode 0
+wait 5
+film 1
+mode 2
+wait 5
+film 1
+mode 3
+wait 5
+film 1
+wait 5

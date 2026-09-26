@@ -66,6 +66,10 @@
 #define GTA_PED_RUN_FIRST    8
 #define GTA_PED_RUN_FRAMES   8
 #define GTA_PED_STAND        98
+/* THE SECOND SET: the police. the original's routine adds ped+0x15 * 0xbd to the frame,
+ * and a cop's +0x15 is 1 - so sprites 189..294 are the same animations in
+ * uniform and cap. */
+#define GTA_PED_COP_SET      0xbd
 /* The rest of the sheet, same source. Getting in and out of a car needs most
  * of these and nothing had them before. `ENTER_CAR` is not a run of frames -
  * the original holds 26 for three beats, 25 for two, then walks 29..33 - so it

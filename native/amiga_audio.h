@@ -54,6 +54,22 @@ int AmigaAudio_ChannelIdle(int ch);
 int AmigaAudio_Play(int ch, void *chipdata, unsigned long bytes,
                     int period, int volume);
 
+/* THE ENGINE NOTE: play a sample round and round until stopped, and change
+ * its pitch while it runs. `ioa_Cycles = 0` is audio.device's own "for ever";
+ * ADCMD_PERVOL is the only command that reaches a channel with a write
+ * outstanding, so the note revs instead of restarting sixty times a second.
+ * The caller owns the Chip buffer and must keep it alive until Stop. */
+int  AmigaAudio_PlayLoop(int ch, void *chipdata, unsigned long bytes,
+                         int period, int volume);
+void AmigaAudio_SetPeriod(int ch, int period, int volume);
+
+/* Stop channel ch NOW, so it can be given something else in the same tick.
+ * Aborts the outstanding write and waits for the device to reply, which is
+ * what makes the channel idle again - without the WaitIO the request is still
+ * queued and the next Play on that channel is refused. Safe on an idle
+ * channel and on a channel music holds (it does nothing to those). */
+void AmigaAudio_Stop(int ch);
+
 /* ---- streaming music on Paula channels 2 (right) + 3 (left) -------------
  *
  * The same mono stream is played on both a left and a right channel so music

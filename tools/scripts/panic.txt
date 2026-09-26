@@ -1,0 +1,16 @@
+# THE PANIC'S SCREAMS (PROGRESS 200): shooting on foot frightens the
+# pedestrians around (gta_peds_panic, the original's routine) and the first of them
+# screams - an effect 0x17/0x16/0x15 in turn (asked-for ids 23/22/21) - and,
+# while the voice is free and its three-call countdown allows, a line 62..69.
+# Pass: the report's "asked for" line has some of 21..23 and the "voice asked
+# for" line some of 62..69. Few pedestrians about means few screams - the
+# count of panics is in the same log.
+wait 150
+weapon 1 60
+fire 1
+wait 120
+fire 1
+wait 120
+fire 1
+wait 120
+dump

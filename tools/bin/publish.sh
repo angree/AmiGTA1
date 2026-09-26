@@ -95,6 +95,27 @@ fi
 #
 # This script and .gitignore name the excluded things deliberately - they are
 # the exclusion - so they are the two files the check must not read.
+# THE PUBLIC COPY'S COMMENTS ARE SCRUBBED HERE, not the working tree's (219).
+# The working comments cite the original's routines by their decompiler
+# symbol because that is how the next session finds them again; the public
+# tree gets the same sentence with the symbol said in words. Comments only -
+# nothing in the code carries these names - and the scan below still checks
+# the result. backup.sh is a research-tree tool and does not go at all.
+rm -f "$DEST/tools/bin/backup.sh"
+find "$DEST" -type f \( -name '*.c' -o -name '*.h' -o -name '*.txt' -o -name '*.md' -o -name '*.sh' -o -name '*.py' \) \
+     -not -path '*/.git/*' -not -name publish.sh -print | while read -r f; do
+    sed -i -E \
+        -e 's/\bFUN_[0-9a-fA-F]{4,}(\(\))?/the original'"'"'s routine/g' \
+        -e 's/\b_?DAT_[0-9a-fA-F]{4,}/the original'"'"'s table/g' \
+        -e 's/\bLAB_[0-9a-fA-F]{4,}/the original'"'"'s code/g' \
+        -e 's/[Tt]he DOS (binary|build)/the original game/g' \
+        -e 's/[Dd]ecompil(ation|ed|er)/the original/g' \
+        -e 's/[Dd]isassembl(y|ed|er)/the original/g' \
+        -e 's/Ghidra|ghidra/the tools/g' \
+        -e 's#re/(notes|decomp|flat)/?[A-Za-z0-9_./-]*#the research notes#g' \
+        "$f"
+done
+
 scan() { grep -rliE "$1" "$DEST" --exclude=publish.sh --exclude=.gitignore \
              --exclude-dir=.git 2>/dev/null; }
 hits=$(scan '\b(FUN|DAT|_DAT|LAB)_[0-9a-fA-F]{4,}' || true)

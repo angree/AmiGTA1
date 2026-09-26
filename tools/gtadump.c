@@ -24,6 +24,7 @@
 #include "../native/gta_nav.h"
 #include "../native/gta_vehphys.h"
 #include "../native/gta_script.h"
+#include "../native/gta_sfx.h"
 #include "../native/gta_font.h"
 #include "../native/gta_text.h"
 #include "../native/gta_peds.h"
@@ -344,6 +345,44 @@ static int cmd_objinfo(const char *stylePath)
         printf("0x%02x %6ld %6ld %6ld %6d %6d %2dx%-2d %6d %4d  %d/%d\n",
                i, o->w, o->h, o->depth, o->sprite_num, o->sprite_index,
                sw, sh, o->weight, o->aux, o->status, o->num_into);
+    }
+    gta_style_free(&st);
+    return 0;
+}
+
+/* `gtadump carbbox <style.gry>`: every car's OPAQUE extent in its own sprite
+ * against the width and length its car_info record gives - the collision
+ * box. 215: the developer saw cars stop short of each other "like magnets";
+ * this says whether the box is bigger than the picture. */
+static int cmd_carbbox(const char *stylePath)
+{
+    gta_style st;
+    int i;
+    if (gta_style_load(stylePath, &st) != 0)
+        return 1;
+    printf("  # model  info w x l   sprite w x h   opaque w x h   (l - opaque h)\n");
+    for (i = 0; i < st.car_count; i++) {
+        const gta_car_info *c = &st.cars[i];
+        const struct gta_sprite *s;
+        int x, y, x0 = 999, x1 = -1, y0 = 999, y1 = -1;
+        if (c->sprite_index < 0 || c->sprite_index >= st.sprite_count)
+            continue;
+        s = &st.sprites[c->sprite_index];
+        for (y = 0; y < s->h; y++)
+            for (x = 0; x < s->w; x++) {
+                unsigned long o = (unsigned long)s->page * 65536UL
+                                + (unsigned long)(s->page_y + y) * 256UL
+                                + (unsigned long)(s->page_x + x);
+                if (o < st.sprite_graphics_len && st.sprite_graphics[o]) {
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    if (y > y1) y1 = y;
+                }
+            }
+        printf("%3d %5d   %3d x %3d    %3d x %3d      %3d x %3d      %d\n",
+               i, c->model_id, c->width, c->length, s->w, s->h,
+               x1 - x0 + 1, y1 - y0 + 1, c->length - (y1 - y0 + 1));
     }
     gta_style_free(&st);
     return 0;
@@ -1396,6 +1435,7 @@ static int count_offroad(const gta_map *mp, const gta_tiles *ti,
         long rx = -fy, ry = fx;
         int k, bad = 0;
 
+
         /* Three lines along the vehicle: its centre and both flanks. The
          * centre line was NOT sampled before - only the flanks were - so the
          * strict rule below is not a relaxation of what was tested, it is a
@@ -2168,6 +2208,22 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
     for (i = 0; i < GTA_MAX_CARS; i++) { aw_turning[i] = 0; aw_fx[i] = 0; aw_fy[i] = 0; aw_who[i] = 0; }
 
     gta_traffic_init(&tr, &ti, seed);
+    /* GTA_WRECK="bx by face [layer]": a burnt-out car standing in a lane from
+     * tick 0 - the host's copy of the level-1 start, where the script parks
+     * the player's car in the southbound lane (217) */
+    if (getenv("GTA_WRECK") != 0) {
+        int wx = 0, wy = 0, wf = 0, wz = 2;
+        sscanf(getenv("GTA_WRECK"), "%d %d %d %d", &wx, &wy, &wf, &wz);
+        gta_traffic_leave_wreck(&tr, 23, ((long)wx * 32 + 16) << 16,
+                                ((long)wy * 32 + 16) << 16, wf, wz, 0);
+        printf("drive: wreck parked at (%d,%d) face %d layer %d\n", wx, wy, wf, wz);
+    }
+    /* GTA_HALFRATE=0|1 in the environment: the A/B for opt_halfrate, so the
+     * flow battery can judge the far cars' half-rate driving (PERF.md 6). */
+    if (getenv("GTA_HALFRATE") != 0)
+        tr.opt_halfrate = atoi(getenv("GTA_HALFRATE"));
+    if (getenv("GTA_CRUISE") != 0)
+        tr.opt_cruise = atoi(getenv("GTA_CRUISE"));
     /* The reservation overlay in every frame this test writes - the same
      * audit the developer runs in the game, available offline. */
     gta_render_set_overlay(&view, &tr, 1);
@@ -2394,6 +2450,21 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
                                "%ld,%ld world px from the camera\n",
                                t, px[i] >> (16 + 5), py[i] >> (16 + 5),
                                ddx >> 16, ddy >> 16);
+                    {
+                        /* and the nearest car now - a jump, or a deletion */
+                        long bd = 1L << 30; int bj = -1;
+                        for (j = 0; j < tr.n; j++) {
+                            long ex = tr.cars[j].x - px[i], ey = tr.cars[j].y - py[i];
+                            if (ex < 0) ex = -ex;
+                            if (ey < 0) ey = -ey;
+                            if (ex + ey < bd) { bd = ex + ey; bj = j; }
+                        }
+                        if (vanished < 8 && bj >= 0)
+                            printf("    nearest now: serial %lu %ld px away, "
+                                   "done %d aband %d\n",
+                                   tr.cars[bj].serial, bd >> 16,
+                                   tr.cars[bj].done, tr.cars[bj].abandoned);
+                    }
                     vanished++;
                 }
             }
@@ -2553,6 +2624,8 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
             if (dx + dy > (4L << 16)) { stopped_for[i] = 0; continue; } /* refilled slot */
+            /* a parked car or a wreck standing is not a car held up */
+            if (tr.cars[i].abandoned) { stopped_for[i] = 0; continue; }
             if (dx + dy > 0) stopped_for[i] = 0;
             else if (++stopped_for[i] > worst_wait) worst_wait = stopped_for[i];
             /* GATE AUTOPSY: ten seconds at a gate is a wedge, and the SIB
@@ -2668,6 +2741,20 @@ static int cmd_drive(const char *mapPath, const char *tilesPath,
      * numbers above cannot be told apart from a change that never runs. */
     printf("drive: fleet hits %ld (cars knocked loose %ld, settled %ld)\n",
            tr.stat_fleet_hits, tr.stat_knocked, tr.stat_knock_ended);
+    /* How much of the fleet the rate cuts of PERF.md 6-7 actually touched:
+     * car-ticks skipped out of view, car-ticks whose pose was last tick's
+     * (occupancy and release replayed), car-ticks coasted without deciding. */
+    printf("drive: rate - halfrate %ld, still %ld, cruise %ld car-ticks of %ld\n",
+           tr.stat_halfrate, tr.stat_still, tr.stat_cruise,
+           (long)ticks * GTA_MAX_CARS);
+    printf("drive: no-cruise - off/cop/stopped %ld, manoeuvre %ld, lead %ld, "
+           "speed %ld, heading %ld, slope %ld, junction %ld, edge %ld\n",
+           tr.stat_cr[0], tr.stat_cr[1], tr.stat_cr[2], tr.stat_cr[3],
+           tr.stat_cr[4], tr.stat_cr[5], tr.stat_cr[6], tr.stat_cr[7]);
+    printf("drive: no-cruise manoeuvre - noline %ld, swap %ld, turn %ld, arc %ld, "
+           "recover %ld, crossing %ld, lanefix %ld\n",
+           tr.stat_cr[8], tr.stat_cr[9], tr.stat_cr[10], tr.stat_cr[11],
+           tr.stat_cr[12], tr.stat_cr[13], tr.stat_cr[14]);
     /* THE TWO IMPOSSIBLE THINGS. A car that turns more than GTA_SANE_TURN or
      * moves more than GTA_SANE_STEP in one tick is a bug being watched, not a
      * manoeuvre - the developer's "obraca sie niemal o 360 stopni" and
@@ -4116,6 +4203,44 @@ static int cmd_spritedelta(const char *tilPath, int sprite, const char *out)
     return 0;
 }
 
+/* `gtadump cardeltas <tiles.til> <car#> <out.bmp>`: the car's sprite as it
+ * is, then once with each of its deltas laid over it, side by side - which
+ * delta is a dent, a door, a light (215: a bar wider than the car appeared
+ * on the player's bonnet after a ram). */
+static int cmd_cardeltas(const char *tilPath, int car, const char *out)
+{
+    gta_tiles t;
+    int s, n, d, w, h, cw, W;
+    unsigned char *sheet, *one;
+    if (gta_tiles_load(tilPath, &t) != 0)
+        return 1;
+    if (car < 0 || car >= t.n_cars) { gta_tiles_free(&t); return 1; }
+    s = t.cars[car].sprite_index;
+    if (s < 0 || s >= t.n_sprites) { gta_tiles_free(&t); return 1; }
+    n = gta_tiles_delta_count(&t, s);
+    w = t.sprites[s].w; h = t.sprites[s].h;
+    cw = w + 4;
+    W = cw * (n + 1);
+    sheet = (unsigned char *)malloc((size_t)W * (size_t)h);
+    one = (unsigned char *)malloc((size_t)w * (size_t)h);
+    if (!sheet || !one) { gta_tiles_free(&t); return 1; }
+    memset(sheet, 255, (size_t)W * (size_t)h);
+    for (d = -1; d < n; d++) {
+        int y;
+        memcpy(one, t.sprite_pixels + t.sprites[s].off, (size_t)w * (size_t)h);
+        if (d >= 0) gta_tiles_delta_apply(&t, s, d, one);
+        for (y = 0; y < h; y++)
+            memcpy(sheet + (size_t)y * W + (size_t)(d + 1) * cw,
+                   one + (size_t)y * w, (size_t)w);
+    }
+    printf("car %d sprite %d %dx%d, %d deltas (column 0 plain, then 0..%d)\n",
+           car, s, w, h, n, n - 1);
+    write_bmp8(out, sheet, W, h, t.palette);
+    free(sheet); free(one);
+    gta_tiles_free(&t);
+    return 0;
+}
+
 static int cmd_tilesprites(const char *tilPath, const char *out, int type)
 {
     gta_tiles t;
@@ -4524,6 +4649,66 @@ static int cmd_bullets(const char *tilesPath)
  * rather than merely quiet - this project has shipped two readers that
  * compiled and were wrong (the .GRY header, the 10-byte sprite record).
  */
+/* scriptrun <mission.ini> <line> [ticks] - ONE PROCESS OF THE LEVEL SCRIPT,
+ * RUN ON THE HOST. The interpreter is portable C; the world it acts on is
+ * not, so it runs against a world that only says what it was asked to do.
+ * Enough to prove a command's own logic - which branch, what it called -
+ * without an emulator (PROGRESS 196: END, with the game's emulator closed). */
+static void sr_level_end(void *ctx, int code)
+{
+    (void)ctx;
+    printf("scriptrun: world - LEVEL OVER, code %d\n", code);
+}
+
+static void sr_say(void *ctx, int line)
+{
+    (void)ctx;
+    printf("scriptrun: world - SAY voice line %d\n", line);
+}
+
+static void sr_kf_timer(void *ctx, int which, long ticks)
+{
+    (void)ctx;
+    printf("scriptrun: world - frenzy clock %d = %ld ticks\n", which, ticks);
+}
+
+/* The score: GTA_SCRIPTRUN_SCORE_STEP points more at every call (0 when
+ * unset), so a FRENZY_CHECK can be walked to its win on the host. */
+static long sr_score, sr_score_step;
+static long sr_score_now(void *ctx)
+{
+    (void)ctx;
+    sr_score += sr_score_step;
+    return sr_score;
+}
+
+static int cmd_scriptrun(const char *iniPath, int line, int ticks)
+{
+    static gta_script sc;
+    static gta_script_world w;
+    int t, k;
+    const char *step = getenv("GTA_SCRIPTRUN_SCORE_STEP");
+
+    if (gta_script_load(&sc, iniPath, 1) != 0 ||
+        gta_script_load_cmds(&sc, iniPath, 1) != 0) {
+        fprintf(stderr, "scriptrun: cannot read %s\n", iniPath);
+        return 1;
+    }
+    memset(&w, 0, sizeof w);
+    w.level_end = sr_level_end;
+    w.say = sr_say;
+    w.kf_timer = sr_kf_timer;
+    sr_score_step = step ? atol(step) : 0;
+    if (sr_score_step) w.score_now = sr_score_now;
+    gta_script_set_world(&sc, &w, 0);
+    k = gta_script_debug_start(&sc, line);
+    printf("scriptrun: line %d started as process %d\n", line, k);
+    for (t = 0; t < ticks; t++)
+        gta_script_tick(&sc, 0, 0, 1);
+    gta_script_report(&sc);
+    return k < 0;
+}
+
 static int cmd_script(const char *iniPath, int level, int want)
 {
     gta_script sc;
@@ -5441,6 +5626,68 @@ static int cmd_hitcar(const char *mapPath, const char *tilesPath,
     return 0;
 }
 
+/* peds <cmp> <til> <bx> <by> [ticks] [seed] - THE PEDESTRIANS ON THEIR OWN.
+ *
+ * The camera stands at a block and the population lives round it for
+ * `ticks` ticks; nothing is drawn. What it is for is the stuck logger
+ * (gta_ped.blk_x): every `gta: pedstuck` line the game would have written
+ * comes out here too, in a second instead of an emulator session, plus a
+ * count of pairs within four pixels each second - the knot the developer
+ * sees on the screen, as a number. GTA_PEDS_WALK=1 makes the "player" walk
+ * east a pixel a tick, because the spawner puts people AHEAD of a moving
+ * player and a standing camera gets a thinner crowd. */
+static int cmd_peds(const char *mapPath, const char *tilesPath,
+                    int bx, int by, int ticks, unsigned long seed)
+{
+    gta_map mp;
+    gta_tiles ti;
+    gta_nav nav;
+    static gta_peds pd;
+    long px = ((long)bx * 32 + 16) << 16, py = ((long)by * 32 + 16) << 16;
+    int t, i, j, walk = getenv("GTA_PEDS_WALK") != 0;
+    long pair_ticks = 0, worst_pairs = 0;
+
+    if (gta_map_load(mapPath, &mp) != 0)
+        return 1;
+    if (gta_tiles_load(tilesPath, &ti) != 0) { gta_map_free(&mp); return 1; }
+    if (gta_nav_build(&nav, &mp) != 0) {
+        fprintf(stderr, "peds: no nav grid\n");
+        return 1;
+    }
+    gta_peds_init(&pd, &ti, seed);
+    gta_peds_set_nav(&pd, &nav);
+    printf("peds: camera at block (%d,%d), %d ticks, seed %lu%s\n",
+           bx, by, ticks, seed, walk ? ", walking east" : "");
+    for (t = 0; t < ticks; t++) {
+        int pairs = 0;
+        if (walk) px += 1L << 16;
+        gta_peds_set_view(&pd, 5, 4, 64, walk);
+        gta_peds_set_player(&pd, px, py, 2, 0, 0, 0, 64);
+        gta_peds_tick(&pd, &mp, px, py);
+        pd.stuck_report = 0;
+        for (i = 0; i < GTA_MAX_PEDS; i++) {
+            if (!pd.p[i].alive || pd.p[i].corpse) continue;
+            for (j = i + 1; j < GTA_MAX_PEDS; j++) {
+                long dx, dy;
+                if (!pd.p[j].alive || pd.p[j].corpse) continue;
+                dx = (pd.p[i].x - pd.p[j].x) >> 16;
+                dy = (pd.p[i].y - pd.p[j].y) >> 16;
+                if (dx > -4 && dx < 4 && dy > -4 && dy < 4) pairs++;
+            }
+        }
+        pair_ticks += pairs;
+        if (pairs > worst_pairs) worst_pairs = pairs;
+    }
+    printf("peds: after %d ticks - spawned %ld, stuck reports %ld (freed %ld), "
+           "pair-ticks within 4 px %ld (worst %ld at once)\n",
+           ticks, pd.stat_spawned, pd.stat_stuck_reports, pd.stat_stuck_freed,
+           pair_ticks, worst_pairs);
+    gta_nav_free(&nav);
+    gta_tiles_free(&ti);
+    gta_map_free(&mp);
+    return 0;
+}
+
 static int cmd_drivecar(const char *mapPath, const char *tilesPath,
                         int model, const char *scriptPath, const char *outBmp)
 {
@@ -5700,10 +5947,56 @@ static int cmd_drivecar(const char *mapPath, const char *tilesPath,
     return 0;
 }
 
+/* `gtadump voicecheck <bank.snd>`: every entry read off the disk through
+ * gta_sfx_open_index() / gta_sfx_read() - the game's speech path - against
+ * the same bank loaded whole. Prints the lines that differ; 0 is the pass. */
+static int cmd_voicecheck(const char *path)
+{
+    gta_sfx whole, idx;
+    signed char *buf;
+    int n, bad = 0;
+    unsigned long longest = 0;
+
+    if (gta_sfx_load(path, &whole) != 0 || gta_sfx_open_index(path, &idx) != 0) {
+        fprintf(stderr, "voicecheck: cannot open %s\n", path);
+        return 1;
+    }
+    for (n = 0; n < idx.count; n++)
+        if (idx.entry[n].length > longest) longest = idx.entry[n].length;
+    buf = (signed char *)malloc((size_t)longest + 1);
+    for (n = 0; n < idx.count; n++) {
+        unsigned long len = idx.entry[n].length;
+        unsigned long got = gta_sfx_read(&idx, n, buf, longest);
+        if (got != len || memcmp(buf, whole.data + whole.entry[n].offset,
+                                 (size_t)len) != 0) {
+            printf("line %d: read %lu of %lu - DIFFERS\n", n, got, len);
+            bad++;
+        }
+    }
+    /* and the refusals: a buffer too small, an index out of range */
+    if (gta_sfx_read(&idx, 3, buf, idx.entry[3].length - 1) != 0) bad++;
+    if (gta_sfx_read(&idx, idx.count, buf, longest) != 0) bad++;
+    if (gta_sfx_read(&idx, -1, buf, longest) != 0) bad++;
+    printf("voicecheck: %d lines, longest %lu bytes, periods %u (line 3) "
+           "%u (line 14) %u (line 18); %d wrong\n", idx.count, longest,
+           idx.entry[3].period, idx.entry[14].period, idx.entry[18].period, bad);
+    free(buf);
+    gta_sfx_free(&idx);
+    gta_sfx_free(&whole);
+    return bad != 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 4 && strcmp(argv[1], "stats") == 0)
         return cmd_stats(argv[2], argv[3]);
+
+    if (argc >= 3 && strcmp(argv[1], "voicecheck") == 0)
+        return cmd_voicecheck(argv[2]);
+
+    if (argc >= 4 && strcmp(argv[1], "scriptrun") == 0)
+        return cmd_scriptrun(argv[2], atoi(argv[3]),
+                             argc >= 5 ? atoi(argv[4]) : 50);
 
     if (argc >= 3 && strcmp(argv[1], "script") == 0)
         return cmd_script(argv[2], argc >= 4 ? atoi(argv[3]) : 1,
@@ -5818,6 +6111,11 @@ int main(int argc, char **argv)
         return cmd_ram(argv[2], atoi(argv[3]), atoi(argv[4]),
                        argc >= 6 ? atoi(argv[5]) : 8,
                        argc >= 7 ? atoi(argv[6]) : 0);
+    if (argc >= 6 && strcmp(argv[1], "peds") == 0)
+        return cmd_peds(argv[2], argv[3], atoi(argv[4]), atoi(argv[5]),
+                        argc >= 7 ? atoi(argv[6]) : 6000,
+                        argc >= 8 ? strtoul(argv[7], 0, 10) : 777UL);
+
     if (argc >= 7 && strcmp(argv[1], "drivecar") == 0)
         return cmd_drivecar(argv[2], argv[3], atoi(argv[4]), argv[5], argv[6]);
 
@@ -5833,9 +6131,13 @@ int main(int argc, char **argv)
                            argv[6], argc >= 8 ? atoi(argv[7]) : 0,
                            argc >= 9 ? strtoul(argv[8], 0, 10) : 12345UL);
 
+    if (argc >= 5 && strcmp(argv[1], "cardeltas") == 0)
+        return cmd_cardeltas(argv[2], atoi(argv[3]), argv[4]);
     if (argc >= 4 && strcmp(argv[1], "tilecars") == 0)
         return cmd_tilecars(argv[2], argv[3]);
 
+    if (argc >= 3 && strcmp(argv[1], "carbbox") == 0)
+        return cmd_carbbox(argv[2]);
     if (argc >= 3 && strcmp(argv[1], "carinfo") == 0)
         return cmd_carinfo(argv[2], argc >= 4 && strcmp(argv[3], "-v") == 0);
     if (argc >= 3 && strcmp(argv[1], "objinfo") == 0)

@@ -22,6 +22,15 @@ int  Adpcm_Decode(AdpcmStream *s, signed char *out, int max_samples);
 /* Seek back to the start of the audio data (for looping the title theme). */
 void Adpcm_Rewind(AdpcmStream *s);
 
+/* The track's length in samples, whole blocks only. */
+long Adpcm_Samples(AdpcmStream *s);
+
+/* Start from the middle - a radio station has been running while you were
+ * out of the car. Rounded down to a block, which IMA can do because every
+ * block carries its own predictor; the remainder is at most a twelfth of a
+ * second. */
+void Adpcm_SeekSample(AdpcmStream *s, long sample);
+
 #ifdef __cplusplus
 }
 #endif

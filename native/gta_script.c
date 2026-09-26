@@ -67,6 +67,11 @@ int gta_script_is_block(int type)
     case GTA_DECL_FUTUREPED:
     case GTA_DECL_PED:
     case GTA_DECL_OBJECT:
+    /* FUTURE, the drop-off's own type, is one of these and was not. See the
+     * head of this function's caller: reading it as blocks overflowed the
+     * fixed-point conversion and put Liberty City's only drop-off at
+     * (18448,18448). */
+    case GTA_DECL_FUTURE:
         return 0;
     default:
         return 1;
@@ -284,6 +289,11 @@ int gta_script_place(gta_script *s, const gta_nav *nav, const gta_tiles *t)
      * line carries. */
     s->spr_phone = gta_tiles_object_sprite(t, 0x28);
     s->n_phones = 0;
+    s->n_drops = 0;
+    /* Kept because a DROP_ON's sprite and its layer are not known until the
+     * command runs. */
+    s->tiles = t;
+    s->nav = nav;
 
     for (i = 0; i < s->n; i++) {
         const gta_decl *d = &s->d[i];
@@ -305,6 +315,7 @@ int gta_script_place(gta_script *s, const gta_nav *nav, const gta_tiles *t)
              * 256 steps, so a quarter of it. 768 is west, 256 east. */
             p->angle = (unsigned char)((d->b / 4) & 255);
             p->line  = d->line;
+            p->spr   = -1;
         }
     }
     /* THE MISSION CARS, kept here rather than given to the fleet - see
@@ -333,6 +344,26 @@ int gta_script_place(gta_script *s, const gta_nav *nav, const gta_tiles *t)
         }
     }
 
+    /* NUMBERS THAT CANNOT BE WHAT THE TYPE SAYS. The city is 256 blocks
+     * square and five layers deep, so a declaration this port reads as
+     * BLOCKS whose z is 64 or more is being read in the wrong units - which
+     * is exactly how the drop-off ended up at (18448,18448). One line each,
+     * because there is one such declaration in Liberty City and it is the
+     * level author's own slip. */
+    {
+        int odd = 0;
+        for (i = 0; i < s->n; i++) {
+            const gta_decl *d = &s->d[i];
+            if (!gta_script_is_block(d->type)) continue;
+            if (d->x <= 255 && d->y <= 255 && d->z < 64) continue;
+            printf("gta: script - declaration %d (%s) reads as blocks but "
+                   "carries (%d,%d,%d) - pixels?\n", d->line,
+                   gta_script_type_name(d->type), d->x, d->y, d->z);
+            odd++;
+        }
+        if (odd) fflush(stdout);
+    }
+
     printf("gta: script - %d telephones placed, %d mission cars waiting%s "
            "(phone sprite %d)\n", s->n_phones, s->n_mcars,
            lost ? " (some had no ground)" : "", s->spr_phone);
@@ -344,6 +375,20 @@ void gta_script_draw(gta_script *s, gta_view *v, int blocks)
 {
     long r = (long)blocks << 21;
     int i;
+
+    /* THE DROP-OFFS FIRST, because they are drawn whether or not this style
+     * has a telephone: the two have nothing to do with each other and an
+     * early return over the phone sprite would take them with it. */
+    for (i = 0; i < s->n_drops; i++) {
+        long dx = s->drop[i].x - v->cam_x, dy = s->drop[i].y - v->cam_y;
+        if (s->drop[i].dead || s->drop[i].spr < 0) continue;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx > r || dy > r) continue;
+        gta_render_add_sprite(v, s->drop[i].x, s->drop[i].y,
+                              s->drop[i].layer, s->drop[i].layer,
+                              s->drop[i].spr, s->drop[i].angle);
+    }
 
     if (s->spr_phone < 0)
         return;

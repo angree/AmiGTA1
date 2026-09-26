@@ -1,0 +1,16 @@
+# THE SPEED BOMB, DRIVEN (PROGRESS 193): as speedbomb.txt, but he drives off
+# at full throttle as soon as `script 3516` has started - the bomb (type 6) is
+# set about 260 ticks later, while he is moving - on the straight at (62,60),
+# where `goto` takes the car (it is parked on a lot with no road out of it). It must NOT go off while the
+# car keeps above half its top speed, and must once it drops below.
+wait 100
+goto 120 56
+wait 20
+enter
+wait 80
+goto 62 60
+wait 20
+script 3516
+run 700 1 0 0 0
+wait 100
+dump

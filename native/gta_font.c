@@ -88,6 +88,22 @@ int gta_font_load(gta_font *f, const char *path, const unsigned char *palette)
     fclose(fp);
     f->space = f->height / 3;
     if (f->space < 2) f->space = 2;
+
+    /* THE SHADOW COLOUR: the darkest entry of the GAME's palette, not the
+     * font's. Found here because this is the one place that has the game
+     * palette in its hand, and it never changes afterwards. Entry 0 is
+     * allowed to win - in this palette it is black, and a shadow drawn in it
+     * is black on the screen like any other index. */
+    {
+        int k, best = 0;
+        long dark = -1;
+        for (k = 0; k < 256; k++) {
+            long v = (long)palette[k * 3] + palette[k * 3 + 1]
+                   + palette[k * 3 + 2];
+            if (dark < 0 || v < dark) { dark = v; best = k; }
+        }
+        f->shadow = best;
+    }
     return 0;
 }
 
@@ -98,15 +114,47 @@ void gta_font_free(gta_font *f)
     f->n_chars = 0;
 }
 
+/* One pass of a string; defined below, used by all four entry points. */
+static int draw_run(const gta_font *f, unsigned char *dst, int pitch,
+                    int w, int h, int x, int y, const char *s,
+                    int cx0, int cy0, int cx1, int cy1, int flat);
+
 int gta_font_draw(const gta_font *f, unsigned char *dst, int pitch, int w,
                   int h, int x, int y, const char *s)
 {
     return gta_font_draw_clip(f, dst, pitch, w, h, x, y, s, 0, 0, w, h);
 }
 
+int gta_font_draw_shadow(const gta_font *f, unsigned char *dst, int pitch,
+                         int w, int h, int x, int y, const char *s)
+{
+    return gta_font_draw_clip_shadow(f, dst, pitch, w, h, x, y, s, 0, 0, w, h);
+}
+
+int gta_font_draw_clip_shadow(const gta_font *f, unsigned char *dst, int pitch,
+                              int w, int h, int x, int y, const char *s,
+                              int cx0, int cy0, int cx1, int cy1)
+{
+    /* The shadow's own clip box is the caller's moved with it, so a line
+     * scrolling through the pager's window does not leave a shadow standing
+     * one pixel outside it. */
+    draw_run(f, dst, pitch, w, h, x + 1, y + 1, s,
+             cx0 + 1, cy0 + 1, cx1 + 1, cy1 + 1, f->shadow);
+    return draw_run(f, dst, pitch, w, h, x, y, s, cx0, cy0, cx1, cy1, -1);
+}
+
 int gta_font_draw_clip(const gta_font *f, unsigned char *dst, int pitch,
                        int w, int h, int x, int y, const char *s,
                        int cx0, int cy0, int cx1, int cy1)
+{
+    return draw_run(f, dst, pitch, w, h, x, y, s, cx0, cy0, cx1, cy1, -1);
+}
+
+/* `flat` >= 0 replaces every glyph pixel with that index, which is the
+ * shadow; -1 draws the glyph in its own colours. */
+static int draw_run(const gta_font *f, unsigned char *dst, int pitch,
+                    int w, int h, int x, int y, const char *s,
+                    int cx0, int cy0, int cx1, int cy1, int flat)
 {
     if (cx0 < 0) cx0 = 0;
     if (cy0 < 0) cy0 = 0;
@@ -137,7 +185,8 @@ int gta_font_draw_clip(const gta_font *f, unsigned char *dst, int pitch,
                 for (col = 0; col < gw; col++) {
                     int px = x + col;
                     unsigned char v = g[row * gw + col];
-                    if (v && px >= cx0 && px < cx1) d[px] = v;
+                    if (v && px >= cx0 && px < cx1)
+                        d[px] = flat >= 0 ? (unsigned char)flat : v;
                 }
             }
             x += gw + 1;

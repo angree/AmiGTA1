@@ -1,0 +1,13 @@
+# THE VOICE (vocalcom) - the frenzy's two lines, in order. Walking onto the
+# kill-frenzy crate hands over the endless weapon: the original's routine's line 3,
+# "Kill frenzy!" (2.8 s). Once it has finished, `score 1000` wins the frenzy:
+# FRENZY_CHECK's won branch says line 4. The report's "voice asked for" line
+# must show 3 x1 and 4 x1; with audio on, also "voice: 2 said, 0 dropped
+# busy" and the two "SAID line" entries (a muted run - `audio 0` - proves only
+# the requests, not the disk read into Chip).
+wait 100
+goto 70 85
+wait 200
+score 1000
+wait 200
+dump

@@ -57,6 +57,7 @@ int gta_nav_build(gta_nav *nav, const gta_map *m)
     nav->b = (unsigned char *)malloc((size_t)GTA_NAV_BYTES);
     if (!nav->b)
         return 1;
+    memset(nav->b, 0, (size_t)GTA_NAV_BYTES);   /* the two spare layers, see .h */
     nav->map = m;
 
     /* The walk order is z innermost because that is how the map stores a

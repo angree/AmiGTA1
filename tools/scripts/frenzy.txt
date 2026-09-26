@@ -1,0 +1,17 @@
+# THE KILL FRENZY - Liberty City's first one: the crate `271 POWERUP 2 500`
+# and the trigger `273 TRIGGER 9000` both sit on block (70,85). Walking onto
+# it takes the crate (a machine gun, endless for 400 ticks) and starts 9000:
+# KF_PROCESS, FRENZY_BRIEF, FRENZY_SET 9030, then three side processes -
+# FRENZY_CHECK 1000 (win), SURVIVE 400 (time out), DEAD_ARRESTED (lose).
+# Nobody is shot here, so the expected end is the SURVIVE branch: 9054
+# STOP_FRENZY, 9056 RESET_KF ending the other two, and the weapon back.
+wait 100
+goto 70 85
+wait 25
+film 3
+wait 100
+dump
+wait 600
+dump
+wait 900
+dump

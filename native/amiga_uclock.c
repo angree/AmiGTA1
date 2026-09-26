@@ -54,6 +54,14 @@ unsigned long amiga_uclock_us(void)
 	return (unsigned long)((s_total * 1000000ULL) / (unsigned long long)s_freq);
 }
 
+unsigned long amiga_uclock_raw(void)
+{
+	struct EClockVal ev;
+	if (!uclock_open()) return 0;
+	ReadEClock(&ev);
+	return (unsigned long)ev.ev_lo;
+}
+
 unsigned long amiga_uclock_freq(void)
 {
 	if (!uclock_open()) return 0;

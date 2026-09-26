@@ -50,8 +50,11 @@
  * Portable C89, no floats, no Amiga headers - the host tools bake it and
  * the game reads it with the same code. Licence: MIT (ours).
  */
-#ifndef GTA_FRONT_H
-#define GTA_FRONT_H
+/* The include guard is not GTA_FRONT_H: that name is the picture's HEIGHT
+ * three lines down, and having both made every translation unit that reads
+ * this file warn about a redefinition. */
+#ifndef GTA_FRONT_H_INCLUDED
+#define GTA_FRONT_H_INCLUDED
 
 #define GTA_FRONT_W       320
 #define GTA_FRONT_H       200

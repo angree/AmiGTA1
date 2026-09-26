@@ -15,6 +15,7 @@ void gta_score_init(gta_score *s)
     s->streak_count = 0;
     s->streak_timer = 0;
     s->last_award = 0;
+    s->kills = 0;
     s->heat = 0;
     s->level = 0;
     gta_score_new_life(s);
@@ -147,6 +148,9 @@ long gta_score_event(gta_score *s, int type, int reason)
 {
     int base = reason_base(reason);
     long factor;
+
+    if (type >= 1 && type <= 9)
+        s->kills++;
 
     /* THE STREAK: the same type again inside the window counts up, anything
      * else starts a new one. */

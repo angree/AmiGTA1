@@ -181,6 +181,16 @@ int AmigaAudio_ChannelIdle(int ch)
     return 0;
 }
 
+void AmigaAudio_Stop(int ch)
+{
+    if (!aa_ready || ch < 0 || ch >= AMIGA_AUDIO_CHANNELS) return;
+    if (aa_mus_active && (ch == 2 || ch == 3)) return;   /* not ours to stop */
+    if (aa_req[ch] == NULL || !aa_busy[ch]) return;
+    AbortIO((struct IORequest *)aa_req[ch]);
+    WaitIO((struct IORequest *)aa_req[ch]);
+    aa_busy[ch] = 0;
+}
+
 int AmigaAudio_Play(int ch, void *chipdata, unsigned long bytes,
                     int period, int volume)
 {
@@ -211,6 +221,78 @@ int AmigaAudio_Play(int ch, void *chipdata, unsigned long bytes,
     BeginIO((struct IORequest *)io);
     aa_busy[ch] = 1;
     return 1;
+}
+
+/* A SAMPLE THAT NEVER ENDS, for the engine note.
+ *
+ * `ioa_Cycles = 0` is audio.device's own way of saying "repeat this buffer
+ * for ever": the request stays outstanding and the channel never falls idle
+ * until it is stopped. That is what an engine is - one short recording of a
+ * running motor, played round and round - and it costs the CPU nothing at
+ * all, which is the entire reason to do it in the hardware rather than by
+ * re-triggering a one-shot from the frame loop.
+ *
+ * The caller owns the Chip buffer and MUST NOT free it until Stop: the DMA
+ * is reading it continuously, and freeing it is a machine playing whatever
+ * lands there next, at 22 kHz. */
+int AmigaAudio_PlayLoop(int ch, void *chipdata, unsigned long bytes,
+                        int period, int volume)
+{
+    struct IOAudio *io;
+
+    if (!aa_ready || ch < 0 || ch >= AMIGA_AUDIO_CHANNELS) return 0;
+    if (aa_mus_active && (ch == 2 || ch == 3)) return 0;
+    if (chipdata == NULL || bytes < 2) return 0;
+    if (!AmigaAudio_ChannelIdle(ch)) return 0;
+
+    if (bytes > AA_MAX_BYTES) bytes = AA_MAX_BYTES;
+    if (period < 124)   period = 124;
+    if (period > 65535) period = 65535;
+    if (volume < 0)  volume = 0;
+    if (volume > 64) volume = 64;
+
+    io = aa_req[ch];
+    io->ioa_Request.io_Command = CMD_WRITE;
+    io->ioa_Request.io_Flags   = ADIOF_PERVOL;
+    io->ioa_Request.io_Unit    = (struct Unit *)(1UL << ch);
+    io->ioa_Data   = (UBYTE *)chipdata;
+    io->ioa_Length = bytes & ~1UL;
+    io->ioa_Period = (UWORD)period;
+    io->ioa_Volume = (UWORD)volume;
+    io->ioa_Cycles = 0;                  /* 0 = for ever */
+
+    BeginIO((struct IORequest *)io);
+    aa_busy[ch] = 1;
+    return 1;
+}
+
+/* CHANGE THE PITCH OF WHAT IS ALREADY PLAYING, without restarting it.
+ *
+ * ADCMD_PERVOL is the one audio.device command that reaches a channel while
+ * a write is outstanding; it writes AUDxPER and AUDxVOL and returns. That is
+ * what makes an engine rev instead of stutter: restarting the sample every
+ * time the speed changed would click sixty times a second.
+ *
+ * It is sent with DoIO rather than BeginIO deliberately - it completes
+ * immediately and queuing it on the channel's own request would clobber the
+ * CMD_WRITE that is playing. It gets a request of its own. */
+void AmigaAudio_SetPeriod(int ch, int period, int volume)
+{
+    struct IOAudio io;
+
+    if (!aa_ready || ch < 0 || ch >= AMIGA_AUDIO_CHANNELS) return;
+    if (period < 124)   period = 124;
+    if (period > 65535) period = 65535;
+    if (volume < 0)  volume = 0;
+    if (volume > 64) volume = 64;
+
+    io = *aa_req[ch];                    /* the device and unit fields */
+    io.ioa_Request.io_Command = ADCMD_PERVOL;
+    io.ioa_Request.io_Flags   = 0;
+    io.ioa_Request.io_Unit    = (struct Unit *)(1UL << ch);
+    io.ioa_Period = (UWORD)period;
+    io.ioa_Volume = (UWORD)volume;
+    DoIO((struct IORequest *)&io);
 }
 
 /* ======================================================================== */

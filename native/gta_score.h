@@ -70,6 +70,10 @@ typedef struct {
     int  streak_count;
     int  streak_timer;      /* ticks left in which the same type still counts */
     long last_award;        /* what the last event was worth - for the log */
+    /* Every event of types 1..9 - the ones the original's routine counts as a kill
+     * (its `bVar1`), after which it cheers when a frenzy is on. Only ever
+     * counts up; the game compares it with the value it last saw. */
+    unsigned long kills;
 
     int  heat;              /* 0..GTA_HEAT_CAP, never decays */
     int  level;             /* 0..4, recomputed from heat at every change */

@@ -1,0 +1,12 @@
+# SIMPLE TRAFFIC IN THE GAME (217). Run with `trafficlite 1` in opts.txt.
+#
+# The host gate (GTA_LITE=1 gtadump drive, four sites, three seeds) says the
+# lite model keeps its cars on the road, apart and moving. This is the same
+# code in the Amiga binary: stand at the jammed junction of horns.txt for a
+# minute, film it, and let the traffic report say how many cars moved and
+# whether a "lite stuck" line appears.
+wait 500
+film 4
+wait 3000
+film 4
+dump

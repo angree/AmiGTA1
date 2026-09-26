@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "gta_script.h"
+#include "gta_snd.h"        /* GTA_VOICE_* - which line the world says */
 
 /* The commands this port acts on, by name. Everything else is carried and
  * counted - see the file header. */
@@ -81,6 +82,55 @@ static const struct { const char *name; int op; } cmd_names[] = {
     { "KILL_PED",       GTA_CMD_KILL_PED },
     { "IS_PED_ARRESTED", GTA_CMD_IS_PED_ARRESTED },
     { "DEAD_ARRESTED",  GTA_CMD_DEAD_ARRESTED },
+    { "GENERAL_ONSCREEN", GTA_CMD_GENERAL_ONSCREEN },
+    { "CHANGE_PED_TYPE", GTA_CMD_CHANGE_PED_TYPE },
+    { "HELL_ON",        GTA_CMD_HELL_ON },
+    { "DROP_WANTED_LEVEL", GTA_CMD_DROP_WANTED },
+    { "REMAP_PED",      GTA_CMD_REMAP_PED },
+    { "PED_SENDTO",     GTA_CMD_PED_SENDTO },
+    { "WAIT_FOR_PED",   GTA_CMD_WAIT_FOR_PED },
+    { "DROP_ON",        GTA_CMD_DROP_ON },
+    { "KILL_DROP",      GTA_CMD_KILL_DROP },
+    { "GOTO_DROPOFF",   GTA_CMD_GOTO_DROPOFF },
+    { "SCORE_CHECK",    GTA_CMD_SCORE_CHECK },
+    { "DESTROY",        GTA_CMD_DESTROY },
+    { "FRENZY_SET",     GTA_CMD_FRENZY_SET },
+    { "BANK_ROBBERY",   GTA_CMD_BANK_ROBBERY },
+    { "SETBOMB",        GTA_CMD_SETBOMB },
+    { "CRANE",          GTA_CMD_CRANE },
+    { "DO_GTA",         GTA_CMD_DO_GTA },
+    { "RED_ARROW",      GTA_CMD_RED_ARROW },
+    { "RED_ARROW_OFF",  GTA_CMD_RED_ARROW_OFF },
+    { "END",            GTA_CMD_END },
+    { "KILL_OBJ",       GTA_CMD_KILL_OBJ },
+    { "KILL_CAR",       GTA_CMD_KILL_CAR },
+    { "SET_PED_SPEED",  GTA_CMD_SET_PED_SPEED },
+    { "ARMEDMESS",      GTA_CMD_ARMEDMESS },
+    { "DISARMMESS",     GTA_CMD_DISARMMESS },
+    { "FREEZE_TIMED",   GTA_CMD_FREEZE_TIMED },
+    { "FREEZE_ENTER",   GTA_CMD_FREEZE_ENTER },
+    { "UNFREEZE_ENTER", GTA_CMD_UNFREEZE_ENTER },
+    { "BANK_ALARM_ON",  GTA_CMD_BANK_ALARM_ON },
+    { "BANK_ALARM_OFF", GTA_CMD_BANK_ALARM_OFF },
+    { "FRENZY_CHECK",   GTA_CMD_FRENZY_CHECK },
+    { "STOP_FRENZY",    GTA_CMD_STOP_FRENZY },
+    { "KF_PROCESS",     GTA_CMD_KF_PROCESS },
+    { "RESET_KF",       GTA_CMD_RESET_KF },
+    { "KF_BRIEF_TIMED", GTA_CMD_KF_BRIEF_TIMED },
+    { "KF_CANCEL_BRIEFING", GTA_CMD_KF_CANCEL_BRIEFING },
+    { "KF_BRIEF_GENERAL", GTA_CMD_KF_BRIEF_GENERAL },
+    { "KF_CANCEL_GENERAL", GTA_CMD_KF_CANCEL_GENERAL },
+    { "EXPLODE",        GTA_CMD_EXPLODE },
+    { "PLAIN_EXPL_BUILDING", GTA_CMD_PLAIN_EXPL_BUILDING },
+    { "EXPL_NO_FIRE",   GTA_CMD_EXPL_NO_FIRE },
+    /* THE CHECKS THIS PORT CANNOT ANSWER YET. They are named here on
+     * purpose: carried as GTA_CMD_OTHER they would take the SUCCESS path,
+     * and a check that answers yes by default starts jobs that have not
+     * been earned and ends ones that are running. Each of these is a
+     * question about something the port does not have - a kill frenzy, a
+     * second player, a train - so the honest answer is no. */
+    { "PLAYER_ARE_BOTH_ONSCREEN", GTA_CMD_UNKNOWN_CHECK },
+    { "IS_PLAYER_ON_TRAIN", GTA_CMD_UNKNOWN_CHECK },
     { 0, 0 }
 };
 
@@ -210,6 +260,27 @@ static int cmd_of_line(const gta_script *s, long line)
     return -1;
 }
 
+/* THE CRANE'S INDEX: its place among the CRANE declarations, 0..3. */
+static int crane_index(const gta_script *s, int line)
+{
+    int i, k = 0;
+    for (i = 0; i < s->n; i++) {
+        if (s->d[i].type != GTA_DECL_CRANE)
+            continue;
+        if (s->d[i].line == (short)line)
+            return k;
+        k++;
+    }
+    return -1;
+}
+
+static int proc_start(gta_script *s, long line, int trigger);
+
+int gta_script_debug_start(gta_script *s, int line)
+{
+    return proc_start(s, (long)line, -1);
+}
+
 static int proc_start(gta_script *s, long line, int trigger)
 {
     int i, ci = cmd_of_line(s, line);
@@ -238,6 +309,50 @@ static gta_decl *decl_of(gta_script *s, int line)
         if (s->d[i].line == (short)line)
             return &s->d[i];
     return 0;
+}
+
+/* WHERE A DECLARATION'S OBJECT ACTUALLY IS.
+ *
+ * gta_script_decl_pos answers where the FILE puts it, which is right until
+ * something has been made from it and has moved. The original reads the
+ * live record, so a check on a person who has walked away is a check on
+ * where he walked to. Falls back to the declaration when nothing is alive. */
+static int live_pos(gta_script *s, int line, long *wx, long *wy)
+{
+    gta_decl *d = decl_of(s, line);
+    if (d && d->handle && s->world) {
+        if (d->type == GTA_DECL_FUTUREPED || d->type == GTA_DECL_PED) {
+            if (s->world->ped_pos &&
+                s->world->ped_pos(s->world_ctx, d->handle, wx, wy))
+                return 1;
+        } else if (s->world->car_pos &&
+                   s->world->car_pos(s->world_ctx, d->handle, wx, wy)) {
+            return 1;
+        }
+    }
+    return gta_script_decl_pos(s, line, wx, wy);
+}
+
+/* THE DROP-OFFS. One declaration, one object; DROP_ON puts it down and
+ * KILL_DROP takes it away, and the same line twice is the same drop. */
+static gta_placed *drop_of(gta_script *s, int line)
+{
+    int i;
+    for (i = 0; i < s->n_drops; i++)
+        if (s->drop[i].line == (short)line)
+            return &s->drop[i];
+    return 0;
+}
+
+/* CAN THIS DECLARATION BE SWITCHED ON AND OFF? Not "has it got a state
+ * already" - see the note at the head of the GUN_TRIG work. SPRAY is in the
+ * list because DISABLE is how a level shuts a paint shop, even though the
+ * scan that fires it is its own. */
+static int switchable(int type)
+{
+    return type == GTA_DECL_TRIGGER || type == GTA_DECL_MPHONES ||
+           type == GTA_DECL_SPRAY || type == GTA_DECL_GUN_TRIG ||
+           type == GTA_DECL_DUM_MISSION_TRIG || type == GTA_DECL_PHONE_TOGG;
 }
 
 static void proc_end(gta_script *s, int i)
@@ -917,7 +1032,7 @@ static void step(gta_script *s, int i)
          * start trigger runs again the moment it finishes. */
         {
             gta_decl *d = decl_of(s, (int)c->p1);
-            if (d && d->state != GTA_TRIG_NONE) {
+            if (d && switchable(d->type)) {
                 if (d->state != GTA_TRIG_DISABLED)
                     printf("gta: script - trigger line %d disabled\n",
                            d->line);
@@ -932,7 +1047,7 @@ static void step(gta_script *s, int i)
     case GTA_CMD_ENABLE:
         {
             gta_decl *d = decl_of(s, (int)c->p1);
-            if (d && d->state != GTA_TRIG_NONE) {
+            if (d && switchable(d->type)) {
                 if (d->state != GTA_TRIG_ARMED)
                     printf("gta: script - trigger line %d enabled\n",
                            d->line);
@@ -961,10 +1076,18 @@ static void step(gta_script *s, int i)
         /* A SIDE PROCESS at line p1, and this one carries on. The child
          * remembers WHICH KICKSTART made it, by line, because that is how
          * KILL_SIDE_PROC names it later. */
+        /* AND IT INHERITS ITS PARENT'S PROTECTION - the original's case 0x59
+         * copies the original's table[parent] into the child. Without that a kill
+         * frenzy's FRENZY_CHECK loop, KICKSTARTed from a KF_PROCESS, is not
+         * a frenzy process, RESET_KF does not end it, and it pays out
+         * whenever the player's score next climbs by the target - long
+         * after the frenzy was lost. */
         {
             int k = proc_start(s, c->p1, -1);
-            if (k >= 0)
+            if (k >= 0) {
                 s->proc[k].parent = c->line;
+                s->proc[k].keep = pr->keep;
+            }
         }
         advance(s, i, c->p2);
         return;
@@ -1090,6 +1213,553 @@ static void step(gta_script *s, int i)
             }
         }
         advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_UNKNOWN_CHECK:
+        advance(s, i, c->p3);
+        return;
+
+    case GTA_CMD_SCORE_CHECK:
+        /* `8011 SCORE_CHECK 1000000 0 8010` - the gate on a job that opens
+         * at a million points. `p1` is the threshold and the original also
+         * marks the player as having passed it; nothing here reads that
+         * mark yet. */
+        advance(s, i, (s->world && s->world->score_now &&
+                       s->world->score_now(s->world_ctx) >= c->p1)
+                      ? c->p2 : c->p3);
+        return;
+
+    case GTA_CMD_DESTROY:
+        /* IS_GOAL_DEAD without the "and this is who killed it" test, and
+         * with the usual 5-based timeout on `p4`. */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            int dead = 0;
+            if (d && d->type == GTA_DECL_PLAYER)
+                dead = s->world && s->world->player_dead &&
+                       s->world->player_dead(s->world_ctx);
+            else if (d && d->handle && s->world) {
+                if (d->type == GTA_DECL_FUTUREPED || d->type == GTA_DECL_PED)
+                    dead = s->world->ped_dead &&
+                           s->world->ped_dead(s->world_ctx, d->handle);
+                else
+                    dead = s->world->car_dead &&
+                           s->world->car_dead(s->world_ctx, d->handle);
+            }
+            if (dead) { advance_paid(s, i, c->p2, c->p5); return; }
+            if (countdown_out(pr, c->p4)) advance(s, i, c->p3);
+        }
+        return;
+
+    case GTA_CMD_GENERAL_ONSCREEN:
+        /* IS THAT THING ON SCREEN? A WATCHER, and one whose default answer
+         * has to be NO: it guards a KILL_PED, and "yes, the player can see
+         * him" means "leave him alone" for ever. */
+        {
+            long wx = 0, wy = 0;
+            int on = 0;
+            if (s->world && s->world->onscreen && live_pos(s, (int)c->p1,
+                                                           &wx, &wy))
+                on = s->world->onscreen(s->world_ctx, wx, wy);
+            advance(s, i, on ? c->p2 : c->p3);
+        }
+        return;
+
+    case GTA_CMD_CHANGE_PED_TYPE:
+        /* `520 CHANGE_PED_TYPE 299 0 -1 21 294` - person 299 becomes AI type
+         * 21 with the PLAYER as his target. `p4` is the type and `p5` the
+         * target's declaration; the original's attacking family is
+         * 0x15..0x2e and they all take one. */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->ped_type) {
+                long tx = 0, ty = 0;
+                int on_player = 0;
+                if (c->p5 > 0) {
+                    gta_decl *t = decl_of(s, (int)c->p5);
+                    if (t && t->type == GTA_DECL_PLAYER)
+                        on_player = 1;
+                    live_pos(s, (int)c->p5, &tx, &ty);
+                }
+                s->world->ped_type(s->world_ctx, d->handle, (int)c->p4,
+                                   tx, ty, on_player);
+            }
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_REMAP_PED:
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->ped_remap)
+                s->world->ped_remap(s->world_ctx, d->handle, (int)c->p4);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_PED_SENDTO:
+        /* `778 PED_SENDTO 251 0 0 249` - p1 is WHERE and p4 is WHO. It is an
+         * order, not a wait: the command advances at once. */
+        {
+            gta_decl *ped = decl_of(s, (int)c->p4);
+            long wx = 0, wy = 0;
+            if (ped && ped->handle && s->world && s->world->ped_sendto &&
+                gta_script_decl_pos(s, (int)c->p1, &wx, &wy))
+                s->world->ped_sendto(s->world_ctx, ped->handle, wx, wy);
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_WAIT_FOR_PED:
+        /* ...and this is the wait. The original has no failure branch at
+         * all: it stays on this line until he arrives. */
+        {
+            gta_decl *ped = decl_of(s, (int)c->p4);
+            long wx = 0, wy = 0;
+            if (!ped || !ped->handle) { advance(s, i, c->p2); return; }
+            if (s->world && s->world->ped_at &&
+                gta_script_decl_pos(s, (int)c->p1, &wx, &wy) &&
+                s->world->ped_at(s->world_ctx, ped->handle, wx, wy)) {
+                advance_paid(s, i, c->p2, c->p5);
+                return;
+            }
+            /* ONCE A SECOND, WHERE HE IS AND WHERE HE SHOULD BE. A wait with
+             * no timeout is invisible when it goes wrong - it looks exactly
+             * like a job that is still in progress - so it says so. */
+            if (++pr->count2 >= 25) {
+                long hx = 0, hy = 0;
+                int got = s->world && s->world->ped_pos &&
+                          s->world->ped_pos(s->world_ctx, ped->handle,
+                                            &hx, &hy);
+                pr->count2 = 0;
+                printf("gta: script - WAIT_FOR_PED %d: he is %s(%ld,%ld), "
+                       "wanted (%ld,%ld)\n", ped->line,
+                       got ? "" : "GONE ", hx >> 16, hy >> 16,
+                       wx >> 16, wy >> 16);
+                fflush(stdout);
+            }
+        }
+        return;
+
+    case GTA_CMD_HELL_ON:
+        /* `545 HELL_ON 221` - the same placement PARKED_ON does, with two
+         * differences that are the original's: the declared model is
+         * IGNORED in favour of its own, and somebody is sitting in it. */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (!d) { advance(s, i, c->p3); return; }
+            if (!d->handle && s->world && s->world->car_on_driven)
+                d->handle = s->world->car_on_driven(s->world_ctx, d->line,
+                                                    GTA_HELL_MODEL,
+                                                    d->x, d->y,
+                                                    gta_script_angle(d->b));
+            advance(s, i, d->handle ? c->p2 : c->p3);
+        }
+        return;
+
+    case GTA_CMD_DROP_WANTED:
+        if (s->world && s->world->drop_wanted)
+            s->world->drop_wanted(s->world_ctx);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_DROP_ON:
+        /* `755 DROP_ON 240` - a map object of the declaration's own model,
+         * at its block. The arrow points at it and GOTO_DROPOFF is getting
+         * there. */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            gta_placed *dr = d ? drop_of(s, d->line) : 0;
+            if (d && !dr && s->n_drops < GTA_MAX_DROPS) {
+                long wx = 0, wy = 0;
+                int lz;
+                gta_script_decl_pos(s, (int)c->p1, &wx, &wy);
+                dr = &s->drop[s->n_drops++];
+                dr->x = wx;
+                dr->y = wy;
+                dr->line = d->line;
+                lz = gta_script_stand_layer(s->nav, (int)(wx >> 21),
+                                            (int)(wy >> 21));
+                dr->layer = (unsigned char)(lz < 0 ? 0 : lz);
+                dr->angle = (unsigned char)gta_script_angle(d->b);
+                dr->ring = 0;
+                dr->dead = 0;
+                dr->spr = (short)(s->tiles
+                                  ? gta_tiles_object_sprite(s->tiles, d->a)
+                                  : -1);
+                printf("gta: script - drop-off %d at (%ld,%ld), model %d, "
+                       "sprite %d\n", d->line, wx >> 16, wy >> 16, d->a,
+                       dr->spr);
+                fflush(stdout);
+            } else if (dr) {
+                dr->dead = 0;
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    /* THE KILL FRENZY, read out of the interpreter's own cases (0x67, 0x68,
+     * 0x86, 0x8d, 0x8e of the original's routine), not out of the names:
+     *
+     *   9001 KF_PROCESS            this process is a frenzy's: RESET leaves it
+     *                              alone and RESET_KF is what ends it
+     *   9015 FRENZY_SET 9030       write the player's SCORE, as it stands now,
+     *                              into the `p4` of the command at line 9030
+     *   9030 FRENZY_CHECK 1000 0 9030 0 20000
+     *                              score - p4 < p1: not yet, go to p3 (itself);
+     *                              otherwise the frenzy is won - p2, paying p5
+     *   9042 STOP_FRENZY           the endless weapon goes, the old ones return
+     *   9044 RESET_KF              every OTHER process marked by KF_PROCESS is
+     *                              killed (and the frenzy's cars are unlocked,
+     *                              which this port does not lock yet)
+     *
+     * So a frenzy is "earn p1 points before the SURVIVE beside it runs out",
+     * and the weapon is simply the crate's own: `271 POWERUP 2 500` is a
+     * machine gun for 400 ticks, which PROGRESS 169 already does. */
+    /* THE BANK JOB (the original's routine cases 0x4c, 0x50, 0x51).
+     *
+     *   278 BANK_ALARM_ON 0 0 -1 241 0   the bell is the DUMMY in p4 - not
+     *                                    p1 - and it moves on without paying
+     *   350 BANK_ROBBERY 253 0 0 241 0   heat +1000 (cap 2000) and the wanted
+     *                                    level straight to 4; p1 is the
+     *                                    getaway car, which the original
+     *                                    also gives a sound event (9) - not
+     *                                    ported, nothing here consumes it
+     *   365 BANK_ALARM_OFF 241 0 0 0 0   the bell of the DUMMY in p1 stops;
+     *                                    the generic success path, pays p5 */
+    /* THE BOMB JOB (cases 0x18, 0x22, 0x23, 0x5c, 0x5d, 0x5e):
+     *
+     *   3516 FREEZE_ENTER            he cannot get out of the car
+     *   3540 SETBOMB 297 0 0 6 0     a speed bomb in car 297, already armed
+     *   3550 ARMEDMESS               "bomb_on" on the card
+     *   3570 SETBOMB 297 0 0 0 20000 disarmed - and it pays
+     *   3580 UNFREEZE_ENTER / 3590 DISARMMESS
+     *
+     * All of them ACTIONS on the generic success path. */
+    /* FOUR SMALL ONES (cases 10, 0x2b, 0x32, 0x7c).
+     *
+     *   8180 END 1 0 0 1 50000   the process stops. The original also writes
+     *                            p1 into a per-process slot that nothing
+     *                            outside the interpreter ever reads.
+     *   816 KILL_OBJ 140         the object goes (its record becomes type
+     *                            0x65); here the FUTURE objects are the
+     *                            placed ones, so it is KILL_DROP's work
+     *   5271 KILL_CAR 485        the car is taken out of the world
+     *   1251 SET_PED_SPEED 237 0 0 3   the pace PED_SENDTO walks him at */
+    case GTA_CMD_END:
+        /* NOT a value nobody reads, as 187 said: the interpreter's own
+         * end-of-tick code (MISSIONS.md 4.5) takes it once the player has no
+         * process left and ends the LEVEL with it - 1 passed, 2 failed. The
+         * process chain that reached END is the level's last, so the level
+         * ends here. */
+        printf("gta: script - END %ld at line %d - the level is over\n",
+               c->p1, (int)c->line);
+        proc_end(s, i);
+        if (s->world && s->world->level_end)
+            s->world->level_end(s->world_ctx, (int)c->p1);
+        return;
+
+    case GTA_CMD_KILL_OBJ:
+        {
+            gta_placed *dr = drop_of(s, (int)c->p1);
+            if (dr) dr->dead = 1;
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_KILL_CAR:
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (d && d->handle) {
+                if (s->world && s->world->car_kill)
+                    s->world->car_kill(s->world_ctx, d->handle);
+                d->handle = 0;
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_SET_PED_SPEED:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->ped_speed)
+                s->world->ped_speed(s->world_ctx, d->handle, (int)c->p4);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    /* THE SECOND ARROW (the original's routine / the original's routine / the original's routine). The
+     * same sprite as the first, remapped with the table the original gives
+     * player 2 (the original's table[2] = 3), and it always points at a POINT: the
+     * object's position when the command runs - where a ped IS, not where
+     * he was declared. `RED_ARROW -1` does not touch the red one at all: it
+     * puts the ordinary arrow out (the original calls the original's routine there). */
+    case GTA_CMD_RED_ARROW:
+        if (c->p1 < 0) {
+            if (s->world && s->world->arrow)
+                s->world->arrow(s->world_ctx, 0, 0, 0);
+        } else {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            long wx = 0, wy = 0;
+            int ok = 0;
+            if (d && d->handle && s->world && s->world->ped_pos &&
+                (d->type == GTA_DECL_PED || d->type == GTA_DECL_FUTUREPED))
+                ok = s->world->ped_pos(s->world_ctx, d->handle, &wx, &wy);
+            if (!ok)
+                ok = gta_script_decl_pos(s, (int)c->p1, &wx, &wy);
+            if (ok && s->world && s->world->red_arrow)
+                s->world->red_arrow(s->world_ctx, 1, wx, wy);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_RED_ARROW_OFF:
+        if (s->world && s->world->red_arrow)
+            s->world->red_arrow(s->world_ctx, 0, 0, 0);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    /* THE DOCK CRANES (the original's routine, the original's routine, the original's routine, and the
+     * crane state machine in the tail of the original's routine).
+     *
+     *   1 SURVIVE 0 0 30 30 0
+     *   2 CRANE 285 -1 -1 286 0     crane 285, the car must stand on the block
+     *                               of TRIGGER 286; p2 done, p3 refused
+     *   1509 DO_GTA 270 0 -1 0 20000   GTA_DEMAND 270 = "0 22 -1 2": crane 0
+     *                               wants two cars of model 22, any colour;
+     *                               the job waits until it has had them
+     *
+     * CRANE is two-phase: the first tick OFFERS the car (and the refusals
+     * are texts of their own), then the command stays until the crane has
+     * lifted it and paid - which is the world's business. */
+    case GTA_CMD_CRANE:
+        {
+            int k = crane_index(s, (int)c->p1);
+            const gta_decl *t = gta_script_by_line(s, (int)c->p4);
+            if (k < 0 || !t || !s->world || !s->world->crane_offer) {
+                advance(s, i, c->p3);
+                return;
+            }
+            if (pr->count == 0) {
+                int r = s->world->crane_offer(s->world_ctx, k, t->x, t->y);
+                if (r == 0) { pr->count = 1; return; }     /* taken: wait */
+                advance(s, i, c->p3);
+                return;
+            }
+            {
+                int r = s->world->crane_poll(s->world_ctx, k);
+                if (r == 0) return;
+                if (r == 1) advance_paid(s, i, c->p2, c->p5);
+                else        advance(s, i, c->p3);
+            }
+        }
+        return;
+
+    case GTA_CMD_DO_GTA:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (!d || !s->world || !s->world->crane_demand) {
+                advance(s, i, c->p3);
+                return;
+            }
+            if (pr->count == 0) {
+                s->world->crane_demand(s->world_ctx, d->a, d->b, d->c, d->d);
+                pr->count = 1;
+                return;
+            }
+            if (s->world->crane_demand(s->world_ctx, d->a, 0, 0, 0))
+                advance_paid(s, i, c->p2, c->p5);
+        }
+        return;
+
+    case GTA_CMD_SETBOMB:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->setbomb)
+                s->world->setbomb(s->world_ctx, d->handle, (int)c->p4);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_ARMEDMESS:
+    case GTA_CMD_DISARMMESS:
+        if (s->world && s->world->named_text)
+            s->world->named_text(s->world_ctx,
+                                 c->op == GTA_CMD_ARMEDMESS ? "bomb_on" : "bomb_off");
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_FREEZE_ENTER:
+    case GTA_CMD_UNFREEZE_ENTER:
+    case GTA_CMD_FREEZE_TIMED:
+        if (s->world && s->world->freeze)
+            s->world->freeze(s->world_ctx, c->op == GTA_CMD_FREEZE_ENTER,
+                             c->op == GTA_CMD_FREEZE_TIMED ? (int)c->p1 : 0);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_BANK_ALARM_ON:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p4);
+            if (d && s->world && s->world->alarm)
+                s->world->alarm(s->world_ctx, d->line, 1, d->x, d->y);
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_BANK_ALARM_OFF:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && s->world && s->world->alarm)
+                s->world->alarm(s->world_ctx, d->line, 0, d->x, d->y);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_BANK_ROBBERY:
+        if (s->world && s->world->robbery)
+            s->world->robbery(s->world_ctx);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    /* THE FRENZY'S CLOCKS. KF_BRIEF_TIMED (the original's routine case 0x89) starts
+     * the frenzy's countdown, p4 seconds at 25 ticks a second, and says
+     * "Kill frenzy!" (the original's routine(3)); the other three set or clear one of
+     * the two clocks (MISSIONS.md, the table in section [1]). None of them
+     * decides anything - the SURVIVE beside the frenzy does the timing - they
+     * are what the player SEES and HEARS of it. */
+    case GTA_CMD_KF_BRIEF_TIMED:
+    case GTA_CMD_KF_CANCEL_BRIEFING:
+    case GTA_CMD_KF_BRIEF_GENERAL:
+    case GTA_CMD_KF_CANCEL_GENERAL:
+        if (s->world && s->world->kf_timer) {
+            int timed = c->op == GTA_CMD_KF_BRIEF_TIMED
+                     || c->op == GTA_CMD_KF_CANCEL_BRIEFING;
+            int on = c->op == GTA_CMD_KF_BRIEF_TIMED
+                  || c->op == GTA_CMD_KF_BRIEF_GENERAL;
+            s->world->kf_timer(s->world_ctx, timed ? 0 : 1,
+                               on ? c->p4 * 25 : -1);
+        }
+        if (c->op == GTA_CMD_KF_BRIEF_TIMED && s->world && s->world->say)
+            s->world->say(s->world_ctx, GTA_VOICE_FRENZY);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_KF_PROCESS:
+        pr->keep = 2;
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_FRENZY_SET:
+        {
+            int ci = cmd_of_line(s, c->p1);
+            long now = (s->world && s->world->score_now)
+                     ? s->world->score_now(s->world_ctx) : 0;
+            if (ci >= 0)
+                s->c[ci].p4 = now;
+            printf("gta: script - FRENZY_SET: score %ld written into line %ld\n",
+                   now, c->p1);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_FRENZY_CHECK:
+        {
+            long now = (s->world && s->world->score_now)
+                     ? s->world->score_now(s->world_ctx) : 0;
+            if (now - c->p4 < c->p1) { advance(s, i, c->p3); return; }
+            printf("gta: script - FRENZY_CHECK: %ld points since the start, "
+                   "%ld asked - the frenzy is WON\n", now - c->p4, c->p1);
+        }
+        /* the original's routine case 0x68, the won branch: the original's routine(4) */
+        if (s->world && s->world->say)
+            s->world->say(s->world_ctx, GTA_VOICE_FRENZY_PASSED);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_STOP_FRENZY:
+        if (s->world && s->world->frenzy_stop)
+            s->world->frenzy_stop(s->world_ctx);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_RESET_KF:
+        {
+            int k, killed = 0;
+            for (k = 0; k < GTA_MAX_PROC; k++) {
+                if (k == i || s->proc[k].cmd < 0 || s->proc[k].keep != 2)
+                    continue;
+                proc_end(s, k);
+                killed++;
+            }
+            printf("gta: script - RESET_KF: %d frenzy process(es) ended\n",
+                   killed);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_EXPLODE:
+    case GTA_CMD_PLAIN_EXPL_BUILDING:
+    case GTA_CMD_EXPL_NO_FIRE:
+        /* `805 EXPLODE 129 810 0 0 0` / `1077 PLAIN_EXPL_BUILDING 322 0 0 2 0`
+         * - a blast on one face of the block a DUMMY stands on. `p1` is the
+         * object, `p4` the face (0 west, 1 east, 2 north, 3 south), `p5` the
+         * score; an ACTION, so it always goes on to `p2` (MISSIONS.md:
+         * the original's routine / the original's routine). A level's bank job is forty of the
+         * second kind in a row - the whole block going up. */
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && s->world && s->world->explode)
+                s->world->explode(s->world_ctx, d->line, d->x, d->y,
+                                  (int)c->p4 & 3,
+                                  c->op == GTA_CMD_EXPLODE);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_KILL_DROP:
+        {
+            gta_placed *dr = drop_of(s, (int)c->p1);
+            if (!dr) { advance(s, i, c->p3); return; }
+            dr->dead = 1;
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_GOTO_DROPOFF:
+        /* `761 GOTO_DROPOFF 240 0 810 56 50000` - get to the drop within the
+         * time and the job pays; run out and it fails. The original tests it
+         * once every eighth tick and takes one off `p4` each time, so `p4`
+         * is not ticks: 56 of them is about eighteen seconds. The reach is
+         * its own 16 pixels, and it is the PLAYER that has to be there -
+         * the car is not looked at. */
+        {
+            long wx = 0, wy = 0, dx, dy;
+            if (pr->fresh) {
+                pr->fresh = 0;
+                pr->count = c->p4 > 0 ? c->p4 * 8 : 0;
+                pr->count2 = 0;
+            }
+            if (pr->count > 0 && --pr->count == 0) {
+                printf("gta: script - drop-off %ld not reached in time\n",
+                       c->p1);
+                fflush(stdout);
+                advance(s, i, c->p3);
+                return;
+            }
+            if (++pr->count2 < 8)
+                return;
+            pr->count2 = 0;
+            if (!gta_script_decl_pos(s, (int)c->p1, &wx, &wy))
+                return;
+            dx = s->px - wx; if (dx < 0) dx = -dx;
+            dy = s->py - wy; if (dy < 0) dy = -dy;
+            if (dx <= (16L << 16) && dy <= (16L << 16)) {
+                printf("gta: script - drop-off %ld reached\n", c->p1);
+                fflush(stdout);
+                advance_paid(s, i, c->p2, c->p5);
+            }
+        }
         return;
 
     default:

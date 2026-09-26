@@ -95,8 +95,27 @@ compile gta_map.c
 # The settings file, shared with the external editor below. No Amiga
 # headers in it, so it also builds on the host and for the PowerPC tree.
 compile gta_prefs.c
-# The sound bank reader. Nothing plays yet - see native/gta_sfx.h.
+# Sound: the bank reader (portable) and the player that owns audio.device,
+# the four Paula channels and the Chip RAM cache.
 compile gta_sfx.c
+compile gta_iff.c
+compile gta_audio.c
+compile amiga_adpcm.c
+
+# amiga_audio.c IS BUILT AT -O0, AND THAT IS ITS OWN INSTRUCTION.
+#
+# Its header, written in the OpenTTD port and carried here unchanged:
+# "Build by hand, same ABI as the rest of the game, and at -O0 - this
+# toolchain has a record of miscompiling read-after-call patterns at -O1."
+# It was being compiled at -O1 with everything else, which is exactly what
+# that line says not to do. The port already has one unexplained symptom of
+# that shape - gta_sfx_sample() returning a garbage pointer and length while
+# the next line reads the same table correctly - so this is not a
+# hypothetical.
+echo "  CC  amiga_audio.c (-O0: see the note in tools/bin/build.sh)"
+m68k-amigaos-gcc $CPU -O0 -noixemul $INCS -Wall \
+    -c "$NATIVE/amiga_audio.c" -o "$OBJ/amiga_audio.o"
+OBJS="$OBJS $OBJ/amiga_audio.o"
 
 # The platform layer, carried over from openttd_amiga_68k via Amiga_OpenXCOM.
 compile amiga_gfx.c
@@ -158,11 +177,23 @@ m68k-amigaos-gcc $CFLAGS -o "$OUT/gtabake" \
     "$NATIVE/gta_car.c" "$NATIVE/gta_trig.c" "$NATIVE/gta_sfx.c" -lm
 echo "  LD  build/gtabake"
 
+# THE MUSIC EXTRACTOR, AS A SEPARATE PROGRAM TOO.
+#
+# The game extracts on its first run with a progress bar, which is what a
+# player wants. This is the same converter for the player who does not: one
+# track at a time, from a Shell, with -scan to see what a first run would do
+# and -info to look at what came out. Same source, so there is one behaviour
+# to be right rather than two.
+echo "--- music extractor ---"
+m68k-amigaos-gcc $CFLAGS -o "$OUT/gtaiff" "$ROOT/tools/gtaiff.c" \
+    "$NATIVE/gta_iff.c"
+echo "  LD  build/gtaiff"
+
 # The three old names are removed rather than left lying in build/, because a
 # stale binary from before the merge would still deploy, still run, and still
 # be reported as "the new build" - which is exactly the class of mistake that
 # cost an evening when a stale gta-aga was tested against a fresh source.
 rm -f "$OUT/gta-aga" "$OUT/gta-rtg240" "$OUT/gta-rtg480" "$OUT/gta-rtg"
 
-ls -la "$OUT/AmiGTA" "$OUT/gtabake" "$OUT/gtaprefs"
+ls -la "$OUT/AmiGTA" "$OUT/gtabake" "$OUT/gtaprefs" "$OUT/gtaiff"
 echo "--- NOT stripped, on purpose (see the header of this script) ---"

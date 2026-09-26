@@ -1,0 +1,10 @@
+# THE KILL FRENZY, WON (PROGRESS 193): as frenzy.txt, but once the frenzy has
+# started `score 1000` puts the points on - FRENZY_CHECK 1000 0 9030 0 20000
+# reads nothing but the score - so the WIN branch runs: 9040 MESSAGE_BRIEF,
+# 9042 STOP_FRENZY, 9044 RESET_KF ending the SURVIVE and DEAD_ARRESTED sides.
+wait 100
+goto 70 85
+wait 60
+score 1000
+wait 200
+dump

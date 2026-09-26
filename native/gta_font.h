@@ -23,6 +23,9 @@ typedef struct {
     unsigned char *pixels;      /* remapped to the game palette, 0 = clear */
     unsigned char *blank;       /* n_chars: 1 = the glyph has no pixel at all */
     int space;                  /* the advance of a space, px */
+    /* THE DARKEST ENTRY OF THE GAME'S PALETTE, found once at load. It is
+     * what a drop shadow is drawn in - see gta_font_draw_shadow. */
+    int shadow;
 } gta_font;
 
 /* Load `path`; `palette` is the game's 768-byte RGB palette the glyphs are
@@ -35,6 +38,26 @@ void gta_font_free(gta_font *f);
  * the x after the last glyph. Characters without a glyph advance a space. */
 int  gta_font_draw(const gta_font *f, unsigned char *dst, int pitch, int w, int h,
                    int x, int y, const char *s);
+
+/* THE SAME, CLIPPED to a box - a pager line is scrolled through a hole
+ * sixty pixels wide and the rest of it must not be drawn. (It was called
+ * without ever being declared: every translation unit that used it did so
+ * through an implicit declaration, which the 68k ABI happened to get
+ * right.) */
+int  gta_font_draw_clip(const gta_font *f, unsigned char *dst, int pitch,
+                        int w, int h, int x, int y, const char *s,
+                        int cx0, int cy0, int cx1, int cy1);
+
+/* THE SAME, WITH A DROP SHADOW. The string is drawn first one pixel down
+ * and to the right in the palette's darkest colour, then again in its own -
+ * which is what makes twelve-point green legible over grey pavement and over
+ * the pager's own grey device. */
+int  gta_font_draw_shadow(const gta_font *f, unsigned char *dst, int pitch,
+                          int w, int h, int x, int y, const char *s);
+int  gta_font_draw_clip_shadow(const gta_font *f, unsigned char *dst,
+                               int pitch, int w, int h, int x, int y,
+                               const char *s,
+                               int cx0, int cy0, int cx1, int cy1);
 
 /* The width `s` would take. */
 int  gta_font_width(const gta_font *f, const char *s);

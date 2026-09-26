@@ -208,6 +208,44 @@ void Adpcm_Rewind(AdpcmStream *s)
 	s->dec_len = s->dec_pos = 0;
 }
 
+/* HOW LONG THE TRACK IS, in samples. Whole blocks only: a partial trailing
+ * block is a fraction of a second and counting it would need the file's own
+ * fact chunk, which nothing here writes. */
+long Adpcm_Samples(AdpcmStream *s)
+{
+	if (s == NULL || s->block_align <= 0) return 0;
+	return (long)(s->data_len / (unsigned long)s->block_align)
+	     * (long)s->samples_per_block;
+}
+
+/* START PLAYING FROM THE MIDDLE, which is what makes a radio station behave
+ * like one: it has been running while you were out of the car, and getting
+ * in joins it wherever it has got to.
+ *
+ * IMA ADPCM CAN DO THIS AND MOST COMPRESSION CANNOT: every block carries its
+ * own predictor and step index in a four-byte header, so a block decodes
+ * without reference to the one before it. That is why this port writes 1024
+ * byte blocks in the first place - see the header of tools/gtamusic.c.
+ *
+ * Seeking is therefore to a BLOCK boundary, not to a sample: the remainder
+ * is at most 2041 samples, a twelfth of a second, and chasing it would mean
+ * decoding and throwing away a block on every station change. */
+void Adpcm_SeekSample(AdpcmStream *s, long sample)
+{
+	unsigned long block;
+
+	if (s == NULL || s->samples_per_block <= 0 || s->block_align <= 0) return;
+	if (sample < 0) sample = 0;
+	block = (unsigned long)sample / (unsigned long)s->samples_per_block;
+	if (block * (unsigned long)s->block_align >= s->data_len)
+		block = 0;
+	fseek(s->f, s->data_off + (long)(block * (unsigned long)s->block_align),
+	      SEEK_SET);
+	s->data_read = block * (unsigned long)s->block_align;
+	s->stage_len = s->stage_pos = 0;
+	s->dec_len = s->dec_pos = 0;
+}
+
 int Adpcm_Decode(AdpcmStream *s, signed char *out, int max_samples)
 {
 	int produced = 0;

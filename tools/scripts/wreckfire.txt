@@ -1,0 +1,11 @@
+# A BURNING WRECK (211): the saloon beside the start, entered and written
+# off (`damage 100`): it burns its fuse, blows up, and the scrap stays on the
+# road. Pass: "your car blew up", the blast 39, and 75 (0x4b) asked for again
+# and again while the player stands beside the wreck.
+wait 100
+park 0 0 -26 0
+enter
+wait 150
+damage 100
+wait 400
+dump

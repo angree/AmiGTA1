@@ -99,6 +99,23 @@ void gta_pickups_draw(gta_pickups *pk, gta_view *v, int blocks);
  * how many opened. */
 int gta_pickups_open_at(gta_pickups *pk, long x, long y, int layer, int radius);
 
+/* WHAT IS WITHIN REACH, without taking it. The original decides whether it
+ * can use a crate BEFORE it consumes one - a weapon crate you have no room
+ * for is left standing rather than wasted - so the caller has to be able to
+ * look first. 0 when there is nothing in reach. */
+int gta_pickups_peek(const gta_pickups *pk, long x, long y, int layer,
+                     int radius, int *kind, int *amount);
+
+/* THE SAME, ONE AT A TIME. Scanning starts at `from` and the INDEX is
+ * returned, so a caller who refuses one can go on to the next: a crate the
+ * player cannot use is left standing, and it must not stand in front of one
+ * he can. -1 when there are no more in reach. */
+int gta_pickups_peek_from(const gta_pickups *pk, long x, long y, int layer,
+                          int radius, int from, int *kind, int *amount);
+
+/* Take the one at `index`, which must be what peek_from returned. */
+int gta_pickups_take_index(gta_pickups *pk, int index, int *kind, int *amount);
+
 /* Take the first open item within `radius` px of (x,y) on `layer`: it is
  * gone, and its kind and amount are returned. 0 when there is none. */
 int gta_pickups_take(gta_pickups *pk, long x, long y, int layer, int radius,

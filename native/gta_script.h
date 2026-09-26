@@ -118,6 +118,10 @@ typedef struct {
 typedef struct {
     long x, y;                  /* 16.16 world pixels, the block centre */
     short line;                 /* the declaration it came from */
+    /* THE SPRITE, for the objects whose is not one fixed number. A telephone
+     * is always map object 0x28 and the script resolves that once; a drop-off
+     * wears whatever model its own declaration names. -1 = use the phone's. */
+    short spr;
     unsigned char layer;
     unsigned char angle;
     /* A TELEPHONE'S STATE, the original's object state `+0xc`: 0 idle, 1 and
@@ -133,6 +137,10 @@ typedef struct {
 
 #define GTA_MAX_PHONES 160
 #define GTA_MAX_MCARS   16
+/* A DROP-OFF. DROP_ON puts a map object down at a declaration's block and
+ * GOTO_DROPOFF is the player getting to it in time; KILL_DROP takes it away
+ * again. Liberty City uses one at a time, so four is generous. */
+#define GTA_MAX_DROPS    4
 
 /* A MISSION CAR - one the script PARKS somewhere in the city.
  *
@@ -230,6 +238,62 @@ typedef struct {
 #define GTA_CMD_KILL_PED        79
 #define GTA_CMD_IS_PED_ARRESTED 120
 #define GTA_CMD_DEAD_ARRESTED  132
+/* THE SECOND JOB'S OWN. GENERAL_ONSCREEN is the one WATCHER of the set and
+ * the rule about those has been paid for once already: an unwritten command
+ * takes the SUCCESS path, which is right for an action and wrong for a
+ * check. `667 IS_GOAL_DEAD 299 670` / `668 GENERAL_ONSCREEN 299 670` /
+ * `669 KILL_PED 299` reads "if he is dead, leave him; if he is ON SCREEN,
+ * leave him; otherwise take him away" - so answering YES by default means
+ * the job's four gunmen are never cleaned up. */
+#define GTA_CMD_GENERAL_ONSCREEN 106
+#define GTA_CMD_CHANGE_PED_TYPE   69
+#define GTA_CMD_HELL_ON          121
+#define GTA_CMD_DROP_WANTED      119
+#define GTA_CMD_REMAP_PED         53
+#define GTA_CMD_PED_SENDTO        38
+#define GTA_CMD_WAIT_FOR_PED      39
+#define GTA_CMD_DROP_ON           30
+#define GTA_CMD_KILL_DROP         32
+#define GTA_CMD_GOTO_DROPOFF      57
+
+/* SCORE_CHECK, and the bucket the other unanswerable CHECKS go in - see
+ * GTA_CMD_UNKNOWN_CHECK in gta_script_run.c. */
+#define GTA_CMD_SCORE_CHECK      102
+#define GTA_CMD_DESTROY            1
+#define GTA_CMD_EXPLODE           12    /* the numbers are the original's opcodes */
+#define GTA_CMD_PLAIN_EXPL_BUILDING 65
+#define GTA_CMD_EXPL_NO_FIRE      95
+#define GTA_CMD_FRENZY_SET       103
+#define GTA_CMD_BANK_ROBBERY      76
+#define GTA_CMD_SETBOMB           24
+#define GTA_CMD_CRANE             22
+#define GTA_CMD_DO_GTA            44
+#define GTA_CMD_RED_ARROW        144
+#define GTA_CMD_RED_ARROW_OFF    146
+#define GTA_CMD_END               10
+#define GTA_CMD_KILL_OBJ          43
+#define GTA_CMD_KILL_CAR          50
+#define GTA_CMD_SET_PED_SPEED    124
+#define GTA_CMD_ARMEDMESS         34
+#define GTA_CMD_DISARMMESS        35
+#define GTA_CMD_FREEZE_TIMED      92
+#define GTA_CMD_FREEZE_ENTER      93
+#define GTA_CMD_UNFREEZE_ENTER    94
+#define GTA_CMD_BANK_ALARM_ON     80
+#define GTA_CMD_BANK_ALARM_OFF    81
+#define GTA_CMD_FRENZY_CHECK     104
+#define GTA_CMD_STOP_FRENZY      134
+#define GTA_CMD_KF_PROCESS       141
+#define GTA_CMD_RESET_KF         142
+#define GTA_CMD_KF_BRIEF_TIMED   137
+#define GTA_CMD_KF_CANCEL_BRIEFING 138
+#define GTA_CMD_KF_BRIEF_GENERAL 139
+#define GTA_CMD_KF_CANCEL_GENERAL 140
+#define GTA_CMD_UNKNOWN_CHECK    253
+
+/* HELL_ON's own car. The original does not use the model the declaration
+ * carries - it always makes this one and puts a driver in it. */
+#define GTA_HELL_MODEL 3
 
 /* WHERE A PIECE OF TEXT GOES. The original has two displays and a card, and
  * which one a command uses is fixed:
@@ -361,6 +425,82 @@ typedef struct {
      * the heat with it. 0 when he is not in one - on foot, or the shop is
      * shut because he has just used it. */
     int  (*respray)(void *ctx, int remap);
+
+    /* ---- THE SECOND JOB. New entries go at the END of this table: the
+     * game initialises it positionally and an insertion in the middle
+     * silently re-wires every callback after it. ---- */
+
+    /* GENERAL_ONSCREEN: is that point inside the view? A missing callback
+     * must answer NO - see the note by the opcode. */
+    int  (*onscreen)(void *ctx, long wx, long wy);
+    /* DROP_WANTED_LEVEL: the heat goes, and the police lose interest. */
+    void (*drop_wanted)(void *ctx);
+    /* REMAP_PED, and PED_ON's own `p4`: what he is wearing. */
+    void (*ped_remap)(void *ctx, unsigned long h, int remap);
+    /* CHANGE_PED_TYPE: `type` is the original's AI numbering. Its attacking
+     * family (0x15..0x2e) all take a target, and when that target is the
+     * PLAYER declaration it has to be followed rather than resolved once,
+     * which is what `on_player` says. */
+    void (*ped_type)(void *ctx, unsigned long h, int type,
+                     long tx, long ty, int on_player);
+    /* PED_SENDTO: walk there and stop. */
+    void (*ped_sendto)(void *ctx, unsigned long h, long wx, long wy);
+    /* WAIT_FOR_PED: has he arrived? */
+    int  (*ped_at)(void *ctx, unsigned long h, long wx, long wy);
+    /* HELL_ON: a parked car with somebody sitting in it, to be dragged out.
+     * The original ignores the declared model and uses its own. */
+    unsigned long (*car_on_driven)(void *ctx, int line, int model_id,
+                                   int bx, int by, int angle);
+    /* SCORE_CHECK: what the player has scored so far. */
+    long (*score_now)(void *ctx);
+    /* EXPLODE / PLAIN_EXPL_BUILDING: a blast on `face` (0 W, 1 E, 2 N, 3 S)
+     * of block (bx,by); `debris` is 1 for EXPLODE, which the original also
+     * litters with wreckage. */
+    void (*explode)(void *ctx, int line, int bx, int by, int face, int debris);
+    /* STOP_FRENZY: the kill frenzy is over, won or lost - the endless weapon
+     * goes and the player gets back what he was carrying (the original's
+     * the original's routine restores the four saved weapon slots). */
+    void (*frenzy_stop)(void *ctx);
+    /* BANK_ALARM_ON / _OFF: a bell ringing at block (bx,by) - one of five,
+     * the original's the original's routine slots; `on` 0 silences the one `line`
+     * started. BANK_ROBBERY: the heat and the wanted level of a bank job. */
+    void (*alarm)(void *ctx, int line, int on, int bx, int by);
+    void (*robbery)(void *ctx);
+    /* SETBOMB: bomb `type` in car `h` (0 = none - disarmed); the original's
+     * the original's routine writes car+0x9a. FREEZE: the player cannot get in or out
+     * (`on`), or cannot for `ticks` (FREEZE_TIMED). NAMED_TEXT: one of the
+     * original's own named strings ("bomb_on") on the big card. */
+    void (*setbomb)(void *ctx, unsigned long h, int type);
+    void (*freeze)(void *ctx, int on, int ticks);
+    void (*named_text)(void *ctx, const char *name);
+    /* KILL_CAR: car `h` taken out of the world. SET_PED_SPEED: the pace a
+     * PED_SENDTO walks ped `h` at. */
+    void (*car_kill)(void *ctx, unsigned long h);
+    void (*ped_speed)(void *ctx, unsigned long h, int speed);
+    /* RED_ARROW: the second arrow, at a fixed point; `on` 0 puts it out. */
+    void (*red_arrow)(void *ctx, int on, long wx, long wy);
+    /* THE DOCK CRANES - see the CRANE case in gta_script_run.c. `crane` is
+     * the crane's index, the order of the CRANE declarations (the
+     * original's the original's routine creates them in that order). crane_offer: the
+     * player's car on block (bx,by) is offered; returns 0 taken, -1 not
+     * there, anything else refused. crane_poll: 0 still lifting, 1 done and
+     * paid, 2 it came to nothing. crane_demand: hang "need cars of model
+     * `model` (original id), remap `remap` (-1 any)" on the crane, need 0
+     * asks - returns 1 once the need is met. */
+    int  (*crane_offer)(void *ctx, int crane, int bx, int by);
+    int  (*crane_poll)(void *ctx, int crane);
+    int  (*crane_demand)(void *ctx, int crane, int model, int remap, int need);
+    /* END p1: THE LEVEL IS OVER - 1 passed, 2 failed (MISSIONS.md 4.5: the
+     * interpreter's end-of-tick code passes END's value to the original's routine,
+     * which ends the level with "m22success" / "m22failed"). */
+    void (*level_end)(void *ctx, int code);
+    /* SAY a line of the speech bank (the original's routine - see GTA_VOICE_* in
+     * gta_snd.h): the frenzy's start and its win are the script's. */
+    void (*say)(void *ctx, int line);
+    /* THE KILL FRENZY'S CLOCKS - KF_BRIEF_TIMED / KF_CANCEL_BRIEFING set
+     * player+0x194 (the original's routine), KF_BRIEF_GENERAL / KF_CANCEL_GENERAL
+     * player+0x196 (the original's routine): `ticks` at 25 a second, -1 = off. */
+    void (*kf_timer)(void *ctx, int which, long ticks);
 } gta_script_world;
 
 typedef struct {
@@ -384,6 +524,15 @@ typedef struct {
     int n_phones;
     gta_mcar mcar[GTA_MAX_MCARS];
     int n_mcars;
+    /* THE DROP-OFFS. `ring` is the object model, because the declaration
+     * carries one and the sprite is looked up from it. */
+    gta_placed drop[GTA_MAX_DROPS];
+    int n_drops;
+    /* ...which needs the tile set, since a drop's sprite is not known until
+     * the script asks for it, and the map so it can find the layer the drop
+     * stands on. Both set by gta_script_place(). */
+    const gta_tiles *tiles;
+    const gta_nav *nav;
 
     gta_cmd *c;
     int n_cmds;
@@ -481,6 +630,14 @@ void gta_script_set_brief(gta_script *s,
 /* Everything else the interpreter may do to the world. `w` must outlive the
  * script; the game passes a static table. */
 void gta_script_set_world(gta_script *s, const gta_script_world *w, void *ctx);
+
+/* A TEST FIXTURE: start a process at `line`, as a KICKSTART would. The
+ * autodrive order `script <line>` is its only caller - it lets one command
+ * of a job that sits behind twenty minutes of play be run and looked at
+ * (the bank going up is forty PLAIN_EXPL_BUILDINGs at the end of a heist).
+ * Returns the process slot, -1 when the line is not a command or no slot is
+ * free. */
+int gta_script_debug_start(gta_script *s, int line);
 
 /* What the script did, for the five-second report. */
 void gta_script_report(const gta_script *s);

@@ -1,0 +1,9 @@
+# THE SECOND ARROW (PROGRESS 188): `script 8115` runs PED_ON 304, SURVIVE 20,
+# then 8130 RED_ARROW 304 - a red arrow from the player towards where that man
+# is at that moment. The frame shows it beside the yellow one's place.
+wait 100
+script 8115
+wait 150
+film 2
+wait 50
+dump

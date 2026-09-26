@@ -1,0 +1,20 @@
+# THE BANK GOES UP - Liberty City's heist ends with forty explosions in a row
+# (mission.ini 1071..1115: PLAIN_EXPL_BUILDING and EXPLODE on the DUMMYs
+# 306..364, the blocks round (179..185, 35..39)). `script 1071` starts that
+# run as a process of its own, so it can be looked at without playing the job.
+# Face 0 is the WEST side of a block, so the player stands west of (179,36).
+goto 176 37
+wait 60
+dump
+script 1071
+film 3
+wait 5
+film 3
+wait 5
+film 3
+wait 10
+film 3
+wait 25
+film 3
+wait 50
+dump

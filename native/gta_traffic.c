@@ -51,12 +51,12 @@ static long sin_fp(long a_fp)
     return cos_fp(a_fp - (64L << FP));
 }
 
-static int ground_at(const gta_map *m, int bx, int by, int z)
+static __inline__ int ground_at(const gta_map *m, int bx, int by, int z)
 {
     gta_block b;
 
     if (g_nav && g_nav->b)
-        return gta_nav_ground(gta_nav_at_m(g_nav, bx, by, z));
+        return gta_nav_ground(gta_nav_at_f(g_nav, bx, by, z));
 
     if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM)
         return 0;
@@ -329,6 +329,8 @@ void gta_traffic_init(gta_traffic *tr, const gta_tiles *t, unsigned long seed)
                                  * into a stall. */
     tr->opt_arrows     = 1;     /* a turn obeys the block's own arrows */
     tr->opt_keepclear  = 1;     /* no turn into an exit lane with no room */
+    tr->opt_halfrate   = 1;     /* far cars drive on alternate ticks - see .h */
+    tr->opt_cruise     = 2;     /* decide on alternate ticks - see .h */
     tr->rb_zone = -1;
     tr->opt_lights     = 1;     /* ON since they are drawn (136); off with
                                  * `lights 0` in opts.txt for a comparison */
@@ -418,7 +420,9 @@ void gta_traffic_init(gta_traffic *tr, const gta_tiles *t, unsigned long seed)
      * gta_traffic_despawn_blocks(): at 32 pixels a block a 320-wide screen is
      * five blocks either side of the camera. */
     tr->view_blocks = 5;
-    tr->fleet_cap = GTA_MAX_CARS;
+    /* twenty: what the fleet was before the player could choose (218) - the
+     * host tests keep their numbers; the game sets it from gta_prefs */
+    tr->fleet_cap = 20;
 }
 
 void gta_traffic_set_nav(gta_traffic *tr, const gta_nav *nav)
@@ -687,6 +691,62 @@ static int box_hit(long ax, long ay, int aang, int ahl, int ahw,
         if (r > pa + pb)
             return 0;                             /* an axis separates them */
     }
+    return 1;
+}
+
+/* THE SAME TEST AGAINST AN AXIS-ALIGNED BLOCK, FOR A CALLER THAT HAS DONE
+ * THE WORLD-AXIS HALF ALREADY.
+ *
+ * PERF.md section 6: box_hit is 53 calls a tick and the biggest single
+ * function in the tick, and every one of those calls is occ_rebuild or
+ * car_on_block asking about a BLOCK - angle 0, half-extents 16 - after
+ * testing |dx| against |sin|*hl + |cos|*hw + 16 and |dy| likewise. That test
+ * IS box_hit's axes 0 and 1: a block's own axes are the world axes, and its
+ * projection plus the car's on them is exactly that sum. The only thing the
+ * caller has not asked is whether one of the CAR'S two axes separates them,
+ * so this asks that and nothing else: half the multiplies for the same
+ * answer.
+ *
+ * Exactness, since it matters: the caller shifts its bound down by 14 bits
+ * before comparing, box_hit compares unshifted, so the caller's bound is
+ * never larger than the axis's own - a pair the caller lets through is a
+ * pair axes 0 and 1 would let through. Verified bit-identical over four
+ * seeds (driveseeds.sh, 3000 ticks) before it went in. */
+static int box_hit_block(long cx, long cy,
+                         long bx_, long by_, int bang, int bhl, int bhw)
+{
+    long dx = (bx_ - cx) >> FP, dy = (by_ - cy) >> FP;
+    long s = gta_sin(bang), c = gta_cos(bang);
+    long as = s < 0 ? -s : s, ac = c < 0 ? -c : c;
+    /* THE CAR'S OWN PROJECTION ON ITS OWN AXES, once. The general SAT
+     * computes (axis_i . n) >> 14 for both of the car's axes against each
+     * of them in turn; with n = axis0 that is (s*s + c*c) >> 14 for axis0
+     * and (c*s + s*(-c)) >> 14 = 0 - EXACTLY zero, in integers - for axis1,
+     * and the mirror image for n = axis1. So the car contributes q*bhl on
+     * one axis and q*bhw on the other, and q is two multiplies for the
+     * whole call instead of eight. */
+    long q  = (s * s + c * c) >> 14;
+    long r, pa;
+
+    /* THE BLOCK'S PROJECTION needs no multiply at all: its axes are (0,-1)
+     * and (1,0) in Q14, so (axis . n) >> 14 is -ny and nx exactly - a
+     * product of 16384 shifted down by 14 loses nothing - and the half
+     * extent is 16 both ways. Same numbers as the general form, eight
+     * multiplies fewer, and the four seeds of driveseeds.sh agree to the
+     * byte. */
+
+    /* axis 0: n = (s, -c) */
+    r = dx * s - dy * c;
+    if (r < 0) r = -r;
+    pa = (ac + as) * 16;
+    if (r > pa + q * bhl)
+        return 0;
+    /* axis 1: n = (c, s) */
+    r = dx * c + dy * s;
+    if (r < 0) r = -r;
+    pa = (as + ac) * 16;
+    if (r > pa + q * bhw)
+        return 0;
     return 1;
 }
 
@@ -1103,11 +1163,23 @@ static int parkable(const gta_car_info *c)
 static int park_band(gta_traffic *tr, const gta_map *m,
                      int bx, int by, int ring_lo, int ring_hi, int want)
 {
-    int ring, placed = 0;
+    int ring, placed = 0, driven = 0, i0;
     int n_models = 0, models[100];
-    int i;
 
     if (!tr->tiles || tr->tiles->n_cars <= 0)
+        return 0;
+
+    /* THE PLAYER'S LIMIT (gta_prefs cars, the Amiga options page): cars with
+     * somebody driving them. A parked car, a wreck or one he left is not
+     * traffic and costs the tick nothing, so it does not count - and above
+     * the limit nothing new is spawned; what is out there drives on until
+     * the retire sweep takes it off screen. */
+    for (i0 = 0; i0 < tr->n; i0++)
+        if (!tr->cars[i0].done && !tr->cars[i0].abandoned)
+            driven++;
+    if (want > tr->fleet_cap - driven)
+        want = tr->fleet_cap - driven;
+    if (want <= 0)
         return 0;
 
     /* THE CITY'S BAG OF A HUNDRED CARS, built once per call. Each model
@@ -1295,6 +1367,8 @@ static int park_band(gta_traffic *tr, const gta_map *m,
                 }
 
                 car = &tr->cars[tr->n++];
+                car->honk = 0;
+                car->honk_pat = 0;
                 car->serial = ++tr->next_serial;
                 car->convoy = car->serial;
                 car->book_lx = -1;
@@ -1570,10 +1644,12 @@ int gta_traffic_park(gta_traffic *tr, const gta_map *m,
  * asking about three layers at every step that column walk was a fifth of the
  * whole traffic tick on the 68020. The fallback below is for the case where
  * there is no grid at all, which is a diagnostic path. */
-static int drivable(const gta_map *m, int bx, int by, int z)
+/* INLINE: 375 000 calls in 2000 ticks (PERF.md section 6), each a call
+ * around one byte read. Same body, no jsr. */
+static __inline__ int drivable(const gta_map *m, int bx, int by, int z)
 {
     if (g_nav && g_nav->b)
-        return gta_nav_ground(gta_nav_at_m(g_nav, bx, by, z)) == GROUND_ROAD;
+        return gta_nav_ground(gta_nav_at_f(g_nav, bx, by, z)) == GROUND_ROAD;
     return ground_at(m, bx, by, z) == GROUND_ROAD && !is_railway(m, bx, by, z);
 }
 
@@ -1604,7 +1680,45 @@ static int drivable(const gta_map *m, int bx, int by, int z)
  * have to become ONE mechanism - a lane line that belongs to the STREET rather
  * than being recomputed per block - and that is a bigger change than any of
  * the patches tried here. */
+static int lane_target_calc(const gta_map *m, int bx, int by, int z, int dir);
+
+/* CACHED. PERF.md section 6: lane_target_at() is asked once per car per
+ * tick (39 356 calls in 2000 ticks) and walks up to four blocks along the
+ * street with three is_junction and a drivable per step - 7% of the tick -
+ * for a value that is a pure function of (block, layer, heading) over a nav
+ * grid that never changes after gta_traffic_set_nav (gta_nav_update has no
+ * caller outside gta_nav.c). A car sits in one block for four to sixteen
+ * ticks, so most asks are the previous ask.
+ *
+ * A 256-entry direct-mapped cache, keyed on the whole question. Not per car:
+ * six call sites, some with a `const gta_car *`, and a shared cache is
+ * exact anyway - the answer does not depend on who asks. Keys with a
+ * coordinate outside the map are not cached (they would alias), and the
+ * zeroed initial table can never match because bit 30 is set in every key. */
+static long g_lane_key[256];
+static int  g_lane_val[256];
+
 static int lane_target_at(const gta_map *m, int bx, int by, int z, int dir)
+{
+    long key;
+    int h;
+
+    if ((unsigned)bx >= (unsigned)GTA_MAP_DIM ||
+        (unsigned)by >= (unsigned)GTA_MAP_DIM ||
+        (unsigned)z >= (unsigned)GTA_MAP_LAYERS ||
+        (unsigned)dir >= 256u)
+        return lane_target_calc(m, bx, by, z, dir);
+    key = (1L << 30) | ((long)z << 24) | ((long)bx << 16) | ((long)by << 8)
+        | (long)dir;
+    h = (bx * 7 + by * 13 + z * 29 + dir) & 255;
+    if (g_lane_key[h] == key)
+        return g_lane_val[h];
+    g_lane_key[h] = key;
+    g_lane_val[h] = lane_target_calc(m, bx, by, z, dir);
+    return g_lane_val[h];
+}
+
+static int lane_target_calc(const gta_map *m, int bx, int by, int z, int dir)
 {
     int lo, hi, t = GTA_LANE_TARGET;
 
@@ -1732,17 +1846,17 @@ static int nav_step_layer(const gta_map *m, int bx, int by, int z, int dir)
         return z;
 
     here_slope = g_nav && g_nav->b
-                 ? gta_nav_sloped(gta_nav_at_m(g_nav, bx, by, z)) : 0;
+                 ? gta_nav_sloped(gta_nav_at_f(g_nav, bx, by, z)) : 0;
 
     if (z > 0 && drivable(m, bx + dx, by + dy, z - 1) &&
         (here_slope || (g_nav && g_nav->b &&
-                        gta_nav_sloped(gta_nav_at_m(g_nav, bx + dx, by + dy,
+                        gta_nav_sloped(gta_nav_at_f(g_nav, bx + dx, by + dy,
                                                   z - 1)))))
         return z - 1;
 
     if (z + 1 < GTA_MAP_LAYERS && drivable(m, bx + dx, by + dy, z + 1) &&
         (here_slope || (g_nav && g_nav->b &&
-                        gta_nav_sloped(gta_nav_at_m(g_nav, bx + dx, by + dy,
+                        gta_nav_sloped(gta_nav_at_f(g_nav, bx + dx, by + dy,
                                                   z + 1)))))
         return z + 1;
 
@@ -2063,11 +2177,12 @@ static int at_stop_line(const gta_map *m, int hint, int bx, int by, int z,
 
 /* The block's direction bits: N and S are bits 0..1, W and E bits 2..3.
  * -1 when off the map or not a block. */
-static int dirs_at(const gta_map *m, int bx, int by, int z)
+static __inline__ int dirs_at(const gta_map *m, int bx, int by, int z)
 {
     gta_block b;
 
-    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM) return -1;
+    if ((unsigned)bx >= (unsigned)GTA_MAP_DIM ||
+        (unsigned)by >= (unsigned)GTA_MAP_DIM) return -1;
     if (g_nav && g_nav->b)
         return gta_nav_dirs(gta_nav_at_m(g_nav, bx, by, z));
     if (!gta_map_block(m, bx, by, z, &b)) return -1;
@@ -2092,14 +2207,11 @@ static int dirs_at(const gta_map *m, int bx, int by, int z)
  * E-W bits, and the box is the product rectangle. So that is computed,
  * per seed, at set-nav time. */
 static unsigned char g_box[((long)GTA_MAP_DIM * GTA_MAP_DIM *
-                            GTA_MAP_LAYERS) / 8];
+                            GTA_NAV_LAYERS_ALLOC) / 8];
 static int g_box_built = 0;
 
-static int box_bit(int x, int y, int z)
-{
-    long n = ((long)z * GTA_MAP_DIM + y) * GTA_MAP_DIM + x;
-    return (g_box[n >> 3] >> (int)(n & 7)) & 1;
-}
+/* (box_bit, the reader, is folded into is_junction() now - the index
+ * arithmetic there is the same as box_bit_set's below.) */
 
 static void box_bit_set(int x, int y, int z)
 {
@@ -2108,10 +2220,11 @@ static void box_bit_set(int x, int y, int z)
 }
 
 /* nav byte helpers for the builder */
-static int nav_road(const gta_nav *nav, int x, int y, int z)
+static __inline__ int nav_road(const gta_nav *nav, int x, int y, int z)
 {
-    if (x < 0 || x >= GTA_MAP_DIM || y < 0 || y >= GTA_MAP_DIM) return 0;
-    return gta_nav_ground(gta_nav_at_m(nav, x, y, z)) == GROUND_ROAD;
+    /* The range test is already inside gta_nav_at_m, as unsigned compares;
+     * the one that stood here was the same test done twice. */
+    return gta_nav_ground(gta_nav_at_f(nav, x, y, z)) == GROUND_ROAD;
 }
 
 static int nav_dirs2(const gta_nav *nav, int x, int y, int z)
@@ -2219,14 +2332,25 @@ static void box_build(const gta_nav *nav)
  * With the nav grid in place the answer is a precomputed bit (box_build
  * above); before that - host tools that never set a nav - the seed test
  * stands alone, which is the old arrow-based answer. */
-static int is_junction(const gta_map *m, int bx, int by, int z)
+/* INLINE, AND WITHOUT THE MULTIPLY. PERF.md section 6: 350 000 calls in
+ * 2000 ticks, 175 a tick, and at -O1 on the 68020 every one of them was a
+ * real jsr/rts around two bounds checks and box_bit's index arithmetic.
+ * The bitmap index is (z<<16 | y<<8 | x) >> 3 and the bit is x & 7 - the
+ * same number box_bit() computed with a multiply - so this is the same
+ * answer for the same inputs, only computed where it is used. */
+static __inline__ int is_junction(const gta_map *m, int bx, int by, int z)
 {
     int d;
 
-    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM)
+    if ((unsigned)bx >= (unsigned)GTA_MAP_DIM ||
+        (unsigned)by >= (unsigned)GTA_MAP_DIM)
         return 0;
-    if (g_box_built && z >= 0 && z < GTA_MAP_LAYERS)
-        return box_bit(bx, by, z);
+    if (g_box_built) {
+        if ((unsigned)z >= (unsigned)GTA_MAP_LAYERS)
+            return 0;
+        return (g_box[(((long)z << 16) | ((long)by << 8) | (long)bx) >> 3]
+                >> (bx & 7)) & 1;
+    }
     d = dirs_at(m, bx, by, z);
     if (d < 0)
         return 0;
@@ -2767,6 +2891,7 @@ static int junction_claim(gta_traffic *tr, int rx, int ry, int z,
     tr->claim_car[free_slot] = serial;
     tr->claim_ttl[free_slot] = GTA_CLAIM_TTL;
     tr->claim_seen[free_slot] = 0;
+    tr->claim_on_ser[free_slot] = 0;
     return 1;
 }
 
@@ -3462,7 +3587,7 @@ static int car_on_block(const gta_traffic *tr, const gta_car *o,
         if (dx > rx + 16 || dx < -(rx + 16) ||
             dy > ry + 16 || dy < -(ry + 16))
             return 0;
-        return box_hit(cx, cy, 0, 16, 16, o->x, o->y, o->face, hl, hw);
+        return box_hit_block(cx, cy, o->x, o->y, o->face, hl, hw);
     }
 }
 
@@ -3505,15 +3630,29 @@ static void occ_rebuild(gta_traffic *tr, const gta_map *m)
         return;
 
     for (i = 0; i < tr->n; i++) {
-        const gta_car *o = &tr->cars[i];
+        gta_car *o = &tr->cars[i];
         const gta_car_info *oi;
         int bx, by, hl, hw;
         long s, co, rx, ry;
+        int replay;                 /* the pose is last tick's: reuse occ_mask */
 
         if (o->done)
             continue;
         bx = (int)(o->x >> (FP + 5));
         by = (int)(o->y >> (FP + 5));
+
+        /* THE SHAPE IS A FUNCTION OF THE POSE ONLY - which of the nine
+         * squares the body covers does not depend on any other car (the
+         * "somebody was here first" rule below still runs: it is about
+         * ORDER, not shape). A car that did not move gets its nine answers
+         * from last tick's mask; a car that did is measured again. Exact. */
+        replay = o->still && o->occ_ser == o->serial;
+        if (!replay) {
+            o->occ_mask = 0;
+            o->occ_ser = 0;         /* set below, once all nine are in: the
+                                     * GTA_OCC_MAX return must not leave a
+                                     * half-filled mask marked complete */
+        }
 
         /* The body's exact world-axis projections, computed ONCE per car
          * rather than once per asked block - the same arithmetic
@@ -3531,6 +3670,7 @@ static void occ_rebuild(gta_traffic *tr, const gta_map *m)
         for (dy = -1; dy <= 1; dy++)
         for (dx = -1; dx <= 1; dx++) {
             int cx = bx + dx, cy = by + dy;
+            int bit = 1 << ((dy + 1) * 3 + (dx + 1));
             long ddx, ddy;
             if (tr->occ_n >= GTA_OCC_MAX)
                 return;
@@ -3540,14 +3680,20 @@ static void occ_rebuild(gta_traffic *tr, const gta_map *m)
              * that STICKS OUT into them - "oba auta stoja wystajace i wszystko
              * po nich przejezdza". With junction blocks only, the penetration
              * count went UP at two of three sites. */
-            ddx = (o->x >> FP) - ((long)cx * 32 + 16);
-            ddy = (o->y >> FP) - ((long)cy * 32 + 16);
-            if (ddx > rx || ddx < -rx || ddy > ry || ddy < -ry)
-                continue;
-            if (!box_hit(((long)cx * 32 + 16) << FP,
-                         ((long)cy * 32 + 16) << FP, 0, 16, 16,
-                         o->x, o->y, o->face, hl, hw))
-                continue;
+            if (replay) {
+                if (!(o->occ_mask & bit))
+                    continue;
+            } else {
+                ddx = (o->x >> FP) - ((long)cx * 32 + 16);
+                ddy = (o->y >> FP) - ((long)cy * 32 + 16);
+                if (ddx > rx || ddx < -rx || ddy > ry || ddy < -ry)
+                    continue;
+                if (!box_hit_block(((long)cx * 32 + 16) << FP,
+                                   ((long)cy * 32 + 16) << FP,
+                                   o->x, o->y, o->face, hl, hw))
+                    continue;
+                o->occ_mask |= (unsigned short)bit;
+            }
             if (occ_owner(tr, cx, cy, o->layer) != 0)
                 continue;               /* somebody was here first */
             tr->occ_x[tr->occ_n]   = (unsigned char)cx;
@@ -3558,6 +3704,7 @@ static void occ_rebuild(gta_traffic *tr, const gta_map *m)
             tr->occ_head[cx & 15] = (unsigned char)(tr->occ_n + 1);
             tr->occ_n++;
         }
+        o->occ_ser = o->serial;
     }
 }
 
@@ -4544,6 +4691,11 @@ static void car_layer_track(gta_traffic *tr, const gta_map *m, gta_car *c)
     c->last_by = by;
 }
 
+/* One section of drive_one is over: charge it to prof_d[k]. Costs one
+ * clock read per section per driven car and nothing when profiling is off. */
+#define DPROF(k) do { if (dp_on) { unsigned long t_ = tr->prof_raw(); \
+                      tr->prof_d[k] += t_ - dpt; dpt = t_; } } while (0)
+
 static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
 {
     gta_car *c = &tr->cars[idx];
@@ -4559,6 +4711,16 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
     int move_face = -1;         /* mid-arc heading for this step, -1 = not set */
     int from_bx, from_by;       /* the block this car was in last tick */
     long gap, lead, want, edge, dx, dy;
+    /* THE LADDER'S OWN CLOCK - see prof_d[] in gta_traffic.h. ONE CAR A
+     * TICK is timed, the one whose slot is tick mod n: timing every call
+     * cost 2.7 ms a tick on the pseudo-040 (nine E-clock reads a call, and
+     * a read is not the 5 us a tight loop says it is), which is more than
+     * the thing being measured. A sample a tick over 250 ticks ranks the
+     * sections just as well and costs 40 us. */
+    int dp_on = tr->prof_raw != 0 && tr->n > 0 &&
+                idx == (int)(tr->tick % (unsigned long)tr->n);
+    unsigned long dpt = dp_on ? (tr->prof_dn++, tr->prof_raw()) : 0;
+    DPROF(8);                       /* nothing happened: the read's own cost */
 
     /* NOBODY IS DRIVING THIS ONE, YET. A car that has just been hit hard is
      * loose: it travels on the velocity the collision gave it and is not
@@ -4584,6 +4746,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
             c->angle = c->face;
         }
         car_layer_track(tr, m, c);      /* shoved onto a ramp - see there */
+        DPROF(0);
         return;
     }
 
@@ -4592,6 +4755,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * still enterable, and it never books a square or asks for a route. */
     if (c->abandoned) {
         car_layer_track(tr, m, c);
+        DPROF(0);
         return;
     }
 
@@ -4606,7 +4770,8 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * came back on a straight diagonal instead of an arc. */
 
     if (c->done)
-        return;
+    { DPROF(0);
+      return; }
 
     bx = (int)(c->x >> (FP + 5));
     by = (int)(c->y >> (FP + 5));
@@ -4718,6 +4883,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
     if (c->cop == 3) {
         c->speed = 0;
         c->hold = GTA_HOLD_QUEUE;
+        DPROF(0);
         return;
     }
 
@@ -4740,6 +4906,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         c->speed = 0;
         c->hold = GTA_HOLD_STUCK;
         c->wait = 0;
+        DPROF(0);
         return;
     }
 
@@ -4784,6 +4951,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         c->wait = 0;
         c->turn = 0;
         c->hold = GTA_HOLD_STUCK;
+        DPROF(0);
         return;
     } else if (c->wait > GTA_TRAFFIC_ABANDON && !in_view(tr, bx, by)) {
         /* AND NOT WHERE ANYBODY CAN SEE IT. That clause is the whole of the
@@ -4805,9 +4973,11 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         tr->abandon_y = by;
         tr->abandon_z = c->layer;
         c->done = 1;
+        DPROF(0);
         return;
     }
 
+    DPROF(0);
     /* --- 0. the layer the car is actually on ------------------------------
      * See car_layer_follow(). A driven car gets the whole rule, the up
      * fall-back included. */
@@ -5089,6 +5259,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         }
     }
 
+    DPROF(1);
     /* --- 1. the turn in progress ------------------------------------------
      *
      * THE CAR IS ON AN ARC OF A KNOWN RADIUS and it turns at speed / radius, so
@@ -5451,6 +5622,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
     }
 
 
+    DPROF(2);
     /* --- 2. where the route says to go ------------------------------------ */
     /* DID THE LAST BLOCK'S TURN GET TAKEN? Counted here, at the top, because
      * this is the one place that knows both the block the car is in NOW and
@@ -5588,12 +5760,14 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         c->wait++;
         if (c->wait > GTA_TRAFFIC_GIVEUP)
             c->done = 1;
+        DPROF(3);
         return;
     }
     /* `wait` counts TICKS NOT MOVING, whatever the reason, and it is cleared
      * at the bottom of this function when the car actually moves. It used to
      * be cleared here, which quietly disabled both places that read it. */
 
+    DPROF(3);
     /* --- 3. start a turn --------------------------------------------------
      *
      * When the crossing of the two lane lines is exactly one turning radius
@@ -6316,6 +6490,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         }
     }
 
+    DPROF(4);
     /* --- 4. what the block ahead is, and who has claimed it ---------------- */
     nx = bx + dxs;
     ny = by + dys;
@@ -6336,6 +6511,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         c->cell_y = by;
     }
 
+    DPROF(5);
     /* --- 5. speed ---------------------------------------------------------
      *
      * The original's ladder, in blocks of clear road, with our own
@@ -6362,6 +6538,37 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
              && tr->cars[lead_i].knock == 0)
                                  c->lead_kind = 2;
     else                         c->lead_kind = 3;
+
+    /* THE HORN - the original's routine's, see gta_snd.h. Its look-ahead probes d
+     * blocks in front (car+0x7c, 0..3); something there while the car is
+     * still too fast for it - v > 10 within four blocks, v > 4 within two,
+     * any speed in the same block - throws the dice: above 50 the driver
+     * honks for 40 frames, 26..50 he yells. The dice are the traffic's own
+     * (honk_rng), so no seeded run of the fleet changes. */
+    if (c->honk > 0)
+        c->honk--;
+    if (!c->cop && !c->abandoned && gap >= 0 && c->speed > 0) {
+        int d_ = (int)(gap >> (FP + 5));
+        int v_ = (int)(c->speed / GTA_SPEED_UNIT);
+        if (d_ <= 3 && ((v_ > 10 && d_ < 4) || (v_ > 4 && d_ < 2) ||
+                        (v_ > 0 && d_ == 0))) {
+            unsigned long r_;
+            tr->honk_rng = tr->honk_rng * 1103515245UL + 12345UL;
+            r_ = (tr->honk_rng >> 16) % 100;
+            if (r_ > 50) {
+                if (c->honk == 0) tr->stat_honks++;
+                c->honk = 40;
+                if (c->honk_pat == 0)
+                    c->honk_pat = (unsigned char)(1 + (tr->honk_rng >> 8) % 10);
+            } else if (r_ > 25 && !tr->yell_req) {
+                tr->yell_req = 1;
+                tr->yell_x = c->x;
+                tr->yell_y = c->y;
+                tr->yell_layer = c->layer;
+                tr->stat_yells++;
+            }
+        }
+    }
     /* THE RESERVATION IS THE JUDGE - "jesli robi rezerwacje to musi jechac
      * rezerwacja i koniec". A committed car brakes for a body standing ON
      * one of ITS booked squares - its own queue, or a genuine violation -
@@ -6876,6 +7083,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
         /* A car standing still is exactly the car the lane change is for -
          * see lane_swap_step(). It sat behind this return and never ran. */
         lane_swap_step(tr, m, idx, bx, by);
+        DPROF(6);
         return;
     }
     /* A MOVING CAR IS NOT BEING HELD BY ANYTHING, and the two exceptions that
@@ -6888,6 +7096,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * moving, somewhere else entirely. Diagnosis was being done on it. */
     c->hold = GTA_HOLD_NONE;
 
+    DPROF(6);
     /* --- 6. move along the heading ---------------------------------------- */
     /* NOTHING CLAMPS THIS STEP AGAINST THE CAR IN FRONT, AND THAT WAS TESTED.
      *
@@ -7021,6 +7230,57 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * inside a crossing keeps the value it carried in. */
     /* --- 6b. blocked on open road: take the next lane - lane_swap_step() */
     lane_swap_step(tr, m, idx, bx, by);
+
+    /* --- 7. MAY IT COAST? See opt_cruise. Everything above was a ladder of
+     * rules and this car fell through all of them: nobody ahead, at its own
+     * top speed with no ramping left, on its line and pointing down it, no
+     * manoeuvre of any kind in progress. Such a car would take the same
+     * decision next tick, and the one after, until something enters the
+     * lookahead or a junction comes within reach - and a junction's rules
+     * begin a block or two out (the corner set-up, the stop line, the box),
+     * so GTA_CRUISE_LOOK blocks ahead must be plain road. The count is
+     * also cut at the edge of the current block, so every block boundary
+     * (progress, route refill, the arrows) is still seen by drive_one. */
+    c->cruise = 0;
+    if (!tr->opt_cruise || c->cop || c->mission || c->speed <= 0) tr->stat_cr[0]++;
+    else if (!c->lane_set) tr->stat_cr[8]++;
+    else if (c->swap) tr->stat_cr[9]++;
+    else if (c->turn) tr->stat_cr[10]++;
+    else if (c->recover) tr->stat_cr[12]++;
+    else if (c->crossing) tr->stat_cr[13]++;
+    else if (c->lane_fix) tr->stat_cr[14]++;
+    else if (c->lead_kind != 0) tr->stat_cr[2]++;
+    else if (want != c->top || c->speed != c->top) tr->stat_cr[3]++;
+    else if (c->face != c->lane_dir || move_face != c->face) tr->stat_cr[4]++;
+    else if (gta_nav_sloped(gta_nav_at_f(g_nav, bx, by, c->layer))) tr->stat_cr[5]++;
+    if (tr->opt_cruise && !c->cop && !c->mission && c->speed > 0 &&
+        c->lane_set && c->swap == 0 && c->turn == 0 &&
+        c->recover == 0 && !c->crossing && c->lane_fix == 0 &&
+        c->lead_kind == 0 && want == c->top && c->speed == c->top &&
+        c->face == c->lane_dir && move_face == c->face &&
+        !gta_nav_sloped(gta_nav_at_f(g_nav, bx, by, c->layer))) {
+        int k, ok = 1;
+        int ddx = (c->lane_dir == 64) ? 1 : (c->lane_dir == 192) ? -1 : 0;
+        int ddy = (c->lane_dir == 128) ? 1 : (c->lane_dir == 0) ? -1 : 0;
+        long pos, edge, n;
+        for (k = 0; k <= GTA_CRUISE_LOOK && ok; k++)
+            if (is_junction(m, bx + k * ddx, by + k * ddy, c->layer) ||
+                !drivable(m, bx + k * ddx, by + k * ddy, c->layer))
+                ok = 0;
+        if (ok) {
+            /* ticks before the front of the body reaches the block edge */
+            pos = c->lane_axis ? c->x : c->y;
+            if (ddx + ddy > 0)
+                edge = (((long)(c->lane_axis ? bx : by) + 1) << (FP + 5)) - pos;
+            else
+                edge = pos - ((long)(c->lane_axis ? bx : by) << (FP + 5));
+            edge -= (long)(gta_car_world_len(info) / 2) << FP;
+            n = edge / c->speed - 1;
+            if (n > GTA_CRUISE_MAX) n = GTA_CRUISE_MAX;
+            if (n > 0) c->cruise = (int)n; else tr->stat_cr[7]++;
+        } else tr->stat_cr[6]++;
+    }
+DPROF(7);
 }
 
 /* Give ONE car that wants a route a destination and a path to it.
@@ -7214,7 +7474,8 @@ static void route_tick(gta_traffic *tr)
  * drivable, so the test asks the car's own layer and the one below it: a car
  * driving up onto a bridge straddles two layers for a few ticks and is not
  * doing anything wrong. */
-static int on_road_at(const gta_map *m, const gta_car *c, long wx, long wy)
+static __inline__ int on_road_at(const gta_map *m, const gta_car *c,
+                                 long wx, long wy)
 {
     int bx = (int)(wx >> (FP + 5));
     int by = (int)(wy >> (FP + 5));
@@ -7328,7 +7589,9 @@ static void offroad_check(gta_traffic *tr, const gta_map *m, int idx)
     /* The four corners, as (along, across) in the car's own frame. */
     static const int sgn[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
 
-    if (hl <= 0 || hw <= 0)
+    /* a parked car on the kerb is parked, not driving on it - the player
+     * leaves them there */
+    if (hl <= 0 || hw <= 0 || c->abandoned)
         return;
 
     /* The corner sample is a diagnostic and is off in the game - see
@@ -7552,11 +7815,21 @@ static void fleet_collide(gta_traffic *tr, gta_car *a, gta_car *b)
 static void fleet_collisions(gta_traffic *tr)
 {
     int i, j;
+    /* THE PAIR LOOP IS 190 PAIRS A TICK and it rejects 180 of them on the
+     * bounding test; the per-car half of that test (half-length plus
+     * half-width, two table reads and two divides) is taken once per car
+     * here rather than once per pair. The subtraction stays on the 16.16
+     * values - (b - a) >> FP is not (b >> FP) - (a >> FP) at the limit -
+     * so the same pairs survive. Exact. */
+    int cr[GTA_MAX_CARS];
+
+    for (i = 0; i < tr->n; i++) {
+        const gta_car_info *ai = &tr->tiles->cars[tr->cars[i].model];
+        cr[i] = gta_car_world_len(ai) / 2 + gta_car_world_wid(ai) / 2;
+    }
 
     for (i = 0; i < tr->n; i++) {
         gta_car *a = &tr->cars[i];
-        const gta_car_info *ai;
-        int ahl, ahw;
 
         /* AN ABANDONED CAR IS STILL A CAR. It used to be skipped here, so
          * the fleet drove through anything parked - the developer's
@@ -7565,23 +7838,16 @@ static void fleet_collisions(gta_traffic *tr)
          * AI, but it has a body and a mass like everything else. */
         if (a->done)
             continue;
-        ai = &tr->tiles->cars[a->model];
-        ahl = gta_car_world_len(ai) / 2;
-        ahw = gta_car_world_wid(ai) / 2;
 
         for (j = i + 1; j < tr->n; j++) {
             gta_car *b = &tr->cars[j];
-            const gta_car_info *bi;
             long dx, dy, lim;
 
             if (b->done || b->layer != a->layer)
                 continue;
-            bi = &tr->tiles->cars[b->model];
             dx = (b->x - a->x) >> FP;
             dy = (b->y - a->y) >> FP;
-            lim = (long)(ahl + ahw
-                       + gta_car_world_len(bi) / 2
-                       + gta_car_world_wid(bi) / 2);
+            lim = (long)(cr[i] + cr[j]);
             if (dx > lim || dx < -lim || dy > lim || dy < -lim)
                 continue;
             fleet_collide(tr, a, b);
@@ -7603,6 +7869,20 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
     tr->tick++;
     if (tr->prof_clock)
         pt0 = tr->prof_clock();
+
+    /* WHO STOOD STILL. A third of the fleet is waiting at a light or in a
+     * queue at any moment, and everything below that is a pure function of
+     * the pose - which squares the body covers, whether it is on a booked
+     * one - gives the same answer as last tick for such a car. The snapshot
+     * is taken here, before anything moves, and compared here next tick. */
+    for (i = 0; i < tr->n; i++) {
+        gta_car *c = &tr->cars[i];
+        c->still = (c->x == c->st_x && c->y == c->st_y &&
+                    c->face == c->st_face);
+        c->st_x = c->x; c->st_y = c->y; c->st_face = c->face;
+        if (c->still && !c->done)
+            tr->stat_still++;
+    }
 
     cop_dispatch(tr, m);
     roadblock_tick(tr, m);
@@ -7679,7 +7959,13 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
             }
         if (!o || o->done || o->layer != (int)tr->claim_z[i]) {
             tr->claim_ttl[i] = 0;       /* owner gone - give it back */
-        } else if (car_on_block(tr, o, tr->claim_x[i], tr->claim_y[i])) {
+        } else if (o->still && tr->claim_on_ser[i] == o->serial
+                   ? tr->claim_on[i]
+                   : (tr->claim_on_ser[i] = o->serial,
+                      tr->claim_on[i] = (unsigned char)
+                          car_on_block(tr, o, tr->claim_x[i], tr->claim_y[i]))) {
+            /* the oriented-box test is a function of the pose and the
+             * square; a car that stood still gets last tick's answer */
             tr->claim_seen[i] = 1;      /* the body is on it */
         } else if (tr->claim_seen[i]) {
             tr->claim_ttl[i] = 0;       /* covered it, left it - free */
@@ -7758,6 +8044,93 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
             tr->cars[i].ram_cool--;
         if (tr->cars[i].hit_latch)
             tr->cars[i].hit_latch--;
+
+        /* HALF RATE OUT OF VIEW - see opt_halfrate in gta_traffic.h. The
+         * box is the screen plus a margin, so a car crosses back to full
+         * rate before it can be seen; the serial's parity spreads the far
+         * cars evenly over the two ticks. */
+        if (tr->opt_halfrate && !tr->cars[i].done &&
+            !tr->cars[i].cop && !tr->cars[i].mission &&
+            ((tr->tick ^ tr->cars[i].serial) & 3UL)) {
+            /* The screen is 320x200: five blocks either side, three above
+             * and below. A square box of the half-WIDTH plus the margin
+             * kept sixteen rows at full rate for a screen six tall, and the
+             * first measurement showed it - three car-ticks skipped a tick
+             * out of a possible ten. The box has the screen's own shape.
+             *
+             * AND QUARTER RATE BEYOND TWICE THAT BOX (PERF.md 7, step 6):
+             * a car two screens out drives on one tick in four. The two
+             * low bits of tick^serial say which: inside the double box the
+             * car drives when bit 0 is clear (alternate ticks, as before);
+             * outside it only when both bits are clear. */
+            int rx = tr->view_blocks + GTA_HALFRATE_MARGIN;
+            int ry = (tr->view_blocks * 5) / 8 + GTA_HALFRATE_MARGIN;
+            int dx = (int)(px >> (FP + 5)) - tr->cam_bx;
+            int dy = (int)(py >> (FP + 5)) - tr->cam_by;
+            int far2 = dx > 2 * rx || dx < -2 * rx || dy > 2 * ry || dy < -2 * ry;
+            if (far2 || (((tr->tick ^ tr->cars[i].serial) & 1UL) &&
+                         (dx > rx || dx < -rx || dy > ry || dy < -ry))) {
+                tr->stat_halfrate++;
+                /* Still counted, or the "N/M moving" line and the flow
+                 * battery would read a resting tick as a jam. */
+                if (tr->cars[i].speed > 0) tr->stat_moving++;
+                else                       tr->stat_stopped++;
+                continue;
+            }
+        }
+
+        /* COASTING - see opt_cruise. The step is drive_one's own last
+         * lines, nothing else; a knock or the abandon flag hands the car
+         * back to the full rules at once. Mode 2: every ordinary car that
+         * is not in a manoeuvre coasts on alternate ticks, on screen or
+         * off - the same parity as the half-rate rule, so a far car is
+         * skipped on that tick and driven on the other, as before. */
+        if (tr->opt_cruise >= 2 && !tr->cars[i].done &&
+            !tr->cars[i].cop && !tr->cars[i].mission &&
+            tr->cars[i].knock == 0 && !tr->cars[i].abandoned &&
+            tr->cars[i].cruise == 0 &&
+            ((tr->tick ^ tr->cars[i].serial) & 1UL) &&
+            tr->cars[i].lane_set && tr->cars[i].turn == 0 &&
+            !tr->cars[i].crossing && tr->cars[i].swap == 0 &&
+            tr->cars[i].recover == 0 && tr->cars[i].lane_fix == 0 &&
+            tr->cars[i].reverse == 0 &&
+            !gta_nav_sloped(gta_nav_at_f(g_nav,
+                                         (int)(px >> (FP + 5)),
+                                         (int)(py >> (FP + 5)),
+                                         tr->cars[i].layer))) {
+            if (tr->cars[i].speed > 0) {
+                tr->cars[i].cruise = 1;     /* one coasting step, below */
+            } else {
+                /* standing: nothing to integrate; the patience counter
+                 * keeps its 50 Hz meaning */
+                tr->cars[i].wait++;
+                tr->stat_stopped++;
+                tr->stat_cruise++;
+                continue;
+            }
+        }
+        if (tr->cars[i].cruise > 0 && !tr->cars[i].done &&
+            tr->cars[i].knock == 0 && !tr->cars[i].abandoned) {
+            gta_car *c = &tr->cars[i];
+            long ddx =  ((long)gta_sin(c->face) * (c->speed >> 4)) >> 10;
+            long ddy = -((long)gta_cos(c->face) * (c->speed >> 4)) >> 10;
+            c->cruise--;
+            tr->stat_cruise++;
+            if (!tr->opt_nooverlap ||
+                !car_free_at(tr, i, c->x, c->y, c->face) ||
+                car_free_at(tr, i, c->x + ddx, c->y + ddy, c->face)) {
+                c->x += ddx;
+                c->y += ddy;
+            } else {
+                tr->stat_blocked_move++;
+                c->wait++;
+                c->cruise = 0;
+                if (c->hold == GTA_HOLD_NONE) c->hold = GTA_HOLD_GAP;
+            }
+            tr->stat_moving++;
+            continue;
+        }
+        if (tr->cars[i].cruise) tr->cars[i].cruise = 0;
 
         drive_one(tr, m, i);
         {
@@ -8584,6 +8957,7 @@ static int car_place(gta_traffic *tr, int model, long x, long y, int face,
     c->dmg_bits = 0;
     c->fuse = 0;
     c->abandoned = 1;
+    c->driver = 0;
     c->done = 0;
     c->serial = ++tr->next_serial;
     /* AND EVERYTHING A DRIVER WOULD NEED, so the car is a whole car and
@@ -8626,6 +9000,19 @@ static int car_place(gta_traffic *tr, int model, long x, long y, int face,
     c->lane_target = GTA_LANE_TARGET;
     c->hold = GTA_HOLD_NONE;
     return slot;
+}
+
+int gta_traffic_set_driver(gta_traffic *tr, unsigned long serial, int on)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial) {
+            tr->cars[i].driver = (unsigned char)(on ? 1 : 0);
+            return 1;
+        }
+    return 0;
 }
 
 unsigned long gta_traffic_abandon(gta_traffic *tr, int model, long x, long y,
@@ -8925,6 +9312,70 @@ void gta_traffic_police_report(const gta_traffic *tr)
                c->speed >> 8, c->hold, c->path_i, c->path_n,
                c->cop_dest_x, c->cop_dest_y, ddx > ddy ? ddx : ddy,
                c->knock, c->turn, c->swap, c->wait, c->why_box, c->reverse, c->crossing);
+        /* WHAT IT IS QUEUED BEHIND, when it is standing: every car within
+         * fifteen blocks ahead of its nose, on its layer (209 - a chasing car
+         * sat twenty seconds ten blocks from a man on foot). */
+        if (c->speed == 0) {
+            int j;
+            long fx = gta_sin(c->face), fy = -gta_cos(c->face);   /* Q14 */
+            printf("gta:     standing: top %ld accel %ld cop %d cop_wait %d"
+                   " uturn_cool %d abandoned %d lead_kind %d\n",
+                   (long)c->top >> 8,
+                   (long)c->accel >> 8, c->cop, c->cop_wait, c->uturn_cool,
+                   c->abandoned, (int)c->lead_kind);
+            for (j = 0; j < tr->n; j++) {
+                const gta_car *o = &tr->cars[j];
+                long ox, oy, along, across;
+                if (j == i || o->done || o->layer != c->layer) continue;
+                ox = (o->x - c->x) >> FP;
+                oy = (o->y - c->y) >> FP;
+                along  = (ox * fx + oy * fy) >> 14;
+                across = (ox * fy - oy * fx) >> 14;
+                if (across < 0) across = -across;
+                if (along > 0 && along < 480 && across < 40)
+                    printf("gta:     ahead of it: car %d (%ld,%ld) at %ld px, %ld across,"
+                           " model %d speed %ld hold %d wait %d%s%s%s\n", j,
+                           o->x >> (FP + 5), o->y >> (FP + 5), along,
+                           across, o->model, o->speed >> 8, o->hold, o->wait,
+                           o->abandoned ? " ABANDONED" : "",
+                           o->cop ? " cop" : "", o->wrecked ? " wreck" : "");
+            }
+        }
+    }
+    /* AND THE HEAD OF ANY JAM: every car that has stood more than twenty
+     * seconds, with the nearest car ahead of it (209 - a chase car queued
+     * behind four cars, the first of which had stood 35 s). */
+    for (i = 0; i < tr->n; i++) {
+        const gta_car *c = &tr->cars[i];
+        long fx, fy, best = 0;
+        int j, bj = -1;
+        if (c->done || c->abandoned || c->speed != 0 || c->wait < 1000)
+            continue;
+        fx = gta_sin(c->face); fy = -gta_cos(c->face);
+        for (j = 0; j < tr->n; j++) {
+            const gta_car *o = &tr->cars[j];
+            long ox, oy, along, across;
+            if (j == i || o->done || o->layer != c->layer) continue;
+            ox = (o->x - c->x) >> FP;
+            oy = (o->y - c->y) >> FP;
+            along  = (ox * fx + oy * fy) >> 14;
+            across = (ox * fy - oy * fx) >> 14;
+            if (across < 0) across = -across;
+            if (along > 0 && along < 160 && across < 40 &&
+                (bj < 0 || along < best)) { bj = j; best = along; }
+        }
+        printf("gta:   STOOD car %d (%ld,%ld) face %d hold %d wait %d",
+               i, c->x >> (FP + 5), c->y >> (FP + 5), c->face, c->hold,
+               c->wait);
+        if (bj >= 0) {
+            const gta_car *o = &tr->cars[bj];
+            printf(" - ahead car %d (%ld,%ld) at %ld px, speed %ld hold %d%s%s",
+                   bj, o->x >> (FP + 5), o->y >> (FP + 5), best,
+                   o->speed >> 8, o->hold,
+                   o->abandoned ? " ABANDONED" : "",
+                   o->driver ? " (driver in)" : "");
+        }
+        printf("\n");
     }
     fflush(stdout);
 }
@@ -9246,7 +9697,7 @@ int gta_traffic_grab_car(gta_traffic *tr, long x, long y, int layer,
      * of it; a moving one does, and that is the carjacking. */
     *remap = tr->cars[bi].remap;
     *damage = tr->cars[bi].damage;
-    *had_driver = !tr->cars[bi].abandoned;
+    *had_driver = !tr->cars[bi].abandoned || tr->cars[bi].driver;
     /* Out of the fleet: the tick compacts it and the release sweep frees
      * every square it held - the same path a despawn takes. */
     tr->last_grab_cop = tr->cars[bi].cop;
@@ -9264,6 +9715,20 @@ unsigned long gta_traffic_last_grab_serial(const gta_traffic *tr)
 int gta_traffic_last_grab_mission(const gta_traffic *tr)
 {
     return tr->last_grab_mission;
+}
+
+int gta_traffic_remove_car(gta_traffic *tr, unsigned long serial)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial && !tr->cars[i].done) {
+            tr->cars[i].mission = 0;
+            tr->cars[i].done = 1;       /* the retire sweep takes it this tick */
+            return 1;
+        }
+    return 0;
 }
 
 int gta_traffic_set_mission(gta_traffic *tr, unsigned long serial, int on)
@@ -9394,6 +9859,34 @@ void gta_traffic_cops_give_up(gta_traffic *tr)
         c->abandoned = 1;
         c->speed = 0;
     }
+}
+
+/* THE CHASE IS OVER - the original's the original's routine -> the original's routine when the
+ * wanted level is gone (the hospital, the arrest, DROP_WANTED_LEVEL): every
+ * pursuer goes back to its route at once (state 4), a car whose cop is out
+ * waits for him and goes too, and the roadblocks come down. The port's used
+ * to let the wanted level fall and release its chase cars one a tick while
+ * the ones still chasing let their cops out again - out of the hospital and
+ * straight into the arms of the police (developer, 2026-09-25). The foot
+ * cops are the peds' (gta_peds_clear_cops). */
+void gta_traffic_police_reset(gta_traffic *tr)
+{
+    int i, n = 0;
+    for (i = 0; i < tr->n; i++) {
+        gta_car *c = &tr->cars[i];
+        if (c->done || (c->cop != 2 && c->cop != 3)) continue;
+        c->cop = 1;
+        c->cop_wait = 0;
+        c->hold = GTA_HOLD_NONE;
+        c->top = cop_top(tr, c, 0);
+        c->want_route = 1;
+        n++;
+    }
+    roadblock_clear(tr, 1);
+    tr->cop_out_req = 0;
+    tr->wanted = 0;
+    printf("gta: police - the chase is over: %d cars back on patrol\n", n);
+    fflush(stdout);
 }
 
 void gta_traffic_draw(gta_traffic *tr, gta_view *v)

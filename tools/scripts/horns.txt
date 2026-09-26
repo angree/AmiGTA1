@@ -1,0 +1,6 @@
+# THE AI CARS' HORNS AND YELLS (213): a minute at the start, where the
+# junction beside the player jams (210) and cars come up on the queue too
+# fast. Pass: one of 58..63 (the horn samples, 0x3a + horn / 10) in the
+# report's "asked for" line, and in time a voice line 30..50 (the yell).
+wait 3000
+dump

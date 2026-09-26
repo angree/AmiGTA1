@@ -1235,6 +1235,35 @@ static int slope_eighths(const gta_view *v, long wx, long wy, int grid)
     return e0 + ((e1 - e0) * f) / (TILE - 1);
 }
 
+/* The same number the sprite path uses for its height, exported so the game
+ * can log it. It is the only way to see the RAMP PULSE the developer
+ * reported: the fault is in the sequence of these values over a few seconds,
+ * and no single frame can show a sequence. */
+/* Resize the sprite just added, as a percentage. */
+void gta_render_sprite_scale(gta_view *v, int percent)
+{
+    if (v->n_sprites > 0)
+        v->sprites[v->n_sprites - 1].scale = percent > 0 ? percent : 100;
+}
+
+int gta_render_sub_at(const gta_view *v, long wx, long wy, int grid)
+{
+    return slope_eighths(v, wx, wy, grid);
+}
+
+/* And the raw slope type of the block under a point, for the same log: it
+ * says how the ramp is BUILT, which is what decides whether consecutive
+ * blocks continue each other or start again from zero. */
+int gta_render_slope_at(const gta_view *v, long wx, long wy, int grid)
+{
+    gta_block b;
+    if (!v->map || grid < 0 || grid >= GTA_MAP_LAYERS)
+        return -1;
+    if (!gta_map_block(v->map, (int)(wx >> 21), (int)(wy >> 21), grid, &b))
+        return -1;
+    return gta_block_slope(&b);
+}
+
 int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
                             int index, int angle, int remap)
 {
@@ -1247,6 +1276,7 @@ int gta_render_add_sprite_r(gta_view *v, long wx, long wy, int layer, int grid,
     sp->remap = remap;
     sp->delta = -1;
     sp->delta_mask = 0;
+    sp->scale = 100;
     sp->wx = wx;
     sp->wy = wy;
     sp->layer = layer;
@@ -1446,6 +1476,14 @@ void gta_render_sprite(gta_view *v, const gta_sprite_req *sp)
         cy = (int)((oy + blocks_to_px(dyb, sstepy)) >> FP);
         sstepx >>= 6;                     /* 16.16 screen px per src px */
         sstepy >>= 6;
+        /* AND THE SPRITE'S OWN SIZE, applied HERE and not a line earlier:
+         * above this point sstepx is what turns a distance in blocks into a
+         * distance on screen, and scaling that would move the sprite as well
+         * as grow it. Below it, it is only the art's own size. */
+        if (sp->scale > 0 && sp->scale != 100) {
+            sstepx = sstepx * sp->scale / 100;
+            sstepy = sstepy * sp->scale / 100;
+        }
     }
 
     /* TWO SCALES, NOT ONE. The 5/6 squash is a property of the screen, so it

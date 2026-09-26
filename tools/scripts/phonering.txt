@@ -1,0 +1,9 @@
+# THE PHONE RINGING (204): inside the MPHONES trigger at (124,136) radius 3,
+# three blocks from phone 68 (threejobs.txt answers it
+# at (122,136)) - close enough for the MPHONES trigger to ring the phones,
+# not on the phone, so nobody answers. Pass: 28 in the report's "asked for"
+# line, about once per 2.1 s while it rings.
+wait 500
+goto 125 138
+wait 600
+dump

@@ -1,0 +1,13 @@
+# THE RECORD-17 CAR, ON ITS OWN (PROGRESS 191): parked on the plain road at
+# (62,60), got into, left standing, then driven. `gta: CAR JUMP` in the log
+# means the car's own state was overwritten - seen on the crane bay (190).
+wait 500
+goto 62 60
+wait 20
+park 17 0 -40 0
+wait 10
+enter
+wait 150
+run 100 1 0 0 0
+enter
+wait 60

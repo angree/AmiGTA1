@@ -1,0 +1,11 @@
+# THE COP'S UNIFORM (215): the second ped sprite set, blue with the cap. As
+# copshout.txt, filmed right after the cop gets out beside the player.
+wait 500
+script 350
+wait 900
+goto 114 114
+wait 50
+film 1
+wait 30
+film 1
+wait 10

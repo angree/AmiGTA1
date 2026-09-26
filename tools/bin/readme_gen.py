@@ -55,13 +55,24 @@ minute or two on an 020. Afterwards this drawer needs only:
 style001.gry is not read by the game and can be deleted once the tiles are
 made.
 
+SOUND, if you want it - two more things from your own copy:
+
+    audio/level001.sdt  \  the effects. Convert them once, on the Amiga:
+    audio/level001.raw  /  gtabake -sfx GTADATA/audio/level001 \\
+                                         GTADATA/level001.snd
+
+    Music/Track1.wav ...   the soundtrack from the 2002 Windows release.
+                           Put the WAVs in a Music drawer INSIDE this one
+                           and the game converts them itself the first
+                           time it starts, showing a progress bar.
+
 No game data is shipped with AmiGTA and none is derived from it - you supply
 your own, exactly as with OpenXcom or OpenTTD.
 
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.4.0
+TEXT = """AmiGTA v0.5.0
 A native AmigaOS 68k port of Grand Theft Auto (1997)
 
 ===========================================================================
@@ -93,12 +104,19 @@ WHAT IS IN THIS ARCHIVE
 
   gtabake       The converter. Runs ON THE AMIGA. It reads the game's own
                 style001.gry and writes the tile set the engine loads, and
-                with -sfx it converts the sound bank too - see WHAT IS NOT
-                IN v0.4.0 for why you do not need that yet.
+                with -sfx it converts the sound effects - see SOUND below.
+
+  gtaiff        The music extractor, also ON THE AMIGA. It turns one WAV
+                of the soundtrack into an IFF 8SVX the game streams. You
+                do not normally need it: the game does the same thing by
+                itself the first time it starts, with a progress bar. It
+                is here for converting one track at a time, and for
+                looking at what came out (gtaiff -info file.8svx).
 
   run           Startup script. Sets the stack and starts the game.
 
-All three have their own Workbench icon.
+The game, the settings editor and the converter have their own Workbench
+icons.
 
 ===========================================================================
 WHAT YOU NEED
@@ -255,7 +273,8 @@ CONTROLS
     - / =           zoom out / in
     SPACE           on foot with no car ahead: write the framebuffer to
                     frame.raw, beside the game
-    ESC             quit
+    ESC             pause and ask QUIT GAME? - Y or Return quits,
+                    N or ESC plays on
 
 ===========================================================================
 SETTINGS
@@ -271,10 +290,12 @@ It opens a small window on Workbench with three choices:
               mixes in software. Auto picks Paula where a real chipset
               exists and AHI where one does not.
 
-              NOTHING PLAYS YET. v0.4.0 has no sound at all; the setting
-              is read and reported in gta.log and nothing more. It is here
-              because the choice has to be settled before the sound layer
-              is written, not after.
+              PAULA WORKS. AHI DOES NOT YET - choosing it (or Auto on a
+              machine with no real chipset) gets you silence rather than
+              something half-written pretending to be sound support. The
+              setting has always been here because the choice had to be
+              settled before the sound layer was written; the Paula half
+              of it is what v0.5.0 delivers.
 
   Graphics    Auto, AGA, RTG or Window.
               Auto opens an AGA screen. Window runs the game inside a
@@ -370,6 +391,27 @@ NEW SINCE v0.1.0
     knocked off, not pulled out.
 
 ===========================================================================
+NEW IN v0.5.0
+===========================================================================
+
+  IT MAKES A NOISE. Gunshots, explosions, doors, pickups and the police
+  come out of the game's own sound bank through the Amiga's four Paula
+  channels - the effects on two of them, music on the other two, with a
+  small Chip RAM cache so a sound is copied down once and played from
+  then on. See SOUND below for the one conversion it needs.
+
+  A CAR RADIO. Get in and a station plays; get out and it stops; get in
+  again and it is the next station. A POLICE CAR carries the police band
+  instead, the way the original does - an ordinary saloon never does.
+
+  AND THE FIRST TIME YOU START IT, IT EXTRACTS THE MUSIC ITSELF. Put the
+  soundtrack WAVs where SOUND says and the first launch converts them,
+  with a progress bar, before the title screen appears - once, on your
+  own machine, out of your own files. Every launch after that finds them
+  already converted. ESC abandons it and the next start picks up where
+  you left off.
+
+===========================================================================
 NEW IN v0.4.0
 ===========================================================================
 
@@ -390,9 +432,17 @@ NEW IN v0.4.0
   device at the top left, and MISSION COMPLETE across the middle. The
   score has the multiplier under it.
 
-  A TITLE SCREEN, with the logo animating and START GAME / QUIT. It
-  needs one extra conversion - see SETTING IT UP - and the game runs
-  without it if you skip that.
+  A TITLE SCREEN, with the logo animating and START GAME / AMIGA
+  OPTIONS / QUIT. It needs one extra conversion - see SETTING IT UP -
+  and the game runs without it if you skip that.
+
+  AMIGA OPTIONS: CARS, the most traffic the city will have, 6 to 50 in
+  steps of 4 (Left/Right or Return to change it; 18 to begin with). The
+  traffic is most of the CPU on a slow Amiga, so this is the setting
+  that buys frame rate there. Parked cars and wrecks do not count.
+
+  A CAR IS SOLID. On foot you cannot walk through one any more - run at
+  it and press SPACE to jump over a low car or slide under a tall one.
 
   A CAR CAN JUMP. A ramp with a hole after it is a jump, and the arc is
   the original's.
@@ -401,23 +451,65 @@ NEW IN v0.4.0
   police lose interest in it.
 
 ===========================================================================
-WHAT IS NOT IN v0.4.0
+SOUND
 ===========================================================================
 
-  * Missions past the second. The script's whole vocabulary is not
+Both halves are optional and both come out of files you already own.
+
+THE EFFECTS. One conversion, once, on the Amiga:
+
+    gtabake -sfx GTADATA/audio/level001 GTADATA/level001.snd
+
+level001 is Liberty City; it needs audio/level001.sdt and
+audio/level001.raw from your PC copy, about 1 MB. Without level001.snd
+the game is simply quiet and nothing else changes.
+
+THE MUSIC. Copy the soundtrack WAVs from the 2002 Windows release into
+
+    GTADATA/Music/Track1.wav ... Track10.wav
+
+and start the game. It converts them itself, with a progress bar, into
+signed 8-bit mono at 22050 Hz - which is what the Amiga's sound hardware
+reads directly. This takes a while the first time (they are large files)
+and never happens again.
+
+THE TRACKS ARE NOT ALL RADIO STATIONS, and the game sorts them out:
+
+    Track1  -> title.8svx    the title screen
+    Track2  -> radio1.8svx   \
+    Track3  -> radio2.8svx    |
+    Track4  -> radio3.8svx    > the car radio, next station each time
+    Track5  -> radio4.8svx    |  you get in
+    Track6  -> radio5.8svx    |
+    Track7  -> radio6.8svx   /
+    Track9  -> police.8svx   the police band - IN A POLICE CAR ONLY
+
+Track8 is not in the release and Track10 is not used. Convert fewer if
+you want less disk: any file that is not there is simply skipped.
+
+You can convert them yourself instead, one at a time:
+
+    gtaiff GTADATA/Music/Track2.wav GTADATA/radio1.8svx
+    gtaiff -scan GTADATA/                 (what a first run would do)
+
+WHERE THE DISK GOES. The converted tracks are about four times smaller
+than the WAVs they came from, but they are still roughly 1.3 MB a
+minute. You do not have to convert all of them.
+
+===========================================================================
+WHAT IS NOT IN v0.5.0
+===========================================================================
+
+  * Missions past the third. The script's whole vocabulary is not
     written yet - what the game reaches next is in its own log.
   * The police cars have no siren, and the cop has no firing pose.
   * Tyre marks, blood and oil are not drawn.
   * Only Liberty City. The startup path is fixed to nyc.cmp.
-  * Sound is not wired up yet. The DATA side is done - gtabake can
-    already convert GTA's own sound bank, and the game loads it and
-    reports what is in it - but nothing plays. There is no point
-    converting it until something does:
-
-        gtabake -sfx GTADATA/audio/level001 GTADATA/level001.snd
-
-    (level001 is Liberty City. You would need audio/level001.sdt and
-    audio/level001.raw from your PC copy, about 1 MB.)
+  * AHI. The Sound setting offers it and choosing it gets you silence:
+    only the Paula path is written.
+  * There is no engine note. The original does not have one either -
+    its own code has nothing that holds a sound channel open - so this
+    is not a missing feature so much as a thing that was never there.
 
 ===========================================================================
 IF IT DOES NOT START

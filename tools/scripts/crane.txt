@@ -1,0 +1,35 @@
+# THE DOCK CRANE (PROGRESS 190): crane 285 stands at (13,220) and its trigger
+# 286 is block (13,218), a loading bay on the pier. Driving there is not
+# something an autodrive script does well, so the car is PUT there: he walks
+# to (13,217) (not before tick 500 - the level's opening puts him back on his
+# start block until then), a car is parked 32 px south of him, on the bay, and
+# he gets in. The trigger fires `1 SURVIVE 0 0 30 30`, `2 CRANE 285 -1 -1 286`
+# every time it re-arms; once he is sitting in the car on the bay the crane
+# takes it, he gets out, and after the lift it pays.
+#
+# `script 1509` first hangs DO_GTA 270 on the crane - "two of model 22" - so
+# the first car (model 0) gets "crane5" (not what was asked for), and the
+# second, the same model again, "duplicate_model" and half the money.
+wait 500
+script 1509
+goto 13 217
+wait 20
+park 0 0 32 0
+wait 10
+enter
+wait 150
+enter
+wait 200
+film 1
+wait 450
+goto 13 217
+wait 20
+park 0 0 32 0
+wait 10
+enter
+wait 150
+enter
+wait 200
+film 1
+wait 450
+dump

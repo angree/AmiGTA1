@@ -129,12 +129,21 @@ void gta_prefs_defaults(gta_prefs *p)
     p->screen    = GTA_SCR_AUTO;
     p->music_vol = 48;   /* music sits under the effects, as in the original */
     p->sfx_vol   = 64;   /* Paula's maximum */
+    p->cars      = GTA_CARS_DEFAULT;
 }
 
 static void clamp_vol(int *v)
 {
     if (*v < 0)  *v = 0;
     if (*v > 64) *v = 64;
+}
+
+/* Onto the menu's own ladder, 6, 10 .. 50 - a hand-edited 20 becomes 18. */
+static void clamp_cars(int *v)
+{
+    if (*v < GTA_CARS_MIN) *v = GTA_CARS_MIN;
+    if (*v > GTA_CARS_MAX) *v = GTA_CARS_MAX;
+    *v = GTA_CARS_MIN + ((*v - GTA_CARS_MIN) / GTA_CARS_STEP) * GTA_CARS_STEP;
 }
 
 /* One path from a directory prefix and a name. The prefix is used verbatim,
@@ -200,12 +209,15 @@ int gta_prefs_load(const char *dir, gta_prefs *p)
             p->music_vol = (int)strtol(val, NULL, 10);
         } else if (word_eq(key, "sfxvol")) {
             p->sfx_vol = (int)strtol(val, NULL, 10);
+        } else if (word_eq(key, "cars")) {
+            p->cars = (int)strtol(val, NULL, 10);
         }
     }
     fclose(f);
 
     clamp_vol(&p->music_vol);
     clamp_vol(&p->sfx_vol);
+    clamp_cars(&p->cars);
     return 1;
 }
 
@@ -219,6 +231,7 @@ int gta_prefs_save(const char *dir, const gta_prefs *p)
     q = *p;
     clamp_vol(&q.music_vol);
     clamp_vol(&q.sfx_vol);
+    clamp_cars(&q.cars);
     if (q.audio < 0 || q.audio >= NAUDIO) q.audio = GTA_AUDIO_AUTO;
     if (q.gfx   < 0 || q.gfx   >= NGFX)   q.gfx   = GTA_GFX_AUTO;
     if (q.screen < 0 || q.screen >= NSCREEN) q.screen = GTA_SCR_AUTO;
@@ -237,6 +250,7 @@ int gta_prefs_save(const char *dir, const gta_prefs *p)
     fprintf(f, "screen %s\n", screen_words[q.screen]);
     fprintf(f, "musicvol %d\n", q.music_vol);
     fprintf(f, "sfxvol %d\n",   q.sfx_vol);
+    fprintf(f, "cars %d\n",     q.cars);
     fclose(f);
 
     /* AND KEEP backend.txt IN STEP - see the header for why this is here and

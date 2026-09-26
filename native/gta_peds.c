@@ -2,6 +2,7 @@
  *
  * Licence: MIT (ours).
  */
+#include <stdio.h>
 #include "gta_peds.h"
 #include "gta_style.h"
 #include "gta_trig.h"
@@ -102,6 +103,12 @@ void gta_peds_set_view(gta_peds *ps, int half_w_blocks, int half_h_blocks,
 /* A fresh ped in slot i: the original's reset plus what the
  * spawner sets - walking, wander, speed 1, timer 0 so the wheel is read at
  * once. */
+/* CAN HE STEP THAT WAY? Only the hard refusals - a building, thin air,
+ * water. The pavement etiquette (a road wants pavement beyond it, a field is
+ * not walked on) is the CROWD's and is not applied to somebody the script is
+ * steering; see the head of this change. */
+static int step_free(gta_peds *ps, gta_ped *p, int ang, int dist);
+
 static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
                       int angle, int remap)
 {
@@ -116,6 +123,7 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
      * held the script's own person would come back as a pedestrian the
      * recycler would not touch and the script still believed in. */
     p->mission = 0;
+    p->hunt_pl = 0;
     p->serial = 0;
     p->mode = GTA_PED_MODE_IDLE;
     p->sub = GTA_PED_SUB_WANDER;
@@ -125,6 +133,7 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->tx = p->ty = 0;
     p->gx = p->gy = 0;
     p->stuck = 0;
+    p->dodge = 0; p->dodge_side = 1;
     p->offscreen = 0;
     p->flee_aim = 0;
     p->down = 0;
@@ -143,6 +152,16 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->execute = 0;
     p->post = 0;
     p->cross_axis_x = 0;
+}
+
+static int step_free(gta_peds *ps, gta_ped *p, int ang, int dist)
+{
+    long nx, ny;
+    int g;
+    ahead(p->x, p->y, ang, dist, &nx, &ny);
+    g = ground_at(ps, nx, ny, p->layer);
+    return g != GTA_GROUND_BUILDING && g != GTA_GROUND_AIR
+        && g != GTA_GROUND_WATER;
 }
 
 /* The traffic hint of the block under (x,y) on layer z - 1 is a light.
@@ -527,6 +546,11 @@ static int separation(gta_peds *ps, gta_ped *p)
  * Twelve peds is 66 pairs, and only the ones within six pixels do any work.
  */
 #define PED_APART_PX  5         /* nearer than this and they are pushed */
+#define PED_DODGE_TICKS 24      /* a sidestep lasts this long - see below */
+#define PED_LEAVE_TICKS 100     /* still in the same block after this long, crowded: walk away */
+#define PED_DODGE_TURN  64      /* and it is SIDEWAYS: at 45 degrees the step still had a
+                                 * half towards the other man, and relax() pushing him
+                                 * back out of it was stronger than a walk at speed 1 */
 
 static int ped_walkable(const gta_peds *ps, long x, long y, int z)
 {
@@ -573,17 +597,111 @@ static void relax(gta_peds *ps)
             if (dx == 0 && dy == 0) {
                 /* standing in each other: the slot number decides */
                 px = step; py = 0;
-            } else if (dx > 0 || (dx == 0 && dy > 0)) {
-                px = (dx > 0) ? step : 0;
-                py = (dy > 0) ? step : (dy < 0 ? -step : 0);
             } else {
-                px = (dx < 0) ? -step : 0;
-                py = (dy > 0) ? step : (dy < 0 ? -step : 0);
+                /* ALONG THE LINE BETWEEN THEM, IN PROPORTION. This used to
+                 * push by the SIGN of each axis - a full step sideways for
+                 * a man one pixel off the line - and that sideways push is
+                 * exactly what cancelled a sidestep: two men head-on, five
+                 * pixels apart along x and one along y, were pushed a step
+                 * apart in y every tick, against the dodge, and stood in
+                 * one block for 8600 ticks (the stuck logger's first catch,
+                 * `gtadump peds ... 62 60 9000 777`). */
+                long adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+                long big = adx > ady ? adx : ady;
+                px = step * dx / big;
+                py = step * dy / big;
             }
             /* pb away from pa, pa away from pb */
             ped_shove(ps, pb,  px,  py);
             ped_shove(ps, pa, -px, -py);
         }
+    }
+}
+
+/* THE STUCK LOGGER - see gta_ped.blk_x in the header. Called once a tick per
+ * live ped, after his step. "Wants to move" is speed > 0: a man standing for
+ * a rest (SUB_STAND, speed 0) is not stuck, and his ticks do not count. */
+#define PED_STUCK_TICKS  300    /* six seconds in one block, wanting out: a wanderer at
+                                 * speed 1 needs a hundred ticks a block walking straight */
+#define PED_STUCK_REPEAT  50    /* then a line a second */
+
+static void stuck_log(gta_peds *ps, gta_ped *p, int i)
+{
+    int bx = (int)(p->x >> 21), by = (int)(p->y >> 21);
+    int k, near_ = 0;
+    long ax, ay, lx, ly, rx, ry;
+    char hist[16 * 4 + 1];
+    int hp = 0;
+
+    if (!p->alive || p->corpse || p->pull >= 0 || p->down || p->fall) {
+        p->blk_ticks = 0;
+        p->blk_logged = 0;
+        p->blk_x = bx; p->blk_y = by;
+        return;
+    }
+    if (bx != p->blk_x || by != p->blk_y) {
+        if (p->blk_logged) {
+            printf("gta: pedstuck %d FREED after %d ticks in (%d,%d), now "
+                   "(%d,%d) mode %d sub %d angle %d dodge %d\n",
+                   i, p->blk_ticks, p->blk_x, p->blk_y, bx, by,
+                   p->mode, p->sub, p->angle, p->dodge);
+            ps->stat_stuck_freed++;
+        }
+        p->blk_x = bx; p->blk_y = by;
+        p->blk_ticks = 0;
+        p->blk_logged = 0;
+        return;
+    }
+    if (p->speed <= 0)
+        return;
+    p->blk_ticks++;
+    if ((p->blk_ticks & 3) == 0) {
+        p->ang_hist[p->ang_hist_i & 15] = (unsigned char)p->angle;
+        p->ang_hist_i++;
+    }
+    if (p->blk_ticks < PED_STUCK_TICKS ||
+        ((p->blk_ticks - PED_STUCK_TICKS) % PED_STUCK_REPEAT) != 0)
+        return;
+
+    for (k = 0; k < GTA_MAX_PEDS; k++) {
+        const gta_ped *o = &ps->p[k];
+        long dx, dy;
+        if (k == i || !o->alive || o->corpse || o->layer != p->layer)
+            continue;
+        dx = (o->x - p->x) >> 16; dy = (o->y - p->y) >> 16;
+        if (dx > -8 && dx < 8 && dy > -8 && dy < 8)
+            near_++;
+    }
+    ahead(p->x, p->y, p->angle, 8, &ax, &ay);
+    ahead(p->x, p->y, (p->angle - 32) & 255, 8, &lx, &ly);
+    ahead(p->x, p->y, (p->angle + 32) & 255, 8, &rx, &ry);
+    /* by hand: this file is C89 and snprintf is not (the host build warns);
+     * three digits and a space at most per angle, 16 * 4 + 1 bytes */
+    for (k = 0; k < 16; k++) {
+        int v = (int)p->ang_hist[(p->ang_hist_i + k) & 15];
+        if (v >= 100) hist[hp++] = (char)('0' + v / 100);
+        if (v >= 10)  hist[hp++] = (char)('0' + (v / 10) % 10);
+        hist[hp++] = (char)('0' + v % 10);
+        hist[hp++] = ' ';
+    }
+    hist[hp] = 0;
+
+    printf("gta: pedstuck %d at (%ld,%ld) block (%d,%d) layer %d for %d ticks | "
+           "mode %d sub %d speed %d angle %d timer %d | target (%ld,%ld) flee "
+           "(%ld,%ld) | stuck %d dodge %d side %d wobble %d cop %d | near %d | "
+           "ground here %d ahead %d left %d right %d | angles %s\n",
+           i, p->x >> 16, p->y >> 16, bx, by, p->layer, p->blk_ticks,
+           p->mode, p->sub, p->speed, p->angle, p->timer,
+           p->tx >> 16, p->ty >> 16, p->gx >> 16, p->gy >> 16,
+           p->stuck, p->dodge, p->dodge_side, p->wobble, p->cop, near_,
+           ground_at(ps, p->x, p->y, p->layer),
+           ground_at(ps, ax, ay, p->layer),
+           ground_at(ps, lx, ly, p->layer),
+           ground_at(ps, rx, ry, p->layer), hist);
+    if (!p->blk_logged) {
+        p->blk_logged = 1;
+        ps->stuck_report = 1;
+        ps->stat_stuck_reports++;
     }
 }
 
@@ -816,6 +934,71 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 }
                 corner_ahead = 0;
             } else
+            if (p->mode == GTA_PED_MODE_HUNT
+                || p->mode == GTA_PED_MODE_SENDTO) {
+                /* THE SCRIPT'S OWN PERSON WITH SOMEWHERE TO BE. The
+                 * pavement rules are the crowd's: this one walks at his
+                 * target across whatever is in the way, as the policeman
+                 * does, because the job depends on his arriving. */
+                long tx = p->tx, ty = p->ty, dx, dy, d;
+                int want;
+                if (p->hunt_pl) { tx = ps->pl_x; ty = ps->pl_y; }
+                dx = (tx - p->x) >> 16;
+                dy = (ty - p->y) >> 16;
+                if (dx < 0) dx = -dx;
+                if (dy < 0) dy = -dy;
+                d = dx > dy ? dx : dy;
+                /* STRAIGHT AT HIM IF THAT IS WALKABLE, otherwise the nearest
+                 * heading either side that is. A right angle is the most it
+                 * will take, which is what a building corner needs; anything
+                 * beyond that is a route, and a route is the nav module's
+                 * job. The side tried first alternates with `wobble` so he
+                 * does not stand between two walls swapping every tick. */
+                want = angle_to(p->x, p->y, tx, ty);
+                if (!step_free(ps, p, want, 12)) {
+                    static const int off[6] = { 32, 64, 96, -32, -64, -96 };
+                    int k, base = p->wobble < 0 ? 3 : 0;
+                    for (k = 0; k < 6; k++) {
+                        int o = off[(base + k) % 6];
+                        if (step_free(ps, p, (want + o) & 255, 12)) {
+                            want = (want + o) & 255;
+                            p->wobble = o < 0 ? -1 : 1;
+                            break;
+                        }
+                    }
+                }
+                p->angle = want;
+                if (p->mode == GTA_PED_MODE_SENDTO) {
+                    /* THERE. He stands, and WAIT_FOR_PED sees him arrive
+                     * by his position, not by a flag - which is what the
+                     * original's own check does. */
+                    p->speed = d > 8 ? (p->send_speed ? p->send_speed : 2) : 0;
+                    if (d <= 8) {
+                        p->mode = GTA_PED_MODE_MISSION;
+                        p->speed = 0;
+                        p->tx = p->ty = 0;
+                    }
+                } else {
+                    /* HE CHASES, AND HE DOES NOT SHOOT. The first version
+                     * gave him the policeman's pistol and four of them killed
+                     * the player in under three seconds. The the original
+                     * says otherwise: the call that makes AI types 0x15..0x2e
+                     * sets the role, the target and mode 3 (chase) and
+                     * assigns NO WEAPON, where the police roles that shoot -
+                     * 0x1f and 0x20 - are given `weapon 1` explicitly beside
+                     * the role. A hand-picked rate of fire for a subsystem
+                     * that had not been read is exactly the mistake this
+                     * project has a note about.
+                     *
+                     * WHAT WOULD SETTLE IT: the state machine for gang roles
+                     * 0x18, 0x1a, 0x1c, 0x1b, 0x1d, 0x1e - the police ones
+                     * are written up in the research notes and these are not.
+                     * Until then he closes and stands over you, which is
+                     * menacing and cannot be wrong by more than a punch. */
+                    p->speed = d > 96 ? 3 : (d > 20 ? 2 : 0);
+                }
+                corner_ahead = 0;
+            } else
             if (p->mode == GTA_PED_MODE_CROSS) {
                 /* AT THE LIGHTS. Standing at the kerb until the cars along
                  * his own line have the green (then the ones across his
@@ -987,9 +1170,86 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
             /* OUR SEPARATION, before the step - for the man standing
              * still as well, so a knot round somebody who has stopped for a
              * rest comes apart the same way. */
-            if (separation(ps, p) && p->speed > 1
-                && p->mode == GTA_PED_MODE_IDLE)
-                p->speed = 1;
+            {
+                int crowded = separation(ps, p);
+                if (crowded && p->speed > 1 && p->mode == GTA_PED_MODE_IDLE)
+                    p->speed = 1;
+
+                /* THE SIDESTEP IS A STATE, NOT A NUDGE (the developer,
+                 * 2026-09-09: three men walking straight into each other
+                 * for two minutes). separation()'s six-unit turn lasted
+                 * exactly one tick, because every walking mode above
+                 * re-aims the heading at its target each tick, so a man
+                 * with somewhere to go never turned at all - he walked into
+                 * the man ahead, relax() pushed them a pixel apart, and he
+                 * walked in again. Now somebody close ahead starts a dodge:
+                 * for PED_DODGE_TICKS the aim the mode chose is bent a
+                 * quarter turn to one side, and the step goes on. The
+                 * right is tried first for everybody, so a head-on pair
+                 * bend to opposite absolute sides and pass; the left only
+                 * when the right is a wall. A side that is walled while
+                 * the dodge runs simply keeps the plain aim for that tick. */
+                /* AND WHEN PASSING HAS NOT WORKED, WALK AWAY. Three wanderers
+                 * with no target each sidestepped to the right of the next
+                 * one and went round each other in one block for 1750 ticks
+                 * (the stuck logger's second catch, `gtadump peds ... 64 64
+                 * 9000 12345`). The logger's own counter is the signal: a
+                 * man who has wanted out of this block for two seconds and
+                 * is still crowded turns his back on the nearest body -
+                 * the nearest free cardinal to "away" - and keeps that
+                 * heading for the length of a dodge, at a brisk step. Only
+                 * for a man with nowhere in particular to be; one with a
+                 * target keeps trying to get past. */
+                if (crowded && p->dodge == 0 && p->speed > 0
+                    && p->pull < 0 && !p->arrest
+                    && p->blk_ticks > PED_LEAVE_TICKS
+                    && p->mode == GTA_PED_MODE_IDLE
+                    && p->tx == 0 && p->ty == 0) {
+                    int k, best = -1;
+                    long bd = 0;
+                    for (k = 0; k < GTA_MAX_PEDS; k++) {
+                        const gta_ped *o = &ps->p[k];
+                        long ddx, ddy, d;
+                        if (k == i || !o->alive || o->corpse
+                            || o->layer != p->layer)
+                            continue;
+                        ddx = (o->x - p->x) >> 16; ddy = (o->y - p->y) >> 16;
+                        d = ddx * ddx + ddy * ddy;
+                        if (best < 0 || d < bd) { best = k; bd = d; }
+                    }
+                    if (best >= 0) {
+                        static const int turn[4] = { 0, 64, -64, 128 };
+                        int away = snap_cardinal(angle_to(ps->p[best].x,
+                                        ps->p[best].y, p->x, p->y));
+                        for (k = 0; k < 4; k++)
+                            if (step_free(ps, p, (away + turn[k]) & 255, 12)) {
+                                p->angle = (away + turn[k]) & 255;
+                                p->dodge = PED_DODGE_TICKS * 2;
+                                p->dodge_side = 0;      /* no bend: the heading IS the way out */
+                                break;
+                            }
+                    }
+                }
+                if (crowded && p->dodge == 0 && p->speed > 0
+                    && p->pull < 0 && !p->arrest) {
+                    if (step_free(ps, p, (p->angle + PED_DODGE_TURN) & 255, 8)) {
+                        p->dodge = PED_DODGE_TICKS; p->dodge_side = 1;
+                    } else if (step_free(ps, p, (p->angle - PED_DODGE_TURN) & 255, 8)) {
+                        p->dodge = PED_DODGE_TICKS; p->dodge_side = -1;
+                    }
+                }
+                if (p->dodge > 0) {
+                    int a = (p->angle + PED_DODGE_TURN * p->dodge_side) & 255;
+                    p->dodge--;
+                    if (p->dodge_side != 0 && p->speed > 0
+                        && step_free(ps, p, a, 8))
+                        p->angle = a;
+                    /* out of a crowd at a brisk step, not the shuffle the
+                     * crowd rule just set: at speed 1 relax() wins */
+                    if (p->speed == 1)
+                        p->speed = 2;
+                }
+            }
 
             /* THE STEP, and what refuses it. */
             if (p->speed > 0) {
@@ -1007,10 +1267,14 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 if (there == GTA_GROUND_BUILDING || there == GTA_GROUND_AIR
                     || there == GTA_GROUND_WATER)
                     blocked = 1;
-                else if (there == GTA_GROUND_FIELD && here != GTA_GROUND_FIELD)
+                else if (there == GTA_GROUND_FIELD && here != GTA_GROUND_FIELD
+                         && !p->cop && p->mode != GTA_PED_MODE_HUNT
+                         && p->mode != GTA_PED_MODE_SENDTO)
                     blocked = 1;
                 else if (there == GTA_GROUND_ROAD && here != GTA_GROUND_ROAD
                          && p->mode != GTA_PED_MODE_FLEE && !p->cop
+                         && p->mode != GTA_PED_MODE_HUNT
+                         && p->mode != GTA_PED_MODE_SENDTO
                          && p->mode != GTA_PED_MODE_CROSS) {
                     /* the original's block-and-a-half rule: a road is
                      * stepped onto only with pavement 48 px beyond */
@@ -1022,7 +1286,8 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 if (blocked && p->mode == GTA_PED_MODE_FLEE) {
                     /* a wall in the flee: turn 90 and keep running */
                     p->angle = (p->angle + 64) & 255;
-                } else if (blocked && p->cop) {
+                } else if (blocked && (p->cop || p->mode == GTA_PED_MODE_HUNT
+                                       || p->mode == GTA_PED_MODE_SENDTO)) {
                     /* Round the obstacle, and try the other way next. */
                     p->angle = (p->angle + (p->stuck & 1 ? 48 : -48)) & 255;
                     p->stuck++;
@@ -1057,6 +1322,8 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 }
             }
         }
+
+        stuck_log(ps, p, i);
 
         /* THE CADENCE: the run cycle from speed 3, the original's rule. */
         if (p->speed > 0
@@ -1170,6 +1437,14 @@ void gta_peds_draw(gta_peds *ps, gta_view *v)
               + p->frame;
         if (f >= ps->ped_count)
             f = 0;
+        /* A POLICEMAN IS ANOTHER SET OF SPRITES, not another colour: the
+         * original picks `frame + ped+0x15 * 0xbd` (the original's routine), and a cop
+         * has +0x15 = 1 with remap 0 - the uniform and the cap are drawn in
+         * the second set, 189 sprites on, not painted over the first. He
+         * used to be the first set with remap 0, which is the player's own
+         * yellow shirt (developer, 2026-09-25). */
+        if (p->cop && f + GTA_PED_COP_SET < ps->ped_count)
+            f += GTA_PED_COP_SET;
         gta_render_add_sprite_r(v, p->x, p->y, p->layer, p->layer,
                               ps->ped_base + f,
                               (p->angle + GTA_SPRITE_ART_SOUTH) & 255,
@@ -1285,16 +1560,24 @@ int gta_peds_punch(gta_peds *ps, long x, long y, int angle, int layer)
 void gta_peds_panic(gta_peds *ps, long x, long y, int layer)
 {
     int i;
+    ps->panic_n = 0;
     for (i = 0; i < GTA_MAX_PEDS; i++) {
         gta_ped *p = &ps->p[i];
         long dx, dy;
         if (!p->alive || p->corpse || p->pull >= 0 || p->shot || p->fall
             || p->down || p->layer != layer || p->speed >= 4)
             continue;
+        /* WHO HEARS IT: the original's routine walks the original's routine's list, every ped
+         * in the two-block cell of the point and the eight around it, with
+         * no distance test of its own - so a shot frightens everybody two
+         * to four blocks away, not the one block this used to take (208).
+         * The port's block is 32 px, 1 << 21 in 16.16; a cell is two. */
+        dx = (p->x >> 22) - (x >> 22);
+        dy = (p->y >> 22) - (y >> 22);
+        if (dx > 1 || dx < -1 || dy > 1 || dy < -1)
+            continue;
         dx = (p->x - x) >> 16;
         dy = (p->y - y) >> 16;
-        if (dx > 32 || dx < -32 || dy > 32 || dy < -32)
-            continue;
         /* mode 1, the threat is the shooter: run straight away from him,
          * re-aimed every fifth frame like the road flee, for at least
          * GTA_PANIC_TICKS before the pavement rule may end it */
@@ -1308,6 +1591,8 @@ void gta_peds_panic(gta_peds *ps, long x, long y, int layer)
             p->angle = angle_to(x, y, p->x, p->y);
         else
             p->angle = (int)(rng_next(ps) & 255);
+        if (ps->panic_n < GTA_PANIC_LIST)
+            ps->panic_idx[ps->panic_n++] = i;
     }
 }
 
@@ -1386,6 +1671,67 @@ int gta_peds_find(const gta_peds *ps, unsigned long serial,
     return 0;
 }
 
+int gta_peds_mission_ai(gta_peds *ps, unsigned long serial, int mode,
+                        long tx, long ty, int on_player)
+{
+    int i;
+    if (!serial)
+        return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        gta_ped *p = &ps->p[i];
+        if (p->serial != serial || !p->alive || p->corpse)
+            continue;
+        p->mode = mode;
+        p->tx = tx;
+        p->ty = ty;
+        p->hunt_pl = (unsigned char)(on_player ? 1 : 0);
+        p->timer = 0;
+        p->stuck = 0;
+        if (mode == GTA_PED_MODE_MISSION)
+            p->speed = 0;
+        return 1;
+    }
+    return 0;
+}
+
+int gta_peds_set_speed(gta_peds *ps, unsigned long serial, int speed)
+{
+    int i;
+    if (!serial || speed < 0)
+        return 0;
+    if (speed > 4) speed = 4;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].serial == serial && ps->p[i].alive) {
+            ps->p[i].send_speed = (unsigned char)speed;
+            return 1;
+        }
+    return 0;
+}
+
+int gta_peds_set_remap(gta_peds *ps, unsigned long serial, int remap)
+{
+    int i;
+    if (!serial || remap < 0)
+        return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].serial == serial && ps->p[i].alive) {
+            ps->p[i].remap = remap;
+            return 1;
+        }
+    return 0;
+}
+
+int gta_peds_at(const gta_peds *ps, unsigned long serial, long x, long y,
+                int tol_px)
+{
+    long px_, py_, dx, dy;
+    if (!gta_peds_find(ps, serial, &px_, &py_, 0, 0))
+        return 0;
+    dx = px_ - x; if (dx < 0) dx = -dx;
+    dy = py_ - y; if (dy < 0) dy = -dy;
+    return dx <= ((long)tol_px << 16) && dy <= ((long)tol_px << 16);
+}
+
 int gta_peds_take_mission(gta_peds *ps, unsigned long serial)
 {
     int i;
@@ -1450,7 +1796,7 @@ int gta_peds_cop_shot(gta_peds *ps, long *x, long *y, int *layer, int *angle)
     int i;
     for (i = 0; i < GTA_MAX_PEDS; i++) {
         gta_ped *p = &ps->p[i];
-        if (!p->alive || p->corpse || !p->cop || !p->shoot_req) continue;
+        if (!p->alive || p->corpse || !p->shoot_req) continue;
         p->shoot_req = 0;
         *x = p->x; *y = p->y; *layer = p->layer; *angle = p->shoot_angle;
         return i;
