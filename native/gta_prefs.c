@@ -109,10 +109,27 @@ void gta_prefs_screen_size(int screen, int gfx, int *w, int *h, int *scale2x)
     case GTA_SCR_640480:   sw = 640; sh = 480; break;
     case GTA_SCR_640480X2: sw = 640; sh = 480; x2 = 1; break;
     default:
+#ifdef __MORPHOS__
+        /* AUTO ON MORPHOS IS 640x480, REALLY RASTERISED.
+         *
+         * The choice below is between a 68020's options and this is not one of
+         * them. Every MorphOS display is an RTG display, so the taller screen
+         * is free here by definition - and the reason the Amiga offers a
+         * DOUBLED 640x480 at all ("a 68020 cannot rasterise four times the
+         * pixels at a playable rate") is a statement about that CPU. The
+         * slowest machine MorphOS runs on is orders of magnitude past it, so
+         * AUTO takes the real one and x2 stays 0.
+         *
+         * Still only the DEFAULT. All four sizes remain selectable with
+         * `gtaprefs SCREEN=...`, the doubled one included. */
+        sw = 640; sh = 480;
+        (void)gfx;
+#else
         /* AUTO. RTG is the only display where the taller screen is free -
          * an AGA 320x240 is a different, non-standard mode, and a window on
          * the Workbench has to fit a 640x256 PAL one. */
         if (gfx == GTA_GFX_RTG) sh = 240;
+#endif
         break;
     }
 
