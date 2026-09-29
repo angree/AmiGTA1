@@ -58,11 +58,13 @@ gtaprefs SCREEN=640x480    the size the game opens at
 gtaprefs AUDIO=AHI
 ```
 
-**On MorphOS, set Graphics to Window** (`gtaprefs GFX=WB`). The port otherwise
-opens a screen of its own, cannot get an 8-bit mode, falls back to the planar +
-c2p path that needs the real Amiga chipset, and draws the city as colour noise.
-Sound does not play yet on any machine; the setting is recorded for when it
-does.
+**On MorphOS, use the native build instead** — see [MorphOS](#morphos). If you
+do run these 68k binaries there under emulation, set Graphics to Window
+(`gtaprefs GFX=WB`): they otherwise open a screen of their own, cannot get an
+8-bit mode, fall back to the planar + c2p path that needs the real Amiga
+chipset, and draw the city as colour noise.
+
+Sound does not play on the Amiga yet; the setting is recorded for when it does.
 
 You need a 68020 or better (no FPU is required and none is used), about 8 MB of
 fast RAM, and your own copy of GTA (1997) for the PC. The DOS 8-bit release is
@@ -167,10 +169,71 @@ an optimisation but a hazard: Kickstart 3.1's `mathieeesingbas.library` has
 broken single-precision multiply and divide entries on FPU-less machines, and
 68040/68060 FPUs are partly trap-emulated anyway.
 
+## MorphOS
+
+There is a native PowerPC build for **MorphOS**. It is not the 68k binary under
+emulation — that does not work, and the reason decided the shape of the port:
+the RTG path asks CyberGraphX for an 8-bit screen and *falls back to AGA* when
+there is none, and modern MorphOS hardware frequently offers no 8-bit chunky
+mode at all. The fallback then allocates bitplanes and runs Kalms' 68020
+chunky-to-planar against a chipset that is not there.
+
+```sh
+tools/bin/build_morphos.sh                      # AmiGTA-morphos + the three tools
+make -f makefile.morphos release ARCHIVEDIR=    # the shippable drawer, archived
+```
+
+`build_morphos.sh` sits beside `build.sh` and has the same shape — same root
+discovery, same compile helper, same written-out file list, same refusal to
+strip. `makefile.morphos` adds only the `beta` / `release` staging and
+archiving; they write into `ram:` by default, so pass `ARCHIVEDIR=` on the
+Linux cross box where that is not a path.
+
+Toolchain: `ppc-morphos-gcc-9` with the MorphOS SDK at `/gg`. Nothing else — no
+`vasm`, and **no vendored CyberGraphX headers**: `cybergraphx/` is part of the
+MorphOS SDK, so the "you must supply your own" rule below does not apply here.
+
+The whole engine is compiled from the same sources the Amiga build uses. It was
+already portable: fixed point throughout with no floating point anywhere, and
+GTA's little-endian data files read a byte at a time rather than by casting a
+struct over them, because the same code has to build for the big-endian 68k and
+for the host test harness. PowerPC is big-endian too and got that for free.
+
+What changes is the platform layer, and only that:
+
+| | |
+|---|---|
+| `native/morphos_gfx.c` | new. The RTG path natively — screen, palette, blit, input. Replaces `amiga_gfx.c`, whose other three backends are Chip RAM bitplanes and c2p. |
+| `native/morphos_audio.c` | new. The `amiga_audio.h` contract over **AHI**. Replaces `amiga_audio.c`, which does not drive an audio API — it drives Paula. |
+| `native/amiga_uclock.c` | `TimerBase` is `struct Library *` here, plus a `timer.device` sleep for the frame cap. |
+
+Everything MorphOS-specific is under `#ifdef __MORPHOS__`. `amiga_gfx.c`,
+`amiga_audio.c`, `amiga_startup.c`, `amiga_trap.c`, `fp_single.c`, `fp_conv.c`,
+`libnix_fixes.c` and the four assembler files are not built at all.
+
+Three differences you will notice:
+
+* **640x480 by default, really rasterised.** The doubled variant exists because
+  a 68020 cannot draw four times the pixels at a playable rate — a statement
+  about that CPU. All four sizes stay selectable with `gtaprefs SCREEN=...`.
+* **Sound is AHI**, using whatever output you have set up in AHI's preferences.
+  Every audio setting except OFF opens it, `PAULA` included.
+* **The frame cap sleeps** on `timer.device` instead of spinning. A G4 would
+  otherwise pin a core at 100% for fifteen of every sixteen milliseconds and
+  look hung while running perfectly.
+
+The 68k build is unaffected, and that is checked rather than asserted: with
+`__MORPHOS__` undefined, every shared file preprocesses byte-for-byte
+identically to the commit this branched from.
+
+**Not verified:** the MorphOS build has not been run on a MorphOS machine. It
+compiles clean; the AHI backend in particular has never made a sound.
+
 ## Building
 
 Toolchain: [bebbo amiga-gcc](https://github.com/bebbo/amiga-gcc) 6.5.0b, plus
-`vasm`. The build runs under WSL or any Linux.
+`vasm`. The build runs under WSL or any Linux. (For MorphOS see
+[above](#morphos).)
 
 ```sh
 tools/bin/build.sh          # the Amiga game, the settings editor, the converter

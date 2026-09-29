@@ -11,18 +11,38 @@ copy of GTA and convert it on your own machine with the bundled gtabake.
 WHAT IS IN HERE
 ---------------
 
-    AmiGTA-morphos  the game. 640x480. Named the way the Amiga builds are -
-                 gta-aga, gta-rtg240, gta-rtg480 - so the four can share a
-                 drawer and still be told apart.
+    AmiGTA-morphos  the game. The Amiga's binary is called AmiGTA; this is
+                 the same program with the one thing that differs on the
+                 end, so the two can share a drawer.
     gtabake      the data converter. You run this once, on your own copy
                  of GTA, before the game will start.
-    gtaprefs     the settings editor. It records a sound setting that
-                 nothing plays yet, and a graphics setting that this
-                 target has only one legal value for; `gtaprefs SHOW`
-                 printing what your machine actually has is the useful
-                 part.
+    gtaprefs     the settings editor - sound, screen size, graphics.
+                 `gtaprefs SHOW` prints what your machine actually has.
+    gtaiff       the music extractor.
     run          a one-line startup script that redirects the log.
-    GTADATA/     empty. Your two converted files go in here.
+    GTADATA/     empty. Your converted files go in here.
+
+
+SOUND, AND SCREEN
+-----------------
+
+Sound is AHI. The Amiga port drives Paula directly - four hardware
+channels, samples in Chip RAM - and none of that exists on a PowerPC
+machine, so this build has its own backend over AHI's low-level API and
+uses whatever output and quality you have set up in AHI's own
+preferences. Every setting in gtaprefs except OFF opens it, including
+PAULA: a drawer shared with an Amiga install will say Paula, and asking
+for sound should get you sound.
+
+**This backend has never been heard.** It was written and compiled
+without a MorphOS machine to try it on. If it is silent, or a sound
+comes out at the wrong pitch, or the music clicks between chunks, that
+is where to look first - gta.log says which of AHI's steps failed.
+
+The screen defaults to 640x480 really rasterised - twice as much city on
+screen as the Amiga's default, at the art's own size, which a PowerPC
+has the speed for and a 68020 does not. `gtaprefs SCREEN=320x240` and
+the rest are all still there.
 
 
 SETTING IT UP

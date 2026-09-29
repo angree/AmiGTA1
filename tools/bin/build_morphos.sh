@@ -144,28 +144,24 @@ compile morphos_gfx.c
 compile amiga_uclock.c
 compile amiga_watchdog.c
 
-# PAULA AUDIO, BUILT BECAUSE gta_audio.c CALLS IT - not because it works here.
+# AUDIO IS AHI HERE, NOT PAULA.
 #
-# amiga_audio.c drives audio.device directly: ADCMD_ALLOCATE over the four
-# hardware channels, sample data in Chip RAM because "Paula DMA reads nothing
-# else". There is no Paula on a PowerPC machine. MorphOS carries an
-# audio.device for compatibility, so the calls may go somewhere or may fail -
-# UNVERIFIED EITHER WAY, because this has not been run on MorphOS. It opens
-# with ADIOF_NOWAIT and fails fast rather than blocking, so the worst case is
-# silence rather than a hang.
+# amiga_audio.c is NOT built. It does not drive an audio API, it drives the
+# chipset: ADCMD_ALLOCATE over four hardware channels, sample data in Chip RAM
+# "because Paula DMA reads nothing else", and a period register counted in the
+# PAL colour clock. None of that is on a PowerPC machine. MorphOS does carry an
+# audio.device for compatibility, so linking it would have produced something
+# that might have made a noise and might have sat silent - and either way the
+# wrong thing to ship on a system whose sound API is AHI.
 #
-# It is compiled because gta_audio.c - which is portable, and is the mixer the
-# game actually talks to - references AmigaAudio_* and will not link without
-# them. The right answer eventually is an AHI backend behind the same handful
-# of entry points; gtaprefs already has the setting for it.
+# native/morphos_audio.c implements the same amiga_audio.h contract over AHI's
+# low-level API, so gta_audio.c - the portable mixer the game actually talks
+# to - is unchanged. Same arrangement as morphos_gfx.c against amiga_gfx.c.
 #
-# -O0 mirrors build.sh. NOT for build.sh's reason: that note is about bebbo's
-# GCC 6.5 miscompiling read-after-call at -O1, and GCC 9.5 does not have that
-# defect. It is because audio on this target is unverified, and matching the
-# Amiga build's optimisation level removes one variable from whoever debugs it.
-echo "  CC  amiga_audio.c (-O0, and Paula - see the note in this script)"
-$GCC -O0 -noixemul $INCS -Wall -c "$NATIVE/amiga_audio.c" -o "$OBJ/amiga_audio.o"
-OBJS="$OBJS $OBJ/amiga_audio.o"
+# -O2 like everything else. build.sh pins amiga_audio.c to -O0 because bebbo's
+# GCC 6.5 miscompiles read-after-call at -O1; that is a defect of that
+# compiler, and this is a different file on a different one.
+compile morphos_audio.c
 
 # THE BINARY IS `AmiGTA-morphos`: upstream's name, plus which machine.
 #

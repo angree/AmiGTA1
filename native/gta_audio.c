@@ -108,6 +108,7 @@ int gta_audio_open(const gta_sfx *bank, int enabled)
         fflush(stdout);
         return 0;
     }
+#ifndef __MORPHOS__
     /* AHI is not written. GTA_AUDIO_AHI is honoured by staying silent rather
      * than by quietly using Paula instead: a machine where the player picked
      * AHI is usually one where Paula is not reachable at all (MorphOS), and
@@ -117,19 +118,41 @@ int gta_audio_open(const gta_sfx *bank, int enabled)
         fflush(stdout);
         return 0;
     }
+#else
+    /* ON MORPHOS THIS IS THE OTHER WAY ROUND, and the paragraph above says why
+     * without meaning to: the machine that cannot reach Paula is this one. AHI
+     * IS written here - native/morphos_audio.c implements the whole
+     * amiga_audio.h contract over it, and amiga_audio.c is not built at all -
+     * so AHI is not a reason to stay silent, it is the only way to make a
+     * sound. Every setting except OFF therefore goes on to open it, PAULA
+     * included: a drawer shared with an Amiga install will say PAULA, and the
+     * player asking for sound should get sound rather than a lecture. */
+    if (enabled == GTA_AUDIO_PAULA)
+        printf("gta: audio - prefs say Paula; there is none on PowerPC,"
+               " using AHI\n");
+#endif
     if (!bank || bank->count <= 0 || !bank->data) {
         printf("gta: audio - no sound bank loaded; silent\n");
         fflush(stdout);
         return 0;
     }
     if (!AmigaAudio_Open()) {
+#ifdef __MORPHOS__
+        printf("gta: audio - AHI would not open; silent\n");
+#else
         printf("gta: audio - audio.device would not open; silent\n");
+#endif
         fflush(stdout);
         return 0;
     }
     au_ok = 1;
+#ifdef __MORPHOS__
+    printf("gta: audio ON - AHI, 4 channels, %d sounds, cache %ld KB\n",
+           bank->count, (long)(GTA_AUDIO_CHIP / 1024));
+#else
     printf("gta: audio ON - Paula, 4 channels, %d sounds, cache %ld KB\n",
            bank->count, (long)(GTA_AUDIO_CHIP / 1024));
+#endif
     /* The bank's own pointers and one entry, so that a play which later
      * reads nonsense out of the same table can be told apart from one that
      * never had a table: if these are sane here and garbage there, something

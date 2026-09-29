@@ -470,7 +470,13 @@ static int opt_audio_opt = -1;
  * AHI is a promise this port has not kept yet, and neither may quietly fall
  * back to Paula - a machine where AHI was chosen is usually one where Paula
  * is not reachable at all (MorphOS), and banging audio.device there is
- * reported to hang it. AUTO and PAULA open the chipset. */
+ * reported to hang it. AUTO and PAULA open the chipset.
+ *
+ * ON MORPHOS THE MAPPING IS INVERTED, and the paragraph above is the reason:
+ * the machine that cannot reach Paula is that one, so AHI is not a promise
+ * there - it is the only backend. native/morphos_audio.c implements the whole
+ * amiga_audio.h contract over it and amiga_audio.c is not built. Every
+ * setting but OFF opens AHI; see the branch in gta_audio.c. */
 static int opt_audio = GTA_AUDIO_AUTO;
 
 static gta_traffic traffic;
