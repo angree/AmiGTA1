@@ -470,7 +470,13 @@ static int opt_audio_opt = -1;
  * AHI is a promise this port has not kept yet, and neither may quietly fall
  * back to Paula - a machine where AHI was chosen is usually one where Paula
  * is not reachable at all (MorphOS), and banging audio.device there is
- * reported to hang it. AUTO and PAULA open the chipset. */
+ * reported to hang it. AUTO and PAULA open the chipset.
+ *
+ * ON MORPHOS THE MAPPING IS INVERTED, and the paragraph above is the reason:
+ * the machine that cannot reach Paula is that one, so AHI is not a promise
+ * there - it is the only backend. native/morphos_audio.c implements the whole
+ * amiga_audio.h contract over it and amiga_audio.c is not built. Every
+ * setting but OFF opens AHI; see the branch in gta_audio.c. */
 static int opt_audio = GTA_AUDIO_AUTO;
 
 static gta_traffic traffic;
@@ -4442,9 +4448,32 @@ int main(void)
         g_prefs = prefs;
         g_prefs_loaded = 1;
         opt_audio = prefs.audio;
+#ifdef __MORPHOS__
+        /* THE GRAPHICS SETTING HAS ONE LEGAL VALUE HERE, so it is read and
+         * then overruled rather than obeyed.
+         *
+         * AGA is a chipset this machine does not have, and the Workbench-window
+         * backend negotiates a shared palette through ObtainBestPen - both live
+         * in amiga_gfx.c, which the MorphOS build does not compile.
+         * native/morphos_gfx.c is the RTG path and nothing else.
+         *
+         * The setting is still worth having in the file: gtaprefs reports what
+         * the machine has, and a drawer may be shared with an Amiga install.
+         * Obeying a value that cannot be honoured would end in morphos_gfx.c
+         * logging "backend 0 requested" and opening RTG anyway - same outcome,
+         * reached confusingly.
+         *
+         * prefs.gfx is left ALONE, not rewritten, so gta_prefs_screen_size()
+         * below still sees what the player chose. */
+        if (prefs.gfx != GTA_GFX_RTG)
+            printf("gta: prefs ask for gfx %s - ignored, MorphOS has only the"
+                   " RTG path\n", gta_prefs_gfx_name(prefs.gfx));
+        backend = AMIGAGFX_BACKEND_RTG;
+#else
         if (prefs.gfx == GTA_GFX_AGA)      backend = AMIGAGFX_BACKEND_AGA;
         else if (prefs.gfx == GTA_GFX_RTG) backend = AMIGAGFX_BACKEND_RTG;
         else if (prefs.gfx == GTA_GFX_WB)  backend = AMIGAGFX_BACKEND_WB;
+#endif
         /* THE SCREEN SIZE, which used to be three separate binaries.
          *
          * Decided here, once, before anything has been opened or sized:
@@ -8823,9 +8852,27 @@ int main(void)
          * freeze here for the rest of the wrap. */
         amiga_wd_set(AMIGA_WD_PHASE_CAP);
         if (frame_cap) {
+#ifdef __MORPHOS__
+            /* MORPHOS SLEEPS THE LEFTOVER INSTEAD OF SPINNING ON IT, and the
+             * difference is not a micro-optimisation.
+             *
+             * A 68020 that has finished a frame early has no spare capacity
+             * worth donating, so the busy-wait below costs it nothing. A G4
+             * finishes a frame in a fraction of the 16 ms budget and would
+             * then burn the whole remainder pinning a core at 100% - Ambient
+             * crawls, the fans spin up, and a game that is running perfectly
+             * looks like one that has locked the machine. The wait is on
+             * timer.device, so the time goes back to the system.
+             *
+             * Same wrap-safe unsigned subtraction as below. */
+            unsigned long spent = (unsigned long)(amiga_uclock_us() - frame_t0);
+            if (spent < (unsigned long)FRAME_CAP_US)
+                amiga_uclock_sleep_us((unsigned long)FRAME_CAP_US - spent);
+#else
             while ((unsigned long)(amiga_uclock_us() - frame_t0)
                        < (unsigned long)FRAME_CAP_US)
                 ;
+#endif
         }
         frame_t0 = amiga_uclock_us();
     }
