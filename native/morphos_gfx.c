@@ -523,6 +523,18 @@ static void probe_blit_method(void)
 	tags[3].ti_Tag = LBMI_PIXFMT;      tags[3].ti_Data = (ULONG)&pixfmt;
 	tags[4].ti_Tag = TAG_DONE;         tags[4].ti_Data = 0;
 
+	/* DIRECT ACCESS NEEDS LINEAR DISPLAY MEMORY, and not every card has it.
+	 * CGX documents UnLockBitMapTagList(UBMI_UPDATERECTS) as the way to tell a
+	 * non-linear card that something was written - without which the lock
+	 * "succeeds" and nothing appears. Rather than carry that path, the lock
+	 * route is simply refused on such a card and the library route used, which
+	 * is correct everywhere and is what a non-linear card gets anyway. */
+	if (!GetCyberMapAttr(g_screen->RastPort.BitMap, CYBRMATTR_ISLINEARMEM)) {
+		amigagfx_log("blit: display memory is not linear - "
+		             "using WritePixelArray rather than a direct lock");
+		return;
+	}
+
 	handle = LockBitMapTagList((APTR)g_screen->RastPort.BitMap, tags);
 	if (handle != NULL) UnLockBitMap(handle);   /* nothing at all in between */
 
@@ -534,10 +546,15 @@ static void probe_blit_method(void)
 	    bpr < (ULONG)(g_xoff + g_vis_w)) {
 		/* THE LOCK IS THE LAST WORD ON THE DEPTH. g_depth is read back from
 		 * the opened screen, but if the lock disagrees with it the lock is
-		 * what the pixels actually are - and RECTFMT_LUT8 into anything but an
-		 * 8-bit surface is not a defined conversion. It would not fail, it
-		 * would paint garbage. WriteLUTPixelArray is correct at every depth,
-		 * so that is where a disagreement goes. */
+		 * what the pixels actually are, so that is what decides the route.
+		 *
+		 * (An earlier version of this comment claimed RECTFMT_LUT8 into a
+		 * deeper rastport "would paint garbage". That is wrong on MorphOS: the
+		 * documentation says it uses the colormap attached to the bitmap, and
+		 * for a screen bitmap that is the viewport colormap LoadRGB32 has
+		 * already filled. It is a legitimate second route and worth measuring
+		 * against WriteLUTPixelArray one day. WriteLUTPixelArray is kept for
+		 * now because it is the one the CGX drivers in the wild agree on.) */
 		if (depth > 8UL) g_blit = BLIT_WLUT;
 		fprintf(stdout, "morphos: blit: lock gave depth=%lu pixfmt=%lu bpr=%lu base=%p"
 		                " - not a usable LUT8 surface, using %s\n",
@@ -568,7 +585,16 @@ static void probe_blit_method(void)
  * not as a degraded mode, but as the mode those machines actually have. */
 static int open_the_screen(int w, int h, ULONG quiet, ULONG title)
 {
-	static const int depths[] = { 8, 32, 16, 24, 15 };
+	/* 16 BEFORE 32, and the reason is bandwidth rather than taste.
+	 *
+	 * Every frame is converted by the CPU and then pushed across the bus to
+	 * the card: at 640x480 that is 614 KB per frame at 16 bits and 1228 KB at
+	 * 32. The picture is 256 colours out of a fixed palette, so a 16-bit
+	 * screen loses nothing visible - there is no gradient in it that 5-6-5
+	 * cannot hold - and it halves the most expensive thing the display path
+	 * does. 8 is still asked for first, because there the chunky buffer IS the
+	 * display format and the conversion disappears entirely. */
+	static const int depths[] = { 8, 16, 32, 24, 15 };
 	unsigned int i;
 
 	for (i = 0; i < sizeof depths / sizeof depths[0]; i++) {
@@ -588,6 +614,21 @@ static int open_the_screen(int w, int h, ULONG quiet, ULONG title)
 		                          SA_BlockPen,  (ULONG)g_block_pen,
 		                          SA_Pens,      (ULONG)g_screen_pens,
 		                          SA_DisplayID, modeid,
+		                          /* MorphOS has a tag for hiding the pointer on
+		                           * a custom screen, which is better than the
+		                           * blank-sprite trick in two ways: the pointer
+		                           * never appears at all (the sprite is applied
+		                           * after the window exists, so it flickered
+		                           * once at startup), and nothing has to be
+		                           * allocated in Chip RAM to say "nothing".
+		                           * The sprite path stays for the runtime
+		                           * toggle, which this tag cannot do. */
+		                          SA_ShowPointer, (ULONG)FALSE,
+		                          /* A screen blanker cutting in over a game
+		                           * that is being played with a joypad, or
+		                           * watched rather than touched, is a bug the
+		                           * player blames on the game. */
+		                          SA_StopBlanker, (ULONG)TRUE,
 		                          TAG_END);
 		if (g_screen != NULL) {
 			g_depth = depths[i];
