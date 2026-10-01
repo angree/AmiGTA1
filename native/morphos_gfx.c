@@ -184,6 +184,17 @@ static int    g_dst_x, g_dst_y, g_dst_w, g_dst_h;
  * for the safe-to-draw message, so there is a way out that does not need a
  * rebuild - see the nodbuf note in dbuf_open().
  *
+ * THE OTHER DOCUMENTED WAY, recorded because it is the one a MorphOS
+ * developer recommends: "the usual method to achieve multibuffering is to use
+ * ScrollVPort() on a double height screen", with "do not allocate a custom
+ * bitmap... it may be misaligned, using the wrong format or not located in
+ * video ram". That advice is aimed at code poking a bitmap pointer into a
+ * screen's own RastPort, which the same developer calls a hack that "was never
+ * supported by RTG" - this uses AllocScreenBuffer/ChangeScreenBuffer, which is
+ * the supported API for the same thing and is what the CGX drivers use. If the
+ * flip ever misbehaves on real hardware, the double-height-screen + ScrollVPort
+ * arrangement is the first thing to try instead.
+ *
  * A DOUBLE-BUFFERED FRAME IS ALWAYS WHOLE. With two buffers a dirty rectangle
  * is not enough: what was drawn last frame went to the OTHER bitmap, so
  * anything not redrawn this frame shows the frame before last. Rather than
@@ -259,7 +270,6 @@ static UWORD  g_screen_pens[] = {
 
 static int    g_hide_pointer;
 static int    g_pointer_suspended;
-static UWORD *g_blank_sprite;
 
 /* ------------------------------------------------------------- memory ----- */
 
@@ -304,27 +314,29 @@ void AmigaMemProbe(const char *label)
 
 /* ------------------------------------------------------------- pointer ---- */
 
-/* Intuition has no "no pointer" call, so the way to hide it is SetPointer()
- * with a sprite made of zeros. The sprite data must be Chip RAM on the Amiga
- * and MorphOS keeps MEMF_CHIP meaningful for exactly this kind of call, so it
- * is allocated the same way here. One line is enough: two words of header, one
- * line by two bitplanes, two words of terminator. */
-static int pointer_have_sprite(void)
-{
-	if (g_blank_sprite != NULL) return 1;
-	g_blank_sprite = (UWORD *)AllocVec(6 * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
-	return g_blank_sprite != NULL;
-}
-
+/* HIDING THE POINTER, AND WHY THERE IS NO SPRITE HERE ANY MORE.
+ *
+ * The Amiga way is SetPointer() with a sprite made of zeros, because Intuition
+ * has no "no pointer" call. On MorphOS that is the wrong mechanism twice over.
+ * A MorphOS developer, on the subject of sprites under RTG: "Modern (har har)
+ * graphic chips only support one 'sprite' and it's used for the mouse pointer.
+ * As a matter of fact, RTG implies not using sprites at all." And MorphOS does
+ * have the call the Amiga lacks - SA_ShowPointer on a custom screen, which is
+ * passed at OpenScreen and is why the pointer never appears at all rather than
+ * appearing once and being covered up.
+ *
+ * So the sprite is gone, with its Chip RAM allocation. What is left is the
+ * flag, which the screen is opened from: the game sets this once at startup
+ * and never toggles it, so nothing is lost. Were a caller ever to toggle it
+ * mid-session, it would need the screen reopening - which is what the
+ * amigagfx_open path already does for the title bar. */
+/* The screen carries the setting; a window-level ClearPointer is still the way
+ * to put the pointer BACK, which is what the loading splash wants. */
 static void pointer_apply(void)
 {
 	if (g_window == NULL) return;
-	if (g_hide_pointer && !g_pointer_suspended) {
-		if (pointer_have_sprite())
-			SetPointer(g_window, g_blank_sprite, 1, 16, 0, 0);
-	} else {
+	if (!g_hide_pointer || g_pointer_suspended)
 		ClearPointer(g_window);
-	}
 }
 
 void amigagfx_set_hide_system_pointer(int on)
@@ -342,7 +354,6 @@ void amigagfx_pointer_suspend(int on)
 static void pointer_free(void)
 {
 	if (g_window != NULL) ClearPointer(g_window);
-	if (g_blank_sprite != NULL) { FreeVec(g_blank_sprite); g_blank_sprite = NULL; }
 }
 
 /* --------------------------------------------------------- title bar ------ */
@@ -755,7 +766,8 @@ static int open_the_screen(int w, int h, ULONG quiet, ULONG title)
 		                           * allocated in Chip RAM to say "nothing".
 		                           * The sprite path stays for the runtime
 		                           * toggle, which this tag cannot do. */
-		                          SA_ShowPointer, (ULONG)FALSE,
+		                          SA_ShowPointer,
+		                          (ULONG)(g_hide_pointer ? FALSE : TRUE),
 		                          /* A screen blanker cutting in over a game
 		                           * that is being played with a joypad, or
 		                           * watched rather than touched, is a bug the

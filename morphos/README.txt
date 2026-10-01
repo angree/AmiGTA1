@@ -34,6 +34,26 @@ preferences. Every setting in gtaprefs except OFF opens it, including
 PAULA: a drawer shared with an Amiga install will say Paula, and asking
 for sound should get you sound.
 
+FOR THE FASTEST PICTURE, DEFINE AN 8-BIT SCREEN MODE.
+
+MorphOS Preferences -> Monitors lists each resolution separately per
+colour depth - "8bit 640x480", "15/16bit 640x480", "24bit 640x480" are
+three entries, and a fresh install may have only the deeper ones. The
+game asks for 8-bit first and says in gta.log which it got:
+
+    morphos: screen 640x480x8 ... blit: direct LUT8 bitmap access
+        The best case. The buffer the game draws into IS the display
+        format, so a frame is a memory copy and nothing is converted.
+
+    morphos: screen 640x480x16 ... WriteLUTPixelArray
+        No 8-bit mode was available, so every pixel is converted on the
+        way out. The picture is identical and a PowerPC takes it in its
+        stride, but defining an 8-bit mode in Monitors is free speed.
+
+Test a mode in Monitors before relying on it: if it shows "Out Of
+Range" or "No Signal" there, the game cannot use it either.
+
+
 IF THE PICTURE NEVER APPEARS, OR THE GAME STOPS DEAD AT STARTUP:
 make an empty file called `nodbuf` beside the executable and start it
 again. The display is double buffered - two screen bitmaps, swapped
