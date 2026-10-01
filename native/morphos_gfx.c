@@ -108,9 +108,10 @@ void amigagfx_set_verbose(int verbose)
  *              bytes as PEN NUMBERS, unremapped - correct, because on an
  *              8-bit screen of our own those pens hold our palette.
  *
- *   BLIT_WLUT  the screen is deeper than 8 bits, which on modern MorphOS
- *              hardware is the normal case: a Radeon offers 16- and 32-bit
- *              modes and frequently no 8-bit mode at all. There are no pens to
+ *   BLIT_WLUT  the screen is deeper than 8 bits, which is the common case -
+ *              not because the hardware cannot do 8, but because an 8-bit mode
+ *              at a given size has to EXIST in the machine's screenmode
+ *              database and a stock install may not carry one. There are no pens to
  *              share, so WriteLUTPixelArray converts our chunky bytes through
  *              the CTABFMT_XRGB8 table. It is the only correct route on a
  *              truecolour screen and it is what makes this port run on machines
@@ -132,6 +133,28 @@ void amigagfx_set_verbose(int verbose)
 #define BLIT_LOCK 0
 #define BLIT_PENS 1
 #define BLIT_WLUT 2
+/*   BLIT_RAW   the same truecolour case as BLIT_WLUT, done the other way
+ *              round: the palette lookup happens HERE, into a scratch buffer
+ *              in ordinary cached memory, and WritePixelArray then moves
+ *              pixels that are already in the screen's format.
+ *
+ *              WHY THAT MIGHT BE FASTER. The MorphOS autodoc annotates every
+ *              accelerated call - "Uses hardware acceleration on dedicated
+ *              hardware", "Uses Altivec enabled code if..." - and
+ *              WriteLUTPixelArray carries no such note, while the same
+ *              document is explicit that only "many" calls are accelerated.
+ *              The one readable implementation of it anywhere (AROS's) is a
+ *              scalar dst[x] = lut[src[x]] loop, and no GPU can expand a
+ *              palette out of a RAM-side array in any case. Moving
+ *              already-native pixels is the case that CAN be accelerated, and
+ *              is measured at ~215 MB/s on a MorphOS G4.
+ *
+ *              It is also what E-UAE does on this platform, and what the
+ *              scaled path in this file has been doing all along.
+ *
+ *              NOT THE DEFAULT, because none of that is a measurement. See
+ *              blit_bench(). */
+#define BLIT_RAW  3
 
 static struct Screen *g_screen;
 static struct Window *g_window;
@@ -720,12 +743,26 @@ static void dbuf_present(void)
 /* Open the deepest screen this machine will give us at w x h, preferring 8 bits
  * because that is the format the renderer already produces.
  *
- * THE ORDER IS NOT AN OPINION. An 8-bit screen makes the blit a memcpy; every
- * other depth costs a conversion per pixel. But modern MorphOS runs on Radeon
- * hardware whose drivers frequently offer no 8-bit chunky mode at all, and a
- * port that insisted on one would simply refuse to start on the machines most
- * likely to run it. So 8 is asked for first and 32/16/24/15 are tried after -
- * not as a degraded mode, but as the mode those machines actually have. */
+ * THE ORDER IS NOT AN OPINION. An 8-bit screen makes the blit a straight copy;
+ * every other depth costs a conversion per pixel.
+ *
+ * AND THE RADEON CAN DO 8-BIT - an earlier version of this comment said it
+ * frequently could not, which was wrong and worth correcting rather than
+ * quietly deleting. These cards have a hardware colour lookup table and
+ * MorphOS maintains it: the 3.18 release notes mention separate LUTs for
+ * dual-head R5xx "to avoid problems with mixed palette/truecolour display",
+ * and 3.20 fixed "8-bit bitmap blitting issues". No release note anywhere
+ * deprecates 8-bit screens.
+ *
+ * What is actually true is narrower and user-fixable: an 8-bit mode AT THIS
+ * SIZE has to exist in the machine's screenmode database, and a stock install
+ * may carry only the deeper ones. BestCModeIDTagList returning INVALID_ID for
+ * depth 8 means "not configured here", not "not possible here" - which is why
+ * the README tells the player to add one in Preferences/Monitors rather than
+ * telling them their card cannot do it.
+ *
+ * So 8 is asked for first and the rest are tried after - not as a degraded
+ * mode, but as what an unconfigured machine actually has. */
 static int open_the_screen(int w, int h, ULONG quiet, ULONG title)
 {
 	/* 16 BEFORE 32, and the reason is bandwidth rather than taste.
@@ -1204,6 +1241,34 @@ static void blit_scaled_wlut(void)
 	                (UWORD)g_dst_w, (UWORD)g_dst_h, (UBYTE)RECTFMT_ARGB);
 }
 
+/* Truecolour, conversion on our side. Shares the scratch buffer with the
+ * scaled path - both want the same thing, a block of native pixels in cached
+ * memory - and reuses it across frames, because allocating one per frame would
+ * be the most expensive thing in the loop. */
+static void blit_raw(int x, int y, int w, int h)
+{
+	long need = (long)w * h;
+	int row;
+
+	if (g_scratch == NULL || g_scratch_px < need) {
+		if (g_scratch != NULL) FreeVec(g_scratch);
+		g_scratch = (ULONG *)AllocVec((ULONG)need * sizeof(ULONG), MEMF_ANY);
+		g_scratch_px = (g_scratch != NULL) ? need : 0;
+		if (g_scratch == NULL) { blit_wlut(x, y, w, h); return; }
+	}
+
+	for (row = 0; row < h; row++) {
+		const UBYTE *src = g_chunky + (ULONG)(y + row) * g_pitch + x;
+		ULONG *dst = g_scratch + (long)row * w;
+		int i;
+		for (i = 0; i < w; i++) dst[i] = g_ctable[src[i]];
+	}
+
+	WritePixelArray((APTR)g_scratch, 0, 0, (UWORD)(w * 4), target_rp(),
+	                (UWORD)(g_xoff + x), (UWORD)(g_yoff + y),
+	                (UWORD)w, (UWORD)h, (UBYTE)RECTFMT_ARGB);
+}
+
 void amigagfx_blit(int x, int y, int w, int h)
 {
 	int x2, y2;
@@ -1262,6 +1327,7 @@ void amigagfx_blit(int x, int y, int w, int h)
 		}
 	}
 	if (g_blit == BLIT_PENS) blit_pens(x, y, w, h);
+	else if (g_blit == BLIT_RAW)  blit_raw(x, y, w, h);
 	else if (g_blit == BLIT_WLUT) blit_wlut(x, y, w, h);
 
 	/* The FIRST blit is logged always - it is the one-shot proof that the main
@@ -1272,7 +1338,8 @@ void amigagfx_blit(int x, int y, int w, int h)
 		fprintf(stdout, "morphos: blit #%lu  %dx%d at %d,%d  %s\n",
 		        g_blits, w, h, x, y,
 		        g_blit == BLIT_LOCK ? "LockBitMap+memcpy" :
-		        g_blit == BLIT_PENS ? "WritePixelArray(LUT8)"
+		        g_blit == BLIT_PENS ? "WritePixelArray(LUT8)" :
+		        g_blit == BLIT_RAW  ? "LUT->ARGB + WritePixelArray"
 		                            : "WriteLUTPixelArray");
 		fflush(stdout);
 	}

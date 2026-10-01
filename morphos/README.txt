@@ -176,10 +176,13 @@ Two lines worth knowing how to read:
         and nothing is converted.
 
     morphos: blit: WriteLUTPixelArray (truecolour screen, CTABFMT_XRGB8)
-        Your graphics driver offers no 8-bit mode, which is normal on
-        Radeon hardware. The picture is identical; each frame costs a
-        conversion, which on any machine that runs MorphOS is not
-        something you will see.
+        No 8-bit mode of this size is DEFINED on this machine, so every
+        pixel is converted on the way out. The picture is identical and
+        a PowerPC takes it in its stride - but this is the line that
+        means there is free speed sitting here: add an 8-bit mode at
+        this size in Preferences -> Monitors. A Radeon has a hardware
+        colour table and MorphOS maintains it; it has just not been
+        told to offer this size.
 
     gta: FAILED to load PROGDIR:GTADATA/style001.til
         Step 3 above has not been done, or gtabake wrote it somewhere

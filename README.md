@@ -174,10 +174,11 @@ broken single-precision multiply and divide entries on FPU-less machines, and
 There is a native PowerPC build for **MorphOS**. It is not the 68k binary under
 emulation — that does not work, and the reason decided the shape of the port:
 the RTG path asks CyberGraphX for an 8-bit screen and *falls back to AGA* when
-there is none, and modern MorphOS hardware frequently offers no 8-bit chunky
-mode at all. The fallback then allocates bitplanes and runs Kalms' 68020
-chunky-to-planar against a chipset that is not there.
-
+there is none. That fallback allocates bitplanes and runs Kalms' 68020
+chunky-to-planar against a chipset that is not there. (The 8-bit mode itself is
+not the problem — a Radeon has a hardware colour table and MorphOS maintains
+it; a stock install simply may not have an 8-bit entry at that size, which
+Preferences → Monitors fixes.)
 ```sh
 tools/bin/build_morphos.sh                      # AmiGTA-morphos + the three tools
 make -f makefile.morphos release ARCHIVEDIR=    # the shippable drawer, archived
