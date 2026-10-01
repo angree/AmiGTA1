@@ -170,6 +170,42 @@ static int    g_vis_w, g_vis_h;
 static int    g_scale;
 static int    g_dst_x, g_dst_y, g_dst_w, g_dst_h;
 
+/* ---- DOUBLE BUFFERING --------------------------------------------------- *
+ *
+ * Two screen bitmaps: the game draws into the one that is not being shown and
+ * ChangeScreenBuffer swaps them. It does NOT make the frame cheaper - the same
+ * pixels are still converted and written - it stops the blit racing the
+ * scanout, which is the difference between a picture and a picture with a tear
+ * across it.
+ *
+ * WHY IT IS SAFE TO ADD BLIND. Everything here fails soft: if
+ * AllocScreenBuffer refuses, g_dbuf stays 0 and every path below is the
+ * single-buffer one that was already there. The only new risk is the Wait()
+ * for the safe-to-draw message, so there is a way out that does not need a
+ * rebuild - see the nodbuf note in dbuf_open().
+ *
+ * A DOUBLE-BUFFERED FRAME IS ALWAYS WHOLE. With two buffers a dirty rectangle
+ * is not enough: what was drawn last frame went to the OTHER bitmap, so
+ * anything not redrawn this frame shows the frame before last. Rather than
+ * track damage across two buffers, a flipped frame presents the lot - which
+ * costs nothing in practice, because gta_main.c blits full-frame anyway.
+ */
+static struct ScreenBuffer *g_sb[2];
+static struct MsgPort      *g_sb_safe;
+static struct MsgPort      *g_sb_disp;
+static struct RastPort      g_sb_rp;      /* points at the BACK buffer */
+static int g_dbuf;        /* 1 when the two buffers are up                */
+static int g_sb_cur;      /* which one the game is drawing into           */
+static int g_sb_pending;  /* a flip is in flight; its messages are owed   */
+
+/* Where the library blit calls should draw. The back buffer while double
+ * buffered, the screen itself otherwise - so every blit below says
+ * `target_rp()` and none of them has to know which mode is running. */
+static struct RastPort *target_rp(void)
+{
+	return g_dbuf ? &g_sb_rp : &g_screen->RastPort;
+}
+
 /* Scratch for the scaled truecolour path - see blit_scaled_wlut. Allocated on
  * first use at the destination size and kept, because a frame is every frame
  * and allocating one per frame would be the most expensive thing in the loop. */
@@ -572,6 +608,102 @@ static void probe_blit_method(void)
 	fflush(stdout);
 }
 
+/* ---- double buffering --------------------------------------------------- */
+
+static void dbuf_close(void)
+{
+	int i;
+	/* The flip in flight owns its messages until they arrive. Leaving without
+	 * collecting them frees ports that intuition still holds a pointer to. */
+	if (g_sb_pending) {
+		if (g_sb_safe != NULL) while (GetMsg(g_sb_safe) == NULL) WaitPort(g_sb_safe);
+		if (g_sb_disp != NULL) while (GetMsg(g_sb_disp) == NULL) WaitPort(g_sb_disp);
+		g_sb_pending = 0;
+	}
+	for (i = 0; i < 2; i++) {
+		if (g_sb[i] != NULL) { FreeScreenBuffer(g_screen, g_sb[i]); g_sb[i] = NULL; }
+	}
+	if (g_sb_safe != NULL) { DeleteMsgPort(g_sb_safe); g_sb_safe = NULL; }
+	if (g_sb_disp != NULL) { DeleteMsgPort(g_sb_disp); g_sb_disp = NULL; }
+	g_dbuf = 0;
+	g_sb_cur = 0;
+}
+
+static int dbuf_open(void)
+{
+	/* THE ESCAPE HATCH. This has never run on a MorphOS machine, and the one
+	 * thing in it that can hang rather than merely fail is the Wait for the
+	 * safe-to-draw message. A file called `nodbuf` beside the executable turns
+	 * the whole thing off, so a player who meets that does not need a rebuild
+	 * or a different download - the same trick backend.txt already uses. */
+	{
+		FILE *f = fopen("PROGDIR:nodbuf", "r");
+		if (f != NULL) {
+			fclose(f);
+			amigagfx_log("double buffering off (PROGDIR:nodbuf exists)");
+			return 0;
+		}
+	}
+
+	g_sb_safe = CreateMsgPort();
+	g_sb_disp = CreateMsgPort();
+	if (g_sb_safe == NULL || g_sb_disp == NULL) { dbuf_close(); return 0; }
+
+	/* SB_SCREEN_BITMAP for the first: it adopts the bitmap the screen already
+	 * has rather than allocating a third. The second is a fresh one. */
+	g_sb[0] = AllocScreenBuffer(g_screen, NULL, SB_SCREEN_BITMAP);
+	g_sb[1] = AllocScreenBuffer(g_screen, NULL, 0);
+	if (g_sb[0] == NULL || g_sb[1] == NULL) {
+		amigagfx_log("double buffering unavailable - drawing straight to the screen");
+		dbuf_close();
+		return 0;
+	}
+
+	g_sb[0]->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = g_sb_safe;
+	g_sb[1]->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = g_sb_safe;
+	g_sb[0]->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = g_sb_disp;
+	g_sb[1]->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = g_sb_disp;
+
+	/* A RastPort of our own pointing at the back buffer. Copied from the
+	 * screen's so it inherits the pens and the layer-less setup, then aimed
+	 * somewhere else - which is exactly what the CGX drivers do. */
+	g_sb_rp = g_screen->RastPort;
+	g_sb_rp.Layer = NULL;
+	g_sb_cur = 1;                       /* draw into the one not displayed */
+	g_sb_rp.BitMap = g_sb[g_sb_cur]->sb_BitMap;
+	g_sb_pending = 0;
+	g_dbuf = 1;
+
+	amigagfx_log("double buffered - no tearing, and the blit never races the beam");
+	return 1;
+}
+
+/* Show what was just drawn and move to the other buffer.
+ *
+ * Collect the previous flip's two messages FIRST: the display message says the
+ * old back buffer is now on screen, the safe message says the old front is no
+ * longer being read and can be drawn into. Only then is the next buffer ours.
+ * Both waits are guarded by g_sb_pending, so the first frame does not wait for
+ * a flip that never happened. */
+static void dbuf_present(void)
+{
+	if (!g_dbuf) return;
+
+	if (ChangeScreenBuffer(g_screen, g_sb[g_sb_cur]) == 0) {
+		/* Refused - the frame is still correct, it just was not flipped.
+		 * Try again next frame rather than tearing the state down. */
+		return;
+	}
+	g_sb_pending = 1;
+	g_sb_cur ^= 1;
+
+	while (GetMsg(g_sb_disp) == NULL) WaitPort(g_sb_disp);
+	while (GetMsg(g_sb_safe) == NULL) WaitPort(g_sb_safe);
+	g_sb_pending = 0;
+
+	g_sb_rp.BitMap = g_sb[g_sb_cur]->sb_BitMap;
+}
+
 /* ----------------------------------------------------------------- open --- */
 
 /* Open the deepest screen this machine will give us at w x h, preferring 8 bits
@@ -810,6 +942,19 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 
 	probe_blit_method();
 
+	/* After the blit method, because the lock path writes into the SCREEN's
+	 * bitmap and double buffering moves that target - and before the chunky
+	 * buffer, so a failure here is still a clean fall back to single. The lock
+	 * path and double buffering are mutually exclusive for that reason: a
+	 * locked write would go to whichever bitmap the screen is showing, not to
+	 * the one being drawn. */
+	if (g_blit == BLIT_LOCK) {
+		amigagfx_log("direct LUT8 lock in use - single buffered, since a lock "
+		             "writes to the displayed bitmap and not to the back one");
+	} else {
+		dbuf_open();
+	}
+
 	/* Sized for what the ENGINE renders, never for what the screen can show:
 	 * gta_main.c draws a fixed SCREEN_W x SCREEN_H and never asks this file
 	 * how much of it fits. */
@@ -857,6 +1002,8 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 void amigagfx_close(void)
 {
 	pointer_free();
+	/* Before CloseScreen: FreeScreenBuffer needs the screen it belongs to. */
+	if (g_dbuf || g_sb[0] != NULL || g_sb[1] != NULL) dbuf_close();
 	if (g_window != NULL) { CloseWindow(g_window); g_window = NULL; }
 	if (g_screen != NULL) { CloseScreen(g_screen); g_screen = NULL; }
 	if (g_chunky != NULL) { FreeVec(g_chunky); g_chunky = NULL; }
@@ -961,7 +1108,7 @@ static int blit_locked(int x, int y, int w, int h)
 static void blit_pens(int x, int y, int w, int h)
 {
 	WritePixelArray((APTR)g_chunky, (UWORD)x, (UWORD)y, (UWORD)g_pitch,
-	                &g_screen->RastPort,
+	                target_rp(),
 	                (UWORD)(g_xoff + x), (UWORD)(g_yoff + y),
 	                (UWORD)w, (UWORD)h, (UBYTE)RECTFMT_LUT8);
 }
@@ -972,7 +1119,7 @@ static void blit_pens(int x, int y, int w, int h)
 static void blit_wlut(int x, int y, int w, int h)
 {
 	WriteLUTPixelArray((APTR)g_chunky, (UWORD)x, (UWORD)y, (UWORD)g_pitch,
-	                   &g_screen->RastPort, (APTR)g_ctable,
+	                   target_rp(), (APTR)g_ctable,
 	                   (UWORD)(g_xoff + x), (UWORD)(g_yoff + y),
 	                   (UWORD)w, (UWORD)h, (UBYTE)CTABFMT_XRGB8);
 }
@@ -991,7 +1138,7 @@ static void blit_wlut(int x, int y, int w, int h)
 static void blit_scaled_pens(void)
 {
 	ScalePixelArray((APTR)g_chunky, (UWORD)g_width, (UWORD)g_height,
-	                (UWORD)g_pitch, &g_screen->RastPort,
+	                (UWORD)g_pitch, target_rp(),
 	                (UWORD)g_dst_x, (UWORD)g_dst_y,
 	                (UWORD)g_dst_w, (UWORD)g_dst_h, (UBYTE)RECTFMT_LUT8);
 }
@@ -1040,7 +1187,7 @@ static void blit_scaled_wlut(void)
 	}
 
 	WritePixelArray((APTR)g_scratch, 0, 0, (UWORD)(g_dst_w * 4),
-	                &g_screen->RastPort,
+	                target_rp(),
 	                (UWORD)g_dst_x, (UWORD)g_dst_y,
 	                (UWORD)g_dst_w, (UWORD)g_dst_h, (UBYTE)RECTFMT_ARGB);
 }
@@ -1055,6 +1202,11 @@ void amigagfx_blit(int x, int y, int w, int h)
 	 * Kalms' chunky-to-planar and of nothing else. There is no c2p here, so a
 	 * rectangle is used exactly as given and only clipped - snapping it
 	 * outwards would convert pixels that never changed, for no reason. */
+	/* A FLIPPED FRAME IS ALWAYS WHOLE - see the note on the double-buffer
+	 * state. Anything not redrawn this frame would otherwise show what was in
+	 * this bitmap two frames ago. */
+	if (g_dbuf) { x = 0; y = 0; w = g_width; h = g_height; }
+
 	x2 = x + w;
 	y2 = y + h;
 	if (x < 0) x = 0;
@@ -1084,6 +1236,7 @@ void amigagfx_blit(int x, int y, int w, int h)
 			                     : "scale+LUT -> WritePixelArray(ARGB)");
 			fflush(stdout);
 		}
+		dbuf_present();
 		return;
 	}
 
@@ -1111,6 +1264,7 @@ void amigagfx_blit(int x, int y, int w, int h)
 		                            : "WriteLUTPixelArray");
 		fflush(stdout);
 	}
+	dbuf_present();
 }
 
 /* ----------------------------------------------------------------- poll --- */

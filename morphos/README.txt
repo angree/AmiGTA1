@@ -34,6 +34,14 @@ preferences. Every setting in gtaprefs except OFF opens it, including
 PAULA: a drawer shared with an Amiga install will say Paula, and asking
 for sound should get you sound.
 
+IF THE PICTURE NEVER APPEARS, OR THE GAME STOPS DEAD AT STARTUP:
+make an empty file called `nodbuf` beside the executable and start it
+again. The display is double buffered - two screen bitmaps, swapped
+rather than drawn over, so a frame never tears - and that is the one
+part of it that waits for the graphics driver rather than just asking
+it something. `nodbuf` turns it off and the game draws straight to the
+screen, which is what it did before. gta.log says which it is using.
+
 **This backend has never been heard.** It was written and compiled
 without a MorphOS machine to try it on. If it is silent, or a sound
 comes out at the wrong pitch, or the music clicks between chunks, that
