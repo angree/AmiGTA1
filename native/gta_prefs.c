@@ -144,6 +144,11 @@ void gta_prefs_defaults(gta_prefs *p)
     p->audio     = GTA_AUDIO_AUTO;
     p->gfx       = GTA_GFX_AUTO;
     p->screen    = GTA_SCR_AUTO;
+    /* Both off: the picture is drawn at its own size and centred. AUTO picks a
+     * size the machine can rasterise outright, so neither crutch is needed
+     * until the player asks for one. */
+    p->dbl       = 0;
+    p->scale     = 0;
     p->music_vol = 48;   /* music sits under the effects, as in the original */
     p->sfx_vol   = 64;   /* Paula's maximum */
     p->cars      = GTA_CARS_DEFAULT;
@@ -221,7 +226,22 @@ int gta_prefs_load(const char *dir, gta_prefs *p)
             if (v >= 0) p->gfx = v;
         } else if (word_eq(key, "screen")) {
             v = gta_prefs_screen_from_word(val);
-            if (v >= 0) p->screen = v;
+            if (v >= 0) {
+                /* LEGACY: 640x480x2 used to mean size AND doubling in one
+                 * word. A file written by an older build still says it, and it
+                 * still means what it meant - unpacked into the two settings
+                 * that now carry it separately. Never written back. */
+                if (v == GTA_SCR_640480X2) {
+                    p->screen = GTA_SCR_640480;
+                    p->dbl    = 1;
+                } else {
+                    p->screen = v;
+                }
+            }
+        } else if (word_eq(key, "double")) {
+            p->dbl = (int)strtol(val, NULL, 10) ? 1 : 0;
+        } else if (word_eq(key, "scale")) {
+            p->scale = (int)strtol(val, NULL, 10) ? 1 : 0;
         } else if (word_eq(key, "musicvol")) {
             p->music_vol = (int)strtol(val, NULL, 10);
         } else if (word_eq(key, "sfxvol")) {
@@ -265,6 +285,8 @@ int gta_prefs_save(const char *dir, const gta_prefs *p)
     fprintf(f, "audio %s\n", audio_words[q.audio]);
     fprintf(f, "gfx %s\n",   gfx_words[q.gfx]);
     fprintf(f, "screen %s\n", screen_words[q.screen]);
+    fprintf(f, "double %d\n", q.dbl   ? 1 : 0);
+    fprintf(f, "scale %d\n",  q.scale ? 1 : 0);
     fprintf(f, "musicvol %d\n", q.music_vol);
     fprintf(f, "sfxvol %d\n",   q.sfx_vol);
     fprintf(f, "cars %d\n",     q.cars);

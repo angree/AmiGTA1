@@ -183,6 +183,25 @@ void amigagfx_set_hide_system_pointer(int on);
  * the screen exists (stored, used at open) and live afterwards. */
 void amigagfx_set_screen_title(const char *title);
 
+#ifdef __MORPHOS__
+/* STRETCH THE PICTURE TO THE SCREEN, or leave it centred at its own size.
+ * MORPHOS ONLY - the 68k backends have no scaler and adding one to the c2p
+ * path would be a different piece of work entirely.
+ *
+ * Off (the default) the rendered picture sits in the middle of whatever screen
+ * the driver granted, which is what you want when the two are the same size or
+ * close to it. On, it is scaled to fill the screen.
+ *
+ * It exists because a MorphOS display is usually much larger than any size
+ * this engine renders: a 640x480 picture centred on a 1920x1080 screen is a
+ * small window of game in a large black field, and some players would rather
+ * have big pixels than a small picture. Which of those is right is taste, so
+ * it is a setting (gtaprefs SCALE=on) and not a decision made here.
+ *
+ * Call BEFORE amigagfx_open(); it is read when the screen is sized. */
+void amigagfx_set_scale(int on);
+#endif
+
 /* Which palette INDICES Intuition should draw the screen title bar with:
  * the title text, the bar fill, and the trim line under it.
  *

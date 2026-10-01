@@ -6,6 +6,7 @@
  *                                    machine has, then exit
  *     gtaprefs AUDIO=AHI GFX=WB      set those and save, no window
  *     gtaprefs SCREEN=320x240        the size the game opens at
+ *     gtaprefs DOUBLE=on SCALE=off   what happens to the picture
  *     gtaprefs ?                     usage
  *
  * WHY THIS IS A SEPARATE PROGRAM and not a menu inside the game.
@@ -186,8 +187,44 @@ static const char *screen_hint(int s)
 /* ------------------------------------------------------------------------ */
 
 enum { GID_AUDIO = 1, GID_AUDIOHINT, GID_GFX, GID_GFXHINT,
-       GID_SCREEN, GID_SCREENHINT,
+       GID_SCREEN, GID_SCREENHINT, GID_DBL, GID_SCALE,
        GID_MACHINE, GID_KEYS, GID_SAVE, GID_CANCEL };
+
+/* THE AUDIO CHOICES THIS MACHINE ACTUALLY HAS.
+ *
+ * The cycle gadget used to list all four settings on every target, which on
+ * MorphOS meant offering Paula - a chipset that is not in the machine and
+ * cannot be put in it - and AUTO, which means "pick one of them for me". Both
+ * resolve to AHI there, so all the player could do with three of the four
+ * entries was pick a longer way of saying the fourth.
+ *
+ * So the list is per-target, and an index in the gadget is not the same number
+ * as a GTA_AUDIO_* value any more; audio_val()/audio_idx() are the only places
+ * that know the difference. */
+#ifdef __MORPHOS__
+static const int audio_vals[] = { GTA_AUDIO_AHI, GTA_AUDIO_OFF };
+#else
+static const int audio_vals[] = { GTA_AUDIO_AUTO, GTA_AUDIO_OFF,
+                                  GTA_AUDIO_PAULA, GTA_AUDIO_AHI };
+#endif
+#define AUDIO_N ((int)(sizeof audio_vals / sizeof audio_vals[0]))
+
+static int audio_val(int idx)
+{
+    if (idx < 0 || idx >= AUDIO_N) return audio_vals[0];
+    return audio_vals[idx];
+}
+
+/* The stored setting may be one this target does not offer - a drawer shared
+ * with an Amiga install will say Paula. It is shown as the first entry, which
+ * is the one the game will actually use. */
+static int audio_idx(int val)
+{
+    int i;
+    for (i = 0; i < AUDIO_N; i++)
+        if (audio_vals[i] == val) return i;
+    return 0;
+}
 
 /* THE KEYS GO IN THE WINDOW, NOT IN THE TITLE BAR.
  *
@@ -197,8 +234,13 @@ enum { GID_AUDIO = 1, GID_AUDIOHINT, GID_GFX, GID_GFXHINT,
  * way out of the program was the part that got cut off. A window that must
  * work for somebody with no pointer cannot hide the keyboard instructions in
  * the one piece of text it does not control the width of. */
+#ifdef __MORPHOS__
 #define KEYS_LINE \
-    "Keys:  A audio   G graphics   R screen   S save   Esc cancel"
+    "Keys:  A audio  G graphics  R screen  D double  F fit  S save  Esc cancel"
+#else
+#define KEYS_LINE \
+    "Keys:  A audio  G graphics  R screen  D double  S save  Esc cancel"
+#endif
 
 /* Text width in pixels on the screen's own font. Measured rather than assumed
  * as "characters times 8": the Workbench font is the player's choice and can
@@ -207,6 +249,13 @@ enum { GID_AUDIO = 1, GID_AUDIOHINT, GID_GFX, GID_GFXHINT,
 static int text_w(struct Screen *scr, const char *s)
 {
     return (int)TextLength(&scr->RastPort, (CONST_STRPTR)s, (ULONG)strlen(s));
+}
+
+/* A checkmark's width: the box (a gadget height) plus the label beside it. */
+static int x_label_w(struct Screen *scr, const char *s)
+{
+    int fh = scr->RastPort.TxHeight; if (fh < 8) fh = 8;
+    return (fh + 6) + text_w(scr, s);
 }
 
 static int max_hint_w(struct Screen *scr)
@@ -239,7 +288,8 @@ static int run_window(gta_prefs *p)
     struct Gadget *g_ahint = NULL, *g_ghint = NULL, *g_shint = NULL;
     struct Window *win = NULL;
     struct NewGadget ng;
-    STRPTR audio_labels[GTA_AUDIO_COUNT + 1];
+    struct Gadget *g_dbl = NULL, *g_scale = NULL;
+    STRPTR audio_labels[AUDIO_N + 1];
     STRPTR gfx_labels[GTA_GFX_COUNT + 1];
     STRPTR screen_labels[GTA_SCR_COUNT + 1];
     char machine[96];
@@ -255,9 +305,9 @@ static int run_window(gta_prefs *p)
 
     /* One source of truth for the words: the same table the file parser and
      * the command line use, read back through gta_prefs_*_name(). */
-    for (i = 0; i < GTA_AUDIO_COUNT; i++)
-        audio_labels[i] = (STRPTR)gta_prefs_audio_name(i);
-    audio_labels[GTA_AUDIO_COUNT] = NULL;
+    for (i = 0; i < AUDIO_N; i++)
+        audio_labels[i] = (STRPTR)gta_prefs_audio_name(audio_val(i));
+    audio_labels[AUDIO_N] = NULL;
     for (i = 0; i < GTA_GFX_COUNT; i++)
         gfx_labels[i] = (STRPTR)gta_prefs_gfx_name(i);
     gfx_labels[GTA_GFX_COUNT] = NULL;
@@ -280,7 +330,7 @@ static int run_window(gta_prefs *p)
     /* The cycle gadget must hold the longest word AND the arrow box, which
      * GadTools draws inside the gadget on the left. */
     gadw = text_w(scr, "Window") + cw * 2 + 24;
-    for (i = 0; i < GTA_AUDIO_COUNT; i++) {
+    for (i = 0; i < AUDIO_N; i++) {
         int t = text_w(scr, (const char *)audio_labels[i]) + cw * 2 + 24;
         if (t > gadw) gadw = t;
     }
@@ -291,6 +341,17 @@ static int run_window(gta_prefs *p)
         if (t > gadw) gadw = t;
     }
     hintw = max_hint_w(scr);
+    /* The checkmark labels sit to the RIGHT of the box in the gadget column,
+     * so they push the window out further than any hint does. Measured, like
+     * everything else here, because the Workbench font is the player's. */
+    {
+        int t = x_label_w(scr, " Double (draw half size, two pixels each)");
+#ifdef __MORPHOS__
+        int u = x_label_w(scr, " Fit (stretch to the screen, else centred)");
+        if (u > t) t = u;
+#endif
+        if (t > hintw) hintw = t;
+    }
 
     innerw = lm + labw + gadw + lm;
     if (lm + hintw + lm > innerw)                innerw = lm + hintw + lm;
@@ -322,7 +383,7 @@ static int run_window(gta_prefs *p)
     ng.ng_Flags      = PLACETEXT_LEFT;
     gad = CreateGadget(CYCLE_KIND, glist, &ng,
                        GTCY_Labels, (ULONG)audio_labels,
-                       GTCY_Active, (ULONG)p->audio,
+                       GTCY_Active, (ULONG)audio_idx(p->audio),
                        TAG_END);
     g_audio = gad;
     y += gh + 2;
@@ -394,7 +455,56 @@ static int run_window(gta_prefs *p)
                        GTTX_Text, (ULONG)screen_hint(p->screen),
                        TAG_END);
     g_shint = gad;
-    y += fh + gap + gap;
+    y += fh + gap;
+
+    /* --- double / fit ---------------------------------------------------- *
+     *
+     * What happens to the picture on the way to the screen, which used to be
+     * half of what "640x480 (x2)" meant. Two checkmarks rather than more
+     * entries in the size list, because they are independent of the size and
+     * of each other: 320x240 doubled is a thing, 640x480 stretched to fill a
+     * 1280x1024 screen is a thing, and so is both at once.
+     *
+     * PLACETEXT_RIGHT, not LEFT - a checkmark reads as box-then-label, and it
+     * is the one gadget here that is not in the label column. */
+    ng.ng_LeftEdge   = leftb + x;
+    ng.ng_TopEdge    = topb + y;
+    ng.ng_Width      = gh;
+    ng.ng_Height     = gh;
+    ng.ng_GadgetText = (STRPTR)" Double (draw half size, two pixels each)";
+    ng.ng_GadgetID   = GID_DBL;
+    ng.ng_Flags      = PLACETEXT_RIGHT;
+    gad = CreateGadget(CHECKBOX_KIND, gad, &ng,
+                       GTCB_Checked, (ULONG)(p->dbl ? TRUE : FALSE),
+                       TAG_END);
+    g_dbl = gad;
+    y += gh + 2;
+
+#ifdef __MORPHOS__
+    /* FIT IS MORPHOS-ONLY, and it is absent rather than greyed out on the
+     * Amiga because the scaler is in morphos_gfx.c and there is no equivalent
+     * behind the c2p path. A checkmark that saves a setting nothing reads is
+     * worse than no checkmark: the player ticks it, nothing happens, and the
+     * editor has told them a lie it cannot take back.
+     *
+     * It barely arises there in any case - an Amiga screen is the size the
+     * game asked for, so there is nothing to stretch to. On MorphOS the driver
+     * routinely grants something much larger, which is what makes the question
+     * worth asking at all. */
+    ng.ng_LeftEdge   = leftb + x;
+    ng.ng_TopEdge    = topb + y;
+    ng.ng_Width      = gh;
+    ng.ng_Height     = gh;
+    ng.ng_GadgetText = (STRPTR)" Fit (stretch to the screen, else centred)";
+    ng.ng_GadgetID   = GID_SCALE;
+    ng.ng_Flags      = PLACETEXT_RIGHT;
+    gad = CreateGadget(CHECKBOX_KIND, gad, &ng,
+                       GTCB_Checked, (ULONG)(p->scale ? TRUE : FALSE),
+                       TAG_END);
+    g_scale = gad;
+    y += gh + 2;
+#endif
+    y += gap + gap;
 
     /* --- what the machine has ------------------------------------------- */
     ng.ng_LeftEdge   = leftb + lm;
@@ -484,7 +594,7 @@ static int run_window(gta_prefs *p)
             case IDCMP_GADGETUP:
                 switch (src->GadgetID) {
                 case GID_AUDIO:
-                    p->audio = (int)code;
+                    p->audio = audio_val((int)code);
                     GT_SetGadgetAttrs(g_ahint, win, NULL,
                                       GTTX_Text, (ULONG)audio_hint(p->audio),
                                       TAG_END);
@@ -494,6 +604,12 @@ static int run_window(gta_prefs *p)
                     GT_SetGadgetAttrs(g_ghint, win, NULL,
                                       GTTX_Text, (ULONG)gfx_hint(p->gfx),
                                       TAG_END);
+                    break;
+                case GID_DBL:
+                    p->dbl = (code != 0);
+                    break;
+                case GID_SCALE:
+                    p->scale = (code != 0);
                     break;
                 case GID_SCREEN:
                     p->screen = (int)code;
@@ -514,9 +630,10 @@ static int run_window(gta_prefs *p)
             case IDCMP_VANILLAKEY:
                 switch (code) {
                 case 'a': case 'A':
-                    p->audio = (p->audio + 1) % GTA_AUDIO_COUNT;
+                    p->audio = audio_val((audio_idx(p->audio) + 1) % AUDIO_N);
                     GT_SetGadgetAttrs(g_audio, win, NULL,
-                                      GTCY_Active, (ULONG)p->audio, TAG_END);
+                                      GTCY_Active, (ULONG)audio_idx(p->audio),
+                                      TAG_END);
                     GT_SetGadgetAttrs(g_ahint, win, NULL,
                                       GTTX_Text, (ULONG)audio_hint(p->audio),
                                       TAG_END);
@@ -537,6 +654,20 @@ static int run_window(gta_prefs *p)
                                       GTTX_Text, (ULONG)screen_hint(p->screen),
                                       TAG_END);
                     break;
+                case 'd': case 'D':
+                    p->dbl = !p->dbl;
+                    GT_SetGadgetAttrs(g_dbl, win, NULL,
+                                      GTCB_Checked, (ULONG)(p->dbl ? TRUE : FALSE),
+                                      TAG_END);
+                    break;
+#ifdef __MORPHOS__
+                case 'f': case 'F':
+                    p->scale = !p->scale;
+                    GT_SetGadgetAttrs(g_scale, win, NULL,
+                                      GTCB_Checked, (ULONG)(p->scale ? TRUE : FALSE),
+                                      TAG_END);
+                    break;
+#endif
                 case 's': case 'S': case 13:
                     result = 1; done = 1; break;
                 case 'c': case 'C': case 27:
@@ -567,10 +698,15 @@ static void usage(void)
     printf("gtaprefs - settings editor for AmiGTA\n\n");
     printf("  gtaprefs                  open the window\n");
     printf("  gtaprefs SHOW             print the settings and this machine\n");
+#ifdef __MORPHOS__
+    printf("  gtaprefs AUDIO=<word>     ahi | off   (there is no Paula here)\n");
+#else
     printf("  gtaprefs AUDIO=<word>     auto | off | paula | ahi\n");
+#endif
     printf("  gtaprefs GFX=<word>       auto | aga | rtg | wb\n");
-    printf("  gtaprefs SCREEN=<word>    auto | 320x200 | 320x240 |\n");
-    printf("                            640x480 | 640x480x2\n\n");
+    printf("  gtaprefs SCREEN=<word>    auto | 320x200 | 320x240 | 640x480\n");
+    printf("  gtaprefs DOUBLE=<on|off>  draw half size, two pixels each\n");
+    printf("  gtaprefs SCALE=<on|off>   stretch to the screen (else centred)\n\n");
     printf("Giving any of those saves straight away and opens no window,\n");
     printf("which is how the settings are changed on a machine whose pointer\n");
     printf("does not work. Settings are written to " GTA_DIR "gta.prefs\n");
@@ -591,8 +727,12 @@ static void show(const gta_prefs *p)
         gta_prefs_screen_size(p->screen, p->gfx, &w, &h, &x2);
         printf("screen %s   - %s\n",
                gta_prefs_screen_name(p->screen), screen_hint(p->screen));
-        printf("       the game will open %dx%d%s\n",
-               w, h, x2 ? " and render a quarter of it" : "");
+        if (p->dbl) x2 = 1;
+        printf("       the game will open %dx%d%s%s\n",
+               w, h,
+               x2         ? ", rendering a quarter of it and doubling" : "",
+               p->scale   ? ", stretched to the screen"
+                          : ", centred at its own size");
     }
     printf("musicvol %d   sfxvol %d\n", p->music_vol, p->sfx_vol);
 }
@@ -603,6 +743,8 @@ static void show(const gta_prefs *p)
  * be called when there is no CLI - and this program is meant to be
  * double-clicked. Twenty lines here removes a conditional that would only
  * ever be exercised on one of the two launch paths. */
+static int eq_ci_fwd(const char *a, const char *b);
+
 static int split_kv(char *arg, char **key, char **val)
 {
     char *eq = strchr(arg, '=');
@@ -611,6 +753,19 @@ static int split_kv(char *arg, char **key, char **val)
     *key = arg;
     *val = eq + 1;
     return 1;
+}
+
+/* on/off/yes/no/1/0/true/false -> 1/0, or -1 for anything else. A checkmark
+ * on the command line needs all of these because the player will type whichever
+ * one they are used to, and guessing wrong silently is worse than refusing. */
+static int yesno(const char *w)
+{
+    if (w == NULL) return -1;
+    if (eq_ci_fwd(w, "on") || eq_ci_fwd(w, "yes") || eq_ci_fwd(w, "1") ||
+        eq_ci_fwd(w, "true"))  return 1;
+    if (eq_ci_fwd(w, "off") || eq_ci_fwd(w, "no") || eq_ci_fwd(w, "0") ||
+        eq_ci_fwd(w, "false")) return 0;
+    return -1;
 }
 
 static int eq_ci(const char *a, const char *b)
@@ -623,6 +778,8 @@ static int eq_ci(const char *a, const char *b)
     }
     return *a == 0 && *b == 0;
 }
+
+static int eq_ci_fwd(const char *a, const char *b) { return eq_ci(a, b); }
 
 int main(int argc, char **argv)
 {
@@ -655,7 +812,24 @@ int main(int argc, char **argv)
                 v = gta_prefs_screen_from_word(val);
                 if (v < 0) { printf("gtaprefs: SCREEN must be auto, 320x200, "
                                     "320x240, 640x480 or 640x480x2\n"); return 20; }
-                p.screen = v; changed = 1; continue;
+                /* 640x480x2 is the old word for a size AND doubling; it is
+                 * still accepted and still means that, unpacked into the two
+                 * settings that carry it separately now. */
+                if (v == GTA_SCR_640480X2) { p.screen = GTA_SCR_640480; p.dbl = 1; }
+                else                       { p.screen = v; }
+                changed = 1; continue;
+            }
+            if (eq_ci(key, "DOUBLE")) {
+                v = yesno(val);
+                if (v < 0) { printf("gtaprefs: DOUBLE must be on or off\n");
+                             return 20; }
+                p.dbl = v; changed = 1; continue;
+            }
+            if (eq_ci(key, "SCALE") || eq_ci(key, "FIT")) {
+                v = yesno(val);
+                if (v < 0) { printf("gtaprefs: SCALE must be on or off\n");
+                             return 20; }
+                p.scale = v; changed = 1; continue;
             }
         }
         printf("gtaprefs: do not understand \"%s\"\n\n", argv[i]);

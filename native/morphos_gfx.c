@@ -160,6 +160,27 @@ static int    g_bar;             /* height of the Intuition title bar, 0 = none 
  * here, and it is applied in exactly one place - amigagfx_blit. */
 static int    g_vis_w, g_vis_h;
 
+/* SCALING: stretch the picture to the screen instead of centring it.
+ *
+ * g_scale is the setting; g_dst_* is where a frame actually lands, which is
+ * the whole screen when scaling and the centred game area when not. Keeping
+ * the destination rectangle as state rather than recomputing it per blit means
+ * the blit does not have to know which mode it is in - it is handed a source
+ * rectangle and a destination rectangle either way. */
+static int    g_scale;
+static int    g_dst_x, g_dst_y, g_dst_w, g_dst_h;
+
+/* Scratch for the scaled truecolour path - see blit_scaled_wlut. Allocated on
+ * first use at the destination size and kept, because a frame is every frame
+ * and allocating one per frame would be the most expensive thing in the loop. */
+static ULONG *g_scratch;
+static long   g_scratch_px;
+
+void amigagfx_set_scale(int on)
+{
+    g_scale = on ? 1 : 0;
+}
+
 static int    g_depth;           /* bits per pixel of the screen we opened  */
 static int    g_blit;            /* BLIT_*                                  */
 static int    g_demoted;         /* log a LOCK->PENS demotion exactly once  */
@@ -678,6 +699,22 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		if (g_xoff < 0)   g_xoff = 0;
 		if (g_yoff < g_bar) g_yoff = g_bar;
 
+		/* WHERE A FRAME LANDS. Centred at its own size, or stretched to the
+		 * whole screen below the bar - see amigagfx_set_scale. Scaling uses
+		 * the FULL rendered size as its source, not the clipped visible one:
+		 * the point of stretching is to show all of the picture. */
+		if (g_scale) {
+			g_dst_x = 0;
+			g_dst_y = g_bar;
+			g_dst_w = sw;
+			g_dst_h = avail_h;
+		} else {
+			g_dst_x = g_xoff;
+			g_dst_y = g_yoff;
+			g_dst_w = g_vis_w;
+			g_dst_h = g_vis_h;
+		}
+
 		if (g_vis_w != w || g_vis_h != h)
 			fprintf(stdout, "morphos: asked for %dx%d, screen granted %dx%d"
 			                " - showing %dx%d of the picture, the rest is"
@@ -688,6 +725,9 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		        sw, sh, g_depth, (unsigned long)g_want_modeid,
 		        (unsigned long)GetVPModeID(&g_screen->ViewPort),
 		        g_width, g_height, g_vis_w, g_vis_h, g_xoff, g_yoff, g_bar);
+		fprintf(stdout, "morphos: picture %s - destination %dx%d at %d,%d\n",
+		        g_scale ? "STRETCHED to the screen" : "centred at its own size",
+		        g_dst_w, g_dst_h, g_dst_x, g_dst_y);
 		fflush(stdout);
 	}
 
@@ -779,6 +819,7 @@ void amigagfx_close(void)
 	if (g_window != NULL) { CloseWindow(g_window); g_window = NULL; }
 	if (g_screen != NULL) { CloseScreen(g_screen); g_screen = NULL; }
 	if (g_chunky != NULL) { FreeVec(g_chunky); g_chunky = NULL; }
+	if (g_scratch != NULL) { FreeVec(g_scratch); g_scratch = NULL; g_scratch_px = 0; }
 	/* The screen is gone, so nothing can be locked any more; hand the library
 	 * back. A resolution change closes and reopens, which costs one OpenLibrary
 	 * on an already-resident library - not worth keeping state for. */
@@ -895,6 +936,74 @@ static void blit_wlut(int x, int y, int w, int h)
 	                   (UWORD)w, (UWORD)h, (UBYTE)CTABFMT_XRGB8);
 }
 
+/* ---- the scaled paths --------------------------------------------------- *
+ *
+ * Both take the WHOLE rendered picture and put it on the whole destination,
+ * because a stretched dirty rectangle is not a dirty rectangle: the
+ * destination pixels a source rectangle maps onto depend on the scale factor
+ * and do not line up with anything the caller knows about. gta_main.c blits
+ * full-frame anyway, so nothing is lost by saying so plainly here.
+ */
+
+/* 8-bit screen: cybergraphics scales it for us. RECTFMT_LUT8 means the bytes
+ * are pen numbers, which is right on a screen carrying our palette. */
+static void blit_scaled_pens(void)
+{
+	ScalePixelArray((APTR)g_chunky, (UWORD)g_width, (UWORD)g_height,
+	                (UWORD)g_pitch, &g_screen->RastPort,
+	                (UWORD)g_dst_x, (UWORD)g_dst_y,
+	                (UWORD)g_dst_w, (UWORD)g_dst_h, (UBYTE)RECTFMT_LUT8);
+}
+
+/* Truecolour screen: there is no ScaleLUTPixelArray, so the palette lookup and
+ * the stretch are done in one pass into a scratch buffer and the result is
+ * pushed out as ARGB.
+ *
+ * Nearest neighbour, by a fixed-point step per axis. It is one table lookup and
+ * one store per DESTINATION pixel, which on a full screen is the largest loop
+ * in the frame - but it is also a loop a PowerPC eats, and the alternative
+ * (converting then calling ScalePixelArray) walks the pixels twice.
+ *
+ * The source row index is computed once per output row rather than per pixel,
+ * which is what keeps the inner loop to a load, a lookup and a store. */
+static void blit_scaled_wlut(void)
+{
+	long need = (long)g_dst_w * g_dst_h;
+	ULONG xstep, ystep, ypos;
+	int dy;
+
+	if (g_dst_w <= 0 || g_dst_h <= 0) return;
+
+	if (g_scratch == NULL || g_scratch_px < need) {
+		if (g_scratch != NULL) FreeVec(g_scratch);
+		g_scratch = (ULONG *)AllocVec((ULONG)need * sizeof(ULONG), MEMF_ANY);
+		g_scratch_px = (g_scratch != NULL) ? need : 0;
+		if (g_scratch == NULL) return;      /* silently skip a frame, not crash */
+	}
+
+	/* 16.16 steps. g_dst_* are at least 1 here, so neither divides by zero. */
+	xstep = ((ULONG)g_width  << 16) / (ULONG)g_dst_w;
+	ystep = ((ULONG)g_height << 16) / (ULONG)g_dst_h;
+
+	ypos = 0;
+	for (dy = 0; dy < g_dst_h; dy++) {
+		const UBYTE *src = g_chunky + (ULONG)(ypos >> 16) * g_pitch;
+		ULONG *dst = g_scratch + (long)dy * g_dst_w;
+		ULONG xpos = 0;
+		int dx;
+		for (dx = 0; dx < g_dst_w; dx++) {
+			dst[dx] = g_ctable[src[xpos >> 16]];
+			xpos += xstep;
+		}
+		ypos += ystep;
+	}
+
+	WritePixelArray((APTR)g_scratch, 0, 0, (UWORD)(g_dst_w * 4),
+	                &g_screen->RastPort,
+	                (UWORD)g_dst_x, (UWORD)g_dst_y,
+	                (UWORD)g_dst_w, (UWORD)g_dst_h, (UBYTE)RECTFMT_ARGB);
+}
+
 void amigagfx_blit(int x, int y, int w, int h)
 {
 	int x2, y2;
@@ -919,6 +1028,23 @@ void amigagfx_blit(int x, int y, int w, int h)
 
 	w = x2 - x;
 	h = y2 - y;
+
+	/* SCALING TAKES OVER THE WHOLE BLIT. The rectangle has been clipped and
+	 * found non-empty, which is all it was needed for - a scaled frame goes out
+	 * whole, for the reason given above the two functions. */
+	if (g_scale) {
+		if (g_depth <= 8) blit_scaled_pens();
+		else              blit_scaled_wlut();
+		g_blits++;
+		if (g_blits == 1 || (g_verbose && (g_blits % 200) == 0)) {
+			fprintf(stdout, "morphos: blit #%lu  %dx%d -> %dx%d  %s\n",
+			        g_blits, g_width, g_height, g_dst_w, g_dst_h,
+			        g_depth <= 8 ? "ScalePixelArray(LUT8)"
+			                     : "scale+LUT -> WritePixelArray(ARGB)");
+			fflush(stdout);
+		}
+		return;
+	}
 
 	if (g_blit == BLIT_LOCK && !blit_locked(x, y, w, h)) {
 		/* Demote once, and for this screen only. Logged outside the lock. */

@@ -4481,6 +4481,21 @@ int main(void)
          * is already dimensioned for the largest case. */
         gta_prefs_screen_size(prefs.screen, prefs.gfx,
                               &g_screen_w, &g_screen_h, &g_scale2x);
+        /* Doubling is its own setting now rather than a fifth screen size, so
+         * it is applied on top of whatever size was chosen - which is what
+         * makes "320x240, doubled" expressible at all. The legacy
+         * 640x480x2 word still arrives here as scale2x from the line above;
+         * either source turns it on. */
+        if (prefs.dbl) g_scale2x = 1;
+#ifdef __MORPHOS__
+        /* STRETCH OR CENTRE, told to the platform layer before it opens
+         * anything, because it decides where a frame lands and that has to be
+         * settled while the screen is being sized. MorphOS-only: the 68k
+         * backends have no scaler, and the question barely arises there -
+         * a screen on an Amiga is the size the game asked for. Here the driver
+         * routinely grants something much bigger. */
+        amigagfx_set_scale(prefs.scale);
+#endif
         g_render_w = g_scale2x ? g_screen_w / 2 : g_screen_w;
         g_render_h = g_scale2x ? g_screen_h / 2 : g_screen_h;
         printf("gta: prefs %s - audio %s, gfx %s, screen %s\n",

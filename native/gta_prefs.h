@@ -111,10 +111,32 @@
 
 #define GTA_SCR_COUNT 5
 
+/* DOUBLING AND SCALING ARE SETTINGS OF THEIR OWN NOW, not a fifth screen size.
+ *
+ * GTA_SCR_640480X2 said two things at once - "a 640x480 screen" and "render a
+ * quarter of it" - and that is why there was no way to ask for 320x240
+ * doubled onto a 640x480 screen, or for a 640x480 picture stretched to fill a
+ * bigger one. The size picks the SCREEN; these two say what happens to the
+ * picture on the way to it, and they combine:
+ *
+ *   dbl    the renderer draws half the width and half the height and every
+ *          pixel is written twice in each axis. A quarter of the rasterising
+ *          for the same field of view, which is what a slow machine wants.
+ *   scale  the rendered picture is stretched to fill the screen rather than
+ *          sitting in the middle of it. Off, it is centred at its own size -
+ *          see the note on amigagfx_open about why centring is the default:
+ *          a stretched picture of a 320-wide frame on a 1280-wide screen is
+ *          not more game, it is bigger pixels, and the player should get to
+ *          say which they want.
+ *
+ * GTA_SCR_640480X2 is still PARSED, so a prefs file written by an older build
+ * keeps working; it loads as 640x480 with dbl set. It is never written back. */
 typedef struct {
     int audio;      /* GTA_AUDIO_*  */
     int gfx;        /* GTA_GFX_*    */
     int screen;     /* GTA_SCR_*    */
+    int dbl;        /* 0/1 - render half size and double it on the way out */
+    int scale;      /* 0/1 - stretch to fill the screen instead of centring */
     int music_vol;  /* 0..64, Paula's own hardware scale; AHI is scaled to it */
     int sfx_vol;    /* 0..64 */
     int cars;       /* traffic cars with a driver, GTA_CARS_MIN..MAX - the
