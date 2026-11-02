@@ -222,6 +222,23 @@ if [ -f "$SND" ]; then
     echo "deployed: GTADATA/level001.snd"
 fi
 
+# SAN ANDREAS AND VICE CITY (221): style002/003 and level002/003, baked the
+# same way, by the C: baker when there is one. Baked once; delete the file in
+# Work:GTADATA to have it baked again.
+for N in 002 003; do
+    B2="$ROOT/build/host/gtabake"
+    [ -n "$GTA_BUILD" ] && [ -x "$GTA_BUILD/host/gtabake" ] && B2="$GTA_BUILD/host/gtabake"
+    G="$ROOT/dos/Grand_Theft_Auto/gtadata"
+    if [ ! -f "$WORK/GTADATA/style$N.til" ] && [ -x "$B2" ] && [ -f "$G/style$N.gry" ]; then
+        "$B2" "$G/style$N.gry" "$WORK/GTADATA/style$N.til" >/dev/null &&
+            echo "baked:    GTADATA/style$N.til"
+    fi
+    if [ ! -f "$WORK/GTADATA/level$N.snd" ] && [ -x "$B2" ] && [ -f "$G/audio/level$N.sdt" ]; then
+        "$B2" -sfx "$G/audio/level$N" "$WORK/GTADATA/level$N.snd" >/dev/null &&
+            echo "baked:    GTADATA/level$N.snd"
+    fi
+done
+
 # THE VOICE BANK - vocalcom, the announcer, the cops and the pedestrians.
 # Same baker; the game reads only its index and takes each line off the disk
 # when it is said (gta_sfx_open_index). Baked by the host gtabake from C:

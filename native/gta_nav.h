@@ -44,7 +44,47 @@ typedef struct {
      * lives in the block's slope field, not in the byte. Read-only, and
      * never followed when it is NULL. */
     const gta_map *map;
+    /* THE THIN WALLS (229, the research notes). The original's walls
+     * are of two kinds: a BUILDING block (ground type 5, which the byte
+     * above already says) and a SOLID FLAT FACE - a fence, a garage door, a
+     * railing - on the W or N edge of a block with the FLAT bit, whose tile
+     * is in the style's short list. Two bits a cell: 1 = the W edge is a
+     * wall, 2 = the N edge. 96 KB; a flat face's E/S are its own W/N seen
+     * from behind, so two bits are the whole of it. */
+    unsigned char *walls;
+    int style;
+    /* THE POSTS (WALLS_DOORS.md 2.3): a flat face showing the style's post
+     * tile stops a CAR in an 8x8 px square in the middle of that edge, and
+     * nothing else. Few of them, so a sorted list of (z,y,x,edge) keys
+     * rather than two more bits in every cell. */
+    unsigned long *posts;
+    int n_posts;
 } gta_nav;
+
+#define GTA_WALL_W 1
+#define GTA_WALL_N 2
+
+/* The two wall bits of a cell, 0 off the map. */
+int  gta_nav_wall(const gta_nav *nav, int bx, int by, int bz);
+/* Set them - for a DOOR, whose face is solid only while it is shut. */
+void gta_nav_set_wall(gta_nav *nav, int bx, int by, int bz, int bits);
+/* Does the segment (x0,y0)-(x1,y1), 16.16 world px, cross a wall on layer
+ * bz? The original's test: an edge crossing a wall line inside its span. */
+int  gta_nav_wall_cross(const gta_nav *nav, int bz, long x0, long y0,
+                        long x1, long y1);
+/* Does a car's box - centre (cx,cy) 16.16 px, unit heading (fx,fy) and
+ * right (rx,ry) in Q14, half length hl and half width hw in px - touch a
+ * post on layer bz? */
+int  gta_nav_post_hit(const gta_nav *nav, int bz, long cx, long cy,
+                      long fx, long fy, long rx, long ry, int hl, int hw);
+/* The same for a SHOT: every flat face stops it bar the style's short list
+ * of see-through tiles (railings, the post), and a door stops it open or
+ * shut. */
+int  gta_nav_shot_cross(const gta_nav *nav, int bz, long x0, long y0,
+                        long x1, long y1);
+/* The grid the game is playing on, for code that is handed only the map
+ * (the player's walk). Set by gta_nav_build(). */
+extern const gta_nav *gta_nav_walls;
 
 /* Build the grid from a loaded map. Returns 0 on success, non-zero if the
  * 384 KB could not be allocated - which is not fatal to the caller, but every

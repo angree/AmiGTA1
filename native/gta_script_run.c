@@ -129,8 +129,46 @@ static const struct { const char *name; int op; } cmd_names[] = {
      * been earned and ends ones that are running. Each of these is a
      * question about something the port does not have - a kill frenzy, a
      * second player, a train - so the honest answer is no. */
-    { "PLAYER_ARE_BOTH_ONSCREEN", GTA_CMD_UNKNOWN_CHECK },
-    { "IS_PLAYER_ON_TRAIN", GTA_CMD_UNKNOWN_CHECK },
+    { "MAKEOBJ",        GTA_CMD_MAKEOBJ },
+    { "EXPLODE_CAR",    GTA_CMD_EXPLODE_CAR },
+    { "CHANGE_BLOCK",   GTA_CMD_CHANGE_BLOCK },
+    { "CHANGE_TYPE",    GTA_CMD_CHANGE_TYPE },
+    { "EXPL_PED",       GTA_CMD_EXPL_PED },
+    { "SET_NO_COLLIDE", GTA_CMD_SET_NO_COLLIDE },
+    { "SET_COLLIDE",    GTA_CMD_SET_COLLIDE },
+    { "PED_WEAPON",     GTA_CMD_PED_WEAPON },
+    { "PED_POLICE",     GTA_CMD_PED_POLICE },
+    { "ADD_A_LIFE",     GTA_CMD_ADD_A_LIFE },
+    { "INC_HEADS",      GTA_CMD_INC_HEADS },
+    { "IS_PED_STUNNED", GTA_CMD_IS_PED_STUNNED },
+    { "DUMMYON",        GTA_CMD_DUMMYON },
+    { "SENDTO",         GTA_CMD_SENDTO },
+    { "GOTO",           GTA_CMD_GOTO },
+    { "LOCK_DOOR",      GTA_CMD_LOCK_DOOR },
+    { "UNLOCK_DOOR",    GTA_CMD_UNLOCK_DOOR },
+    { "PED_OUT_OF_CAR", GTA_CMD_PED_OUT_OF_CAR },
+    { "GET_DRIVER_INFO", GTA_CMD_GET_DRIVER_INFO },
+    { "DUMMY_DRIVE_ON", GTA_CMD_DUMMY_DRIVE_ON },
+    { "GET_CAR_INFO",   GTA_CMD_GET_CAR_INFO },
+    { "LOCATE",         GTA_CMD_LOCATE },
+    { "PIXEL_CAR_ON",   GTA_CMD_PIXEL_CAR_ON },
+    { "PARKED_PIXELS_ON", GTA_CMD_PARKED_PIXELS_ON },
+    { "HUNTON",         GTA_CMD_HUNTON },
+    { "HUNTOFF",        GTA_CMD_HUNTOFF },
+    { "OBTAIN",         GTA_CMD_OBTAIN },
+    { "THROW",          GTA_CMD_THROW },
+    { "SETUP_REPO",     GTA_CMD_SETUP_REPO },
+    { "DO_REPO",        GTA_CMD_DO_REPO },
+    { "MODEL_HUNT",     GTA_CMD_MODEL_HUNT },
+    { "NEXT_KICK",      GTA_CMD_NEXT_KICK },
+    { "SET_KILLTRIG",   GTA_CMD_SET_KILLTRIG },
+    { "FREEUP_CAR",     GTA_CMD_FREEUP_CAR },
+    { "START_MODEL",    GTA_CMD_START_MODEL },
+    { "DO_MODEL",       GTA_CMD_DO_MODEL },
+    { "RETURN_CONTROL", GTA_CMD_RETURN_CONTROL },
+    { "PLAYER_ARE_BOTH_ONSCREEN", GTA_CMD_PLAYER_ARE_BOTH_ONSCREEN },
+    { "IS_PLAYER_ON_TRAIN", GTA_CMD_IS_PLAYER_ON_TRAIN },
+    { "WRECK_A_TRAIN", GTA_CMD_WRECK_A_TRAIN },
     { 0, 0 }
 };
 
@@ -171,7 +209,7 @@ static int parse_cmd(gta_script *s, const char *ln, gta_cmd *out)
     while (*p == ' ' || *p == '\t') p++;
     if (*p < '0' || *p > '9')
         return 0;
-    out->line = (short)strtol(p, (char **)&p, 10);
+    out->line = strtol(p, (char **)&p, 10);
 
     while (*p == ' ' || *p == '\t') p++;
     w = p;
@@ -195,6 +233,14 @@ static int parse_cmd(gta_script *s, const char *ln, gta_cmd *out)
 
 /* The logic block is what follows the declaration block's terminator - the
  * first line whose label is negative - and it ends at the next one. */
+/* THE GATES (226): BARRIER and friends are doors with a condition. */
+static int is_gate(int type)
+{
+    return type == GTA_DECL_BARRIER || type == GTA_DECL_MODEL_BARRIER ||
+           type == GTA_DECL_SPECIFIC_BARR || type == GTA_DECL_SPECIFIC_DOOR ||
+           type == GTA_DECL_BASIC_BARRIER;
+}
+
 int gta_script_load_cmds(gta_script *s, const char *path, int level)
 {
     FILE *f;
@@ -215,9 +261,20 @@ int gta_script_load_cmds(gta_script *s, const char *path, int level)
     for (i = 0; i < s->n; i++) {
         s->d[i].state = (s->d[i].type == GTA_DECL_TRIGGER ||
                          s->d[i].type == GTA_DECL_MPHONES ||
-                         s->d[i].type == GTA_DECL_SPRAY)
+                         s->d[i].type == GTA_DECL_SPRAY ||
+                         s->d[i].type == GTA_DECL_BOMBSHOP)
                         ? GTA_TRIG_ARMED : GTA_TRIG_NONE;
         s->d[i].handle = 0;
+        if (s->d[i].type == GTA_DECL_BOMBSHOP_COST)
+            s->bomb_cost = s->d[i].a;
+        if (s->d[i].type == GTA_DECL_CHOPPER_ENDPOINT) {
+            s->chopper_x = ((long)s->d[i].x / 2) << 16;
+            s->chopper_y = ((long)s->d[i].y / 2) << 16;
+        }
+        if (is_gate(s->d[i].type))
+            s->d[i].state = GTA_DOOR_SHUT;
+        s->d[i].kill_parent = 0;
+        s->d[i].kill_slot = 0;
         if (s->d[i].type == GTA_DECL_DOOR)
             s->d[i].state = GTA_DOOR_SHUT;
         s->d[i].counter = (s->d[i].type == GTA_DECL_COUNTER ||
@@ -253,10 +310,16 @@ int gta_script_load_cmds(gta_script *s, const char *path, int level)
  * for the same reason: it is asked a handful of times a tick. */
 static int cmd_of_line(const gta_script *s, long line)
 {
-    int i;
-    for (i = 0; i < s->n_cmds; i++)
-        if (s->c[i].line == (short)line)
+    /* A POINTER WALK, not s->c[i]: the indexed form returned -1 on the
+     * Amiga for a label that was there (line 5705 of San Andreas, index
+     * 1710), while the host found it - 221. */
+    const gta_cmd *c = s->c;
+    int i, n = s->n_cmds;
+    for (i = 0; i < n; i++, c++) {
+        long l = c->line;
+        if (l == line)
             return i;
+    }
     return -1;
 }
 
@@ -267,7 +330,7 @@ static int crane_index(const gta_script *s, int line)
     for (i = 0; i < s->n; i++) {
         if (s->d[i].type != GTA_DECL_CRANE)
             continue;
-        if (s->d[i].line == (short)line)
+        if (s->d[i].line == line)
             return k;
         k++;
     }
@@ -278,7 +341,26 @@ static int proc_start(gta_script *s, long line, int trigger);
 
 int gta_script_debug_start(gta_script *s, int line)
 {
-    return proc_start(s, (long)line, -1);
+    int r = proc_start(s, (long)line, -1);
+    if (r < 0) {
+        int k, busy = 0;
+        for (k = 0; k < GTA_MAX_PROC; k++)
+            if (s->proc[k].cmd >= 0) busy++;
+        printf("gta: script - debug start of line %d failed: command index %d, "
+               "%d of %d processes busy, %d commands, lines %ld %ld .. %ld, "
+               "sizeof cmd %d\n", line,
+               cmd_of_line(s, line), busy, GTA_MAX_PROC, s->n_cmds,
+               s->n_cmds > 0 ? s->c[0].line : -1L,
+               s->n_cmds > 1 ? s->c[1].line : -1L,
+               s->n_cmds > 0 ? s->c[s->n_cmds - 1].line : -1L,
+               (int)sizeof(gta_cmd));
+        for (k = 0; k < s->n_cmds; k++)
+            if (s->c[k].line >= line - 3 && s->c[k].line <= line + 3)
+                printf("gta:   near: index %d line %ld op %d\n", k,
+                       s->c[k].line, s->c[k].op);
+        fflush(stdout);
+    }
+    return r;
 }
 
 static int proc_start(gta_script *s, long line, int trigger)
@@ -289,9 +371,10 @@ static int proc_start(gta_script *s, long line, int trigger)
     for (i = 0; i < GTA_MAX_PROC; i++) {
         if (s->proc[i].cmd >= 0) continue;
         s->proc[i].cmd = (short)ci;
-        s->proc[i].trigger = (short)trigger;
+        s->proc[i].trigger = trigger;
         s->proc[i].parent = -1;
         s->proc[i].keep = 0;
+        s->proc[i].kick_slot = 0;
         s->proc[i].count = 0;
         s->proc[i].count2 = 0;
         s->proc[i].fresh = 1;
@@ -306,7 +389,7 @@ static gta_decl *decl_of(gta_script *s, int line)
 {
     int i;
     for (i = 0; i < s->n; i++)
-        if (s->d[i].line == (short)line)
+        if (s->d[i].line == line)
             return &s->d[i];
     return 0;
 }
@@ -321,7 +404,12 @@ static int live_pos(gta_script *s, int line, long *wx, long *wy)
 {
     gta_decl *d = decl_of(s, line);
     if (d && d->handle && s->world) {
-        if (d->type == GTA_DECL_FUTUREPED || d->type == GTA_DECL_PED) {
+        if (d->handle & GTA_IN_CAR) {
+            if (s->world->car_pos &&
+                s->world->car_pos(s->world_ctx, d->handle & ~GTA_IN_CAR,
+                                  wx, wy))
+                return 1;
+        } else if (d->type == GTA_DECL_FUTUREPED || d->type == GTA_DECL_PED) {
             if (s->world->ped_pos &&
                 s->world->ped_pos(s->world_ctx, d->handle, wx, wy))
                 return 1;
@@ -339,7 +427,7 @@ static gta_placed *drop_of(gta_script *s, int line)
 {
     int i;
     for (i = 0; i < s->n_drops; i++)
-        if (s->drop[i].line == (short)line)
+        if (s->drop[i].line == line)
             return &s->drop[i];
     return 0;
 }
@@ -350,7 +438,16 @@ static gta_placed *drop_of(gta_script *s, int line)
  * scan that fires it is its own. */
 static int switchable(int type)
 {
+    if (type == GTA_DECL_MOVING_TRIG || type == GTA_DECL_CORRECT_MOD_TRIG ||
+        type == GTA_DECL_CORRECT_CAR_TRIG || type == GTA_DECL_MOVING_TRIG_HIRED ||
+        type == GTA_DECL_CARBOMB_TRIG || type == GTA_DECL_DAMAGE_TRIG ||
+        type == GTA_DECL_GUN_SCREEN_TRIG || type == GTA_DECL_CARDESTROY_TRIG ||
+        type == GTA_DECL_CARWAIT_TRIG || type == GTA_DECL_PEDCAR_TRIG ||
+        type == GTA_DECL_DUM_PED_BLOCK_TRIG || type == GTA_DECL_CARSTUCK_TRIG ||
+        type == GTA_DECL_ALT_DAMAGE_TRIG)
+        return 1;
     return type == GTA_DECL_TRIGGER || type == GTA_DECL_MPHONES ||
+           type == GTA_DECL_CARTRIGGER ||
            type == GTA_DECL_SPRAY || type == GTA_DECL_GUN_TRIG ||
            type == GTA_DECL_DUM_MISSION_TRIG || type == GTA_DECL_PHONE_TOGG;
 }
@@ -426,7 +523,7 @@ static gta_placed *phone_of(gta_script *s, int line)
 {
     int i;
     for (i = 0; i < s->n_phones; i++)
-        if (s->phone[i].line == (short)line)
+        if (s->phone[i].line == line)
             return &s->phone[i];
     return 0;
 }
@@ -504,6 +601,45 @@ static int powerup_block(const gta_script *s, long line, int *bx, int *by,
     *kind = d->a;
     *amount = d->b;
     return 1;
+}
+
+/* SET_KILLTRIG's half of a trigger firing (224): end the process in slot
+ * `kill_slot` of KICKSTART `kill_parent`. ALT_DAMAGE_TRIG never does - that
+ * is the whole difference between it and DAMAGE_TRIG (0xf45f9). */
+static void kill_on_fire(gta_script *s, const gta_decl *d)
+{
+    int k;
+    if (!d->kill_parent || d->type == GTA_DECL_ALT_DAMAGE_TRIG)
+        return;
+    for (k = 0; k < GTA_MAX_PROC; k++)
+        if (s->proc[k].cmd >= 0 && s->proc[k].parent == d->kill_parent &&
+            s->proc[k].kick_slot == (unsigned char)d->kill_slot) {
+            printf("gta: script - trigger %d kills process %d (slot %d of "
+                   "%ld)\n", d->line, k, d->kill_slot, d->kill_parent);
+            fflush(stdout);
+            proc_end_rearm(s, k);
+        }
+}
+
+/* ---- BATCH B helpers (222) ---- */
+
+/* The car a line names: a car's own handle, or the car its driver sits in. */
+static unsigned long car_handle(const gta_decl *d)
+{
+    if (!d || !d->handle) return 0;
+    return d->handle & ~GTA_IN_CAR;
+}
+
+/* Every line that named `from` names `to` now - the driver got out (his
+ * handle stops being the car's), or a ped got in (it starts being). */
+static void rename_handle(gta_script *s, unsigned long from, unsigned long to)
+{
+    int k;
+    for (k = 0; k < s->n; k++)
+        if (s->d[k].handle == from) {
+            s->d[k].handle = to;
+            s->d[k].type = GTA_DECL_PED;
+        }
 }
 
 static void step(gta_script *s, int i)
@@ -818,7 +954,11 @@ static void step(gta_script *s, int i)
         {
             gta_decl *d = decl_of(s, (int)c->p1);
             if (!d) { advance(s, i, c->p3); return; }
-            if (d->state != GTA_DOOR_OPEN) {
+            if (s->world && s->world->door) {
+                s->world->door(s->world_ctx, d->line,
+                               c->op == GTA_CMD_DOOR_ON ? GTA_DOOR_OP_ON
+                                                        : GTA_DOOR_OP_OPEN);
+            } else if (d->state != GTA_DOOR_OPEN) {
                 d->state = GTA_DOOR_OPEN;
                 printf("gta: script - door %d opens at (%d,%d)\n",
                        d->line, d->x, d->y);
@@ -833,7 +973,12 @@ static void step(gta_script *s, int i)
         {
             gta_decl *d = decl_of(s, (int)c->p1);
             if (!d) { advance(s, i, c->p3); return; }
-            d->state = GTA_DOOR_SHUT;
+            if (s->world && s->world->door)
+                s->world->door(s->world_ctx, d->line,
+                               c->op == GTA_CMD_DOOR_OFF ? GTA_DOOR_OP_OFF
+                                                         : GTA_DOOR_OP_CLOSE);
+            else
+                d->state = GTA_DOOR_SHUT;
         }
         advance_paid(s, i, c->p2, c->p5);
         return;
@@ -1047,6 +1192,26 @@ static void step(gta_script *s, int i)
     case GTA_CMD_ENABLE:
         {
             gta_decl *d = decl_of(s, (int)c->p1);
+            /* ENABLE SWITCHES A GATE ON for the types the original binds
+             * (SPECIFIC_DOOR, SPECIFIC_BARR, BARRIER); MODEL_BARRIER and
+             * BASIC_BARRIER take DOOR_ON instead (MISSIONS_DECLS_D.md 0.2).
+             * With no door logic yet, "on" is open, as DOOR_ON makes it. */
+            /* ...and a plain DOOR: MISSIONS_DECLS_D.md's table, "BARRIER
+             * (and DOOR) - door on". Vice City's bomb shops are switched on
+             * this way ([203] 30012 ENABLE 134) and stayed shut. */
+            if (d && (d->type == GTA_DECL_SPECIFIC_DOOR ||
+                      d->type == GTA_DECL_SPECIFIC_BARR ||
+                      d->type == GTA_DECL_BARRIER ||
+                      d->type == GTA_DECL_DOOR) &&
+                d->state != GTA_DOOR_OPEN) {
+                if (s->world && s->world->door)
+                    s->world->door(s->world_ctx, d->line, GTA_DOOR_OP_ON);
+                else
+                    d->state = GTA_DOOR_OPEN;
+                printf("gta: script - gate %d (%s) on at (%d,%d)\n", d->line,
+                       gta_script_type_name(d->type), d->x, d->y);
+                fflush(stdout);
+            }
             if (d && switchable(d->type)) {
                 if (d->state != GTA_TRIG_ARMED)
                     printf("gta: script - trigger line %d enabled\n",
@@ -1087,6 +1252,7 @@ static void step(gta_script *s, int i)
             if (k >= 0) {
                 s->proc[k].parent = c->line;
                 s->proc[k].keep = pr->keep;
+                s->proc[k].kick_slot = 1;
             }
         }
         advance(s, i, c->p2);
@@ -1144,7 +1310,7 @@ static void step(gta_script *s, int i)
             const gta_cmd *t = 0;
             int k;
             for (k = 0; k < s->n_cmds; k++)
-                if (s->c[k].line == (short)c->p1) { t = &s->c[k]; break; }
+                if (s->c[k].line == c->p1) { t = &s->c[k]; break; }
             brief(s, GTA_BRIEF_CANCEL, t ? t->p5 : 0, 0);
         }
         advance_paid(s, i, c->p2, c->p5);
@@ -1202,7 +1368,7 @@ static void step(gta_script *s, int i)
             int k, n = 0;
             for (k = 0; k < GTA_MAX_PROC; k++)
                 if (k != i && s->proc[k].cmd >= 0 &&
-                    s->proc[k].parent == (short)c->p1) {
+                    s->proc[k].parent == c->p1) {
                     proc_end(s, k);
                     n++;
                 }
@@ -1265,6 +1431,52 @@ static void step(gta_script *s, int i)
         }
         return;
 
+    case GTA_CMD_IS_PLAYER_ON_TRAIN:
+        /* `6120 IS_PLAYER_ON_TRAIN 506 0 6120` - case 0x7d: aboard, the
+         * DUMMY p1 takes the train's index, p5 is paid, on to p2; not
+         * aboard, p3 (here itself: wait until he is). */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            int t = (s->world && s->world->player_train)
+                  ? s->world->player_train(s->world_ctx) : -1;
+            if (t >= 0) {
+                if (d) d->handle = (unsigned long)t + 1;
+                advance_paid(s, i, c->p2, c->p5);
+            } else
+                advance(s, i, c->p3);
+        }
+        return;
+
+    case GTA_CMD_WRECK_A_TRAIN:
+        /* `6160 WRECK_A_TRAIN 506 0 -1 -1 50000` - case 0x7e: wreck the
+         * train in DUMMY p1, pay p5, on to p2 (no failure path). */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->wreck_train)
+                s->world->wreck_train(s->world_ctx, (int)d->handle - 1);
+            printf("gta: script - WRECK_A_TRAIN %ld\n", (long)c->p1);
+            fflush(stdout);
+            advance_paid(s, i, c->p2, c->p5);
+        }
+        return;
+
+    case GTA_CMD_PLAYER_ARE_BOTH_ONSCREEN:
+        /* `1180 PLAYER_ARE_BOTH_ONSCREEN 1000 0 1210` - the original's case
+         * 0x54: the car (or the car the person p1 sits in) inside the
+         * player's view rectangle (the original's routine) pays p5 and goes to p2;
+         * out of it, p3. Vice City 2's first job blows the car up only
+         * while the player can see it. */
+        {
+            long wx = 0, wy = 0;
+            int on = 0;
+            if (s->world && s->world->onscreen && live_pos(s, (int)c->p1,
+                                                           &wx, &wy))
+                on = s->world->onscreen(s->world_ctx, wx, wy);
+            if (on) advance_paid(s, i, c->p2, c->p5);
+            else    advance(s, i, c->p3);
+        }
+        return;
+
     case GTA_CMD_CHANGE_PED_TYPE:
         /* `520 CHANGE_PED_TYPE 299 0 -1 21 294` - person 299 becomes AI type
          * 21 with the PLAYER as his target. `p4` is the type and `p5` the
@@ -1281,8 +1493,18 @@ static void step(gta_script *s, int i)
                         on_player = 1;
                     live_pos(s, (int)c->p5, &tx, &ty);
                 }
+                {
+                gta_decl *tc = c->p5 > 0 ? decl_of(s, (int)c->p5) : 0;
+                if (c->p4 == 2 && tc && tc->handle &&
+                    tc->type != GTA_DECL_PED && tc->type != GTA_DECL_FUTUREPED &&
+                    tc->type != GTA_DECL_PLAYER && s->world->ped_sendto) {
+                    /* TYPE 2 = get into car p5 (DUMMY_DRIVE_ON waits for
+                     * it): he walks to the car, and the board takes him */
+                    s->world->ped_sendto(s->world_ctx, d->handle, tx, ty);
+                } else
                 s->world->ped_type(s->world_ctx, d->handle, (int)c->p4,
                                    tx, ty, on_player);
+                }
             }
         }
         advance(s, i, c->p2);
@@ -1464,6 +1686,536 @@ static void step(gta_script *s, int i)
             gta_placed *dr = drop_of(s, (int)c->p1);
             if (dr) dr->dead = 1;
         }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    /* BATCH A - the other levels' actions and one check, read out of
+     * the original's routine (the research notes). Every one pays p5 and
+     * goes on to p2 in the same tick, bar IS_PED_STUNNED. */
+    case GTA_CMD_MAKEOBJ:
+        /* a map object of the FUTURE's type, at its pixel position, turned
+         * by p4; from now on the line names that object (ARROW, LOCATE,
+         * KILL_OBJ) - the port's placed objects are DROP_ON's */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            gta_placed *dr = d ? drop_of(s, d->line) : 0;
+            if (d && !dr && s->n_drops < GTA_MAX_DROPS) {
+                long wx = 0, wy = 0;
+                int lz;
+                gta_script_decl_pos(s, (int)c->p1, &wx, &wy);
+                dr = &s->drop[s->n_drops++];
+                dr->x = wx;
+                dr->y = wy;
+                dr->line = d->line;
+                lz = gta_script_stand_layer(s->nav, (int)(wx >> 21),
+                                            (int)(wy >> 21));
+                dr->layer = (unsigned char)(lz < 0 ? 0 : lz);
+                dr->angle = (unsigned char)gta_script_angle((int)c->p4);
+                dr->ring = 0;
+                dr->dead = 0;
+                dr->spr = (short)(s->tiles
+                                  ? gta_tiles_object_sprite(s->tiles, d->a)
+                                  : -1);
+                printf("gta: script - MAKEOBJ %d at (%ld,%ld), type %d, "
+                       "sprite %d\n", d->line, wx >> 16, wy >> 16, d->a,
+                       dr->spr);
+                fflush(stdout);
+            } else if (dr) {
+                dr->dead = 0;
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_EXPLODE_CAR:
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->car_explode)
+                s->world->car_explode(s->world_ctx, d->handle);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_CHANGE_BLOCK:
+    case GTA_CMD_CHANGE_TYPE:
+        /* a BLOCK_INFO in block coordinates: the type word a (CHANGE_BLOCK),
+         * or face a := tile b (CHANGE_TYPE: 0 W, 1 E, 2 N, 3 S, 4 lid) */
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && s->world) {
+                if (c->op == GTA_CMD_CHANGE_BLOCK && s->world->map_type)
+                    s->world->map_type(s->world_ctx, d->x, d->y, d->z,
+                                       (long)(unsigned short)d->a);
+                else if (c->op == GTA_CMD_CHANGE_TYPE && s->world->map_face)
+                    s->world->map_face(s->world_ctx, d->x, d->y, d->z,
+                                       d->a, d->b & 0xff);
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_EXPL_PED:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && s->world && s->world->ped_explode) {
+                if (d->type == GTA_DECL_PLAYER)
+                    s->world->ped_explode(s->world_ctx, 0);
+                else if (d->handle)
+                    s->world->ped_explode(s->world_ctx, d->handle);
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_SET_NO_COLLIDE:
+    case GTA_CMD_SET_COLLIDE:
+        /* "cannot be damaged or shoved", not "no collision" */
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && d->handle && s->world && s->world->car_invuln)
+                s->world->car_invuln(s->world_ctx, d->handle,
+                                     c->op == GTA_CMD_SET_NO_COLLIDE);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_PED_WEAPON:
+    case GTA_CMD_PED_POLICE:
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            if (d && d->handle && d->type != GTA_DECL_PLAYER && s->world) {
+                if (c->op == GTA_CMD_PED_WEAPON && s->world->ped_weapon)
+                    s->world->ped_weapon(s->world_ctx, d->handle, (int)c->p4);
+                else if (c->op == GTA_CMD_PED_POLICE && s->world->ped_police)
+                    s->world->ped_police(s->world_ctx, d->handle);
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_ADD_A_LIFE:
+        if (s->world && s->world->add_life)
+            s->world->add_life(s->world_ctx);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_INC_HEADS:
+        if (s->world && s->world->inc_heads)
+            s->world->inc_heads(s->world_ctx, (int)c->p1);
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_IS_PED_STUNNED:
+        /* the one check: lying on the ground alive -> p2 (paid), else p3,
+         * which the scripts point back at the line itself to wait */
+        {
+            const gta_decl *d = gta_script_by_line(s, (int)c->p1);
+            int down = d && d->handle && d->type != GTA_DECL_PLAYER &&
+                       s->world && s->world->ped_stunned &&
+                       s->world->ped_stunned(s->world_ctx, d->handle);
+            if (down) advance_paid(s, i, c->p2, c->p5);
+            else      advance(s, i, c->p3);
+        }
+        return;
+
+    /* BATCH B - positions, dummy cars, drivers (the research notes) */
+    case GTA_CMD_LOCATE:
+        /* the player ON FOOT within p5 of the original's pixels (0 = 16) of
+         * p1; p4 the usual 5-based timeout. p5 is a radius, not a score. */
+        {
+            long wx = 0, wy = 0, r, dx, dy;
+            int out = countdown_out(pr, c->p4);
+            r = (c->p5 > 0 ? c->p5 : 16) / 2;       /* 64 a block -> 32 */
+            if (r < 10) r = 10;
+            if (s->on_foot && live_pos(s, (int)c->p1, &wx, &wy)) {
+                dx = s->px - wx; if (dx < 0) dx = -dx;
+                dy = s->py - wy; if (dy < 0) dy = -dy;
+                if (dx < (r << 16) && dy < (r << 16)) {
+                    printf("gta: script - LOCATE %ld reached\n", c->p1);
+                    fflush(stdout);
+                    advance(s, i, c->p2);
+                    return;
+                }
+            }
+            if (out) advance(s, i, c->p3);
+        }
+        return;
+
+    case GTA_CMD_GOTO:
+        /* the player - in a car or not - in p1's BLOCK, x and y only */
+        {
+            long wx = 0, wy = 0;
+            int out = countdown_out(pr, c->p4);
+            if (live_pos(s, (int)c->p1, &wx, &wy) &&
+                (s->px >> 21) == (wx >> 21) && (s->py >> 21) == (wy >> 21)) {
+                printf("gta: script - GOTO %ld reached\n", c->p1);
+                fflush(stdout);
+                advance_paid(s, i, c->p2, c->p5);
+                return;
+            }
+            if (out) advance(s, i, c->p3);
+        }
+        return;
+
+    case GTA_CMD_LOCK_DOOR:
+    case GTA_CMD_UNLOCK_DOOR:
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            if (h && s->world && s->world->car_lock)
+                s->world->car_lock(s->world_ctx, h,
+                                   c->op == GTA_CMD_LOCK_DOOR);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_DUMMYON:
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            if (h && s->world && s->world->car_wake)
+                s->world->car_wake(s->world_ctx, h);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_SENDTO:
+        /* car p1 drives itself by road to p4's block; the arrival is the
+         * DUM_MISSION_TRIG's business, not this command's */
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            long wx = 0, wy = 0;
+            if (h && s->world && s->world->car_sendto &&
+                live_pos(s, (int)c->p4, &wx, &wy)) {
+                s->world->car_sendto(s->world_ctx, h, wx, wy);
+                printf("gta: script - SENDTO car %ld -> line %ld at (%ld,%ld)\n",
+                       c->p1, c->p4, wx >> 21, wy >> 21);
+                fflush(stdout);
+            }
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_GET_DRIVER_INFO:
+        /* line p4 := the driver of car p1, or p3 when nobody is in it */
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            gta_decl *dst = decl_of(s, (int)c->p4);
+            if (h && dst && s->world && s->world->car_has_driver &&
+                s->world->car_has_driver(s->world_ctx, h)) {
+                dst->handle = h | GTA_IN_CAR;
+                dst->type = GTA_DECL_PED;
+                advance_paid(s, i, c->p2, c->p5);
+            } else {
+                advance(s, i, c->p3);
+            }
+        }
+        return;
+
+    case GTA_CMD_PED_OUT_OF_CAR:
+        /* p1 a car, or a ped GET_DRIVER_INFO named: the driver gets out and
+         * every line that named him in the car names him on foot */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            int is_ped = d && (d->type == GTA_DECL_PED ||
+                               d->type == GTA_DECL_FUTUREPED);
+            unsigned long h;
+            long r;
+            if (!d || !d->handle) return;            /* stays, as the original */
+            if (is_ped && !(d->handle & GTA_IN_CAR)) {
+                advance_paid(s, i, c->p2, c->p5);    /* not in a car: done */
+                return;
+            }
+            h = car_handle(d);
+            r = (s->world && s->world->driver_out)
+                    ? s->world->driver_out(s->world_ctx, h) : -1;
+            if (r == 0) return;                      /* not yet */
+            if (r > 0) {
+                rename_handle(s, h | GTA_IN_CAR, (unsigned long)r);
+                printf("gta: script - PED_OUT_OF_CAR %ld: ped %ld out\n",
+                       c->p1, r);
+                fflush(stdout);
+                advance_paid(s, i, c->p2, c->p5);
+            } else if (is_ped) {
+                advance_paid(s, i, c->p2, c->p5);
+            } else {
+                advance(s, i, c->p3);
+            }
+        }
+        return;
+
+    case GTA_CMD_DUMMY_DRIVE_ON:
+        /* waits, for ever, until a ped has climbed into car p1 - then it
+         * drives off */
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            long r = (h && s->world && s->world->car_board)
+                         ? s->world->car_board(s->world_ctx, h) : 0;
+            if (r == 0) return;
+            if (r > 0)
+                rename_handle(s, (unsigned long)r, h | GTA_IN_CAR);
+            printf("gta: script - DUMMY_DRIVE_ON %ld: driving off\n", c->p1);
+            fflush(stdout);
+            advance_paid(s, i, c->p2, c->p5);
+        }
+        return;
+
+    case GTA_CMD_GET_CAR_INFO:
+        /* line p4 := the car ped p1 (the player, in every use) is in */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            gta_decl *dst = decl_of(s, (int)c->p4);
+            unsigned long h = 0;
+            if (d && d->type == GTA_DECL_PLAYER) {
+                if (s->world && s->world->player_car)
+                    h = s->world->player_car(s->world_ctx);
+            } else if (d && (d->handle & GTA_IN_CAR)) {
+                h = car_handle(d);
+            }
+            if (h && dst) {
+                dst->handle = h;
+                if (dst->type == GTA_DECL_PED || dst->type == GTA_DECL_DUMMY)
+                    dst->type = GTA_DECL_FUTURECAR;
+                advance_paid(s, i, c->p2, c->p5);
+            } else {
+                advance(s, i, c->p3);
+            }
+        }
+        return;
+
+    case GTA_CMD_PIXEL_CAR_ON:
+    case GTA_CMD_PARKED_PIXELS_ON:
+        /* a car of model a, turned b, at p1's PIXEL position, paint p4 -
+         * with a driver sitting in it for PIXEL_CAR_ON */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            long wx = 0, wy = 0;
+            if (d && !d->handle && s->world && s->world->car_on_px &&
+                gta_script_decl_pos(s, (int)c->p1, &wx, &wy))
+                d->handle = s->world->car_on_px(s->world_ctx, d->line, d->a,
+                                                wx, wy, gta_script_angle(d->b),
+                                                (int)c->p4,
+                                                c->op == GTA_CMD_PIXEL_CAR_ON);
+            if (d && d->handle) advance_paid(s, i, c->p2, c->p5);
+            else if (c->op == GTA_CMD_PIXEL_CAR_ON) advance(s, i, c->p3);
+        }
+        return;
+
+    /* BATCH C, part 1 (the research notes) */
+    case GTA_CMD_NEXT_KICK:
+        /* another child for KICKSTART p4, at line p1 (0 = the next command),
+         * so one KILL_SIDE_PROC p4 stops them all */
+        {
+            long start = c->p1 ? c->p1
+                       : (pr->cmd + 1 < s->n_cmds ? s->c[pr->cmd + 1].line : -1);
+            int k, slot = 1, j;
+            for (j = 0; j < GTA_MAX_PROC; j++)
+                if (s->proc[j].cmd >= 0 && s->proc[j].parent == c->p4 &&
+                    s->proc[j].kick_slot >= slot)
+                    slot = s->proc[j].kick_slot + 1;
+            k = start > 0 ? proc_start(s, start, -1) : -1;
+            if (k >= 0) {
+                s->proc[k].parent = c->p4;
+                s->proc[k].keep = pr->keep;
+                s->proc[k].kick_slot = (unsigned char)slot;
+            }
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_SET_KILLTRIG:
+        /* p1 the trigger, p4 a KICKSTART, p5 the SLOT (not a score): 1..4,
+         * and 5 - a slot nothing fills - clears it */
+        {
+            gta_decl *t = decl_of(s, (int)c->p1);
+            if (t) {
+                t->kill_parent = (c->p5 >= 1 && c->p5 <= 4) ? c->p4 : 0;
+                t->kill_slot = (signed char)c->p5;
+            }
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_FREEUP_CAR:
+        /* the mission lets go of it: ordinary traffic again */
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            if (h && s->world && s->world->car_release)
+                s->world->car_release(s->world_ctx, h);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_HUNTON:
+    case GTA_CMD_HUNTOFF:
+        /* p3 is the MODE, not a failure line; the target is always the
+         * player in the shipped script */
+        {
+            unsigned long h = car_handle(decl_of(s, (int)c->p1));
+            if (h && s->world && s->world->car_hunt)
+                s->world->car_hunt(s->world_ctx, h,
+                                   c->op == GTA_CMD_HUNTON
+                                       ? (c->p3 > 0 ? (int)c->p3 : 1) : 0);
+        }
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    case GTA_CMD_MODEL_HUNT:
+        /* p4 bomb cars (model 47) with drivers at FUTURECAR lines p1..,
+         * hunting the player, kamikaze. This process then stays here for
+         * good, turning wrecked hunters off; with p2 = 0 the script goes on
+         * in a child at the next command. */
+        if (pr->count2 != 5) {
+            long k;
+            for (k = 0; k < c->p4; k++) {
+                gta_decl *dd = decl_of(s, (int)(c->p1 + k));
+                if (!dd || dd->handle || !s->world || !s->world->car_on)
+                    continue;
+                dd->handle = s->world->car_on(s->world_ctx, dd->line, 47,
+                                              dd->x, dd->y, 0);
+                if (dd->handle) {
+                    if (s->world->setbomb)
+                        s->world->setbomb(s->world_ctx, dd->handle, 3);
+                    if (s->world->car_hunt)
+                        s->world->car_hunt(s->world_ctx, dd->handle, 3);
+                }
+            }
+            if (c->p2 != -1 && pr->cmd + 1 < s->n_cmds) {
+                int ch = proc_start(s, s->c[pr->cmd + 1].line, -1);
+                if (ch >= 0) s->proc[ch].keep = pr->keep;
+            }
+            pr->count2 = 5;
+            pr->fresh = 0;
+            return;
+        }
+        {
+            long k;
+            for (k = 0; k < c->p4; k++) {
+                gta_decl *dd = decl_of(s, (int)(c->p1 + k));
+                if (dd && dd->handle && s->world && s->world->car_dead &&
+                    s->world->car_dead(s->world_ctx, dd->handle) &&
+                    s->world->car_hunt)
+                    s->world->car_hunt(s->world_ctx, dd->handle, 0);
+            }
+        }
+        return;
+
+    case GTA_CMD_SETUP_REPO:
+        /* the car p1 remembers its owner, FUTUREPED p4 (in the rotation
+         * field, as the original does - PARKED_ON has read it already) */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            if (d) d->b = (short)c->p4;
+        }
+        advance(s, i, c->p2);
+        return;
+
+    case GTA_CMD_DO_REPO:
+        /* waits for the player to be driving car p1 (pays p5). After p4
+         * ticks - counted down IN THE COMMAND, as the original does - the
+         * owner walks back, gets in and drives it away; the player can still
+         * steal it back. */
+        {
+            gta_decl *d = decl_of(s, (int)c->p1);
+            unsigned long h = car_handle(d);
+            gta_decl *own = d ? decl_of(s, d->b) : 0;
+            long wx = 0, wy = 0;
+            if (h && s->world && s->world->player_car &&
+                s->world->player_car(s->world_ctx) == h) {
+                advance_paid(s, i, c->p2, c->p5);
+                return;
+            }
+            if (!h || !s->world) return;
+            if (c->p4 > 0 && --c->p4 == 0) {
+                if (own && !own->handle && s->world->ped_on &&
+                    gta_script_decl_pos(s, own->line, &wx, &wy))
+                    own->handle = s->world->ped_on(s->world_ctx, own->line,
+                                                   wx, wy, 0);
+                if (own && own->handle && s->world->ped_sendto &&
+                    s->world->car_pos &&
+                    s->world->car_pos(s->world_ctx, h, &wx, &wy))
+                    s->world->ped_sendto(s->world_ctx, own->handle, wx, wy);
+                printf("gta: script - DO_REPO %ld: the owner comes back\n",
+                       c->p1);
+                fflush(stdout);
+                pr->count2 = 2;
+                return;
+            }
+            if (pr->count2 == 2 && own && own->handle &&
+                !(own->handle & GTA_IN_CAR) && s->world->ped_board &&
+                s->world->ped_board(s->world_ctx, own->handle, h)) {
+                rename_handle(s, own->handle, h | GTA_IN_CAR);
+                if (s->world->car_wake)
+                    s->world->car_wake(s->world_ctx, h);
+                pr->count2 = 3;
+            }
+        }
+        return;
+
+    case GTA_CMD_OBTAIN:
+    case GTA_CMD_THROW:
+        /* the money bag the player holds and throws at the boat: the pay
+         * and the flow are the original's, the bag itself is not drawn */
+        advance_paid(s, i, c->p2, c->p5);
+        return;
+
+    /* BATCH C, part 2 - THE MODEL CAR (the research notes) */
+    case GTA_CMD_START_MODEL:
+        /* waits until he is driving, then swaps him into a bomb car. p5 is
+         * how many model cars are left - spent here, not paid */
+        if (c->p5 == 0) { advance(s, i, c->p3); return; }
+        if (s->world && s->world->model_start &&
+            s->world->model_start(s->world_ctx)) {
+            c->p5--;
+            printf("gta: script - START_MODEL %ld: %ld model cars left\n",
+                   c->line, c->p5);
+            fflush(stdout);
+            advance(s, i, c->p2);
+        }
+        return;
+
+    case GTA_CMD_DO_MODEL:
+        /* the session's supervisor: p2 some 100 ticks after target p4 is
+         * wrecked, p3 when he gets out or the last model car is spent; a
+         * spent one is replaced after 100 ticks while START_MODEL p1 has
+         * any left. No score on any path. */
+        {
+            int sm = cmd_of_line(s, c->p1), st;
+            unsigned long th = c->p4 >= 0 ? car_handle(decl_of(s, (int)c->p4)) : 0;
+            if (!s->world || !s->world->model_state) { advance(s, i, c->p3); return; }
+            if ((s->world->player_dead && s->world->player_dead(s->world_ctx)) ||
+                (s->world->player_arrested &&
+                 s->world->player_arrested(s->world_ctx))) {
+                if (s->world->model_return)
+                    s->world->model_return(s->world_ctx);
+                proc_end_rearm(s, i);
+                return;
+            }
+            if (th && s->world->car_dead &&
+                s->world->car_dead(s->world_ctx, th)) {
+                if (pr->count2++ > 99)
+                    advance(s, i, c->p2);
+                return;
+            }
+            st = s->world->model_state(s->world_ctx);
+            if (st == GTA_RC_CANCEL) { advance(s, i, c->p3); return; }
+            if (st == GTA_RC_DEAD) {
+                if (pr->count++ <= 99) return;
+                pr->count = 0;
+                if (sm >= 0 && s->c[sm].p5 > 0 && s->world->model_start &&
+                    s->world->model_start(s->world_ctx)) {
+                    s->c[sm].p5--;
+                    printf("gta: script - DO_MODEL: another model car, %ld "
+                           "left\n", s->c[sm].p5);
+                    fflush(stdout);
+                    return;
+                }
+                advance(s, i, c->p3);
+            }
+        }
+        return;
+
+    case GTA_CMD_RETURN_CONTROL:
+        if (s->world && s->world->model_return)
+            s->world->model_return(s->world_ctx);
         advance_paid(s, i, c->p2, c->p5);
         return;
 
@@ -1772,6 +2524,170 @@ static void step(gta_script *s, int i)
     }
 }
 
+/* ---- THE WATCH TRIGGERS (222, the research notes) ------------
+ *
+ * The original binds each to a car or ped handle at ENABLE; here the
+ * watched line's handle is read live, which is the same thing once the car
+ * exists and nothing before. All are Chebyshev squares in blocks, z ignored,
+ * and the original's own 25 Hz counts (this tick is 25 Hz too). */
+
+static int in_square(long wx, long wy, int bx, int by, int r)
+{
+    long dx = (wx >> 21) - bx, dy = (wy >> 21) - by;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    return dx <= r && dy <= r;
+}
+
+/* Start `line`. A one-shot is never re-armed by its process (CARBOMB,
+ * PEDCAR, DAMAGE): it goes to DISABLED and forgets it ever ran. */
+static void watch_fire(gta_script *s, gta_decl *d, long line, int oneshot)
+{
+    kill_on_fire(s, d);
+    d->state = oneshot ? GTA_TRIG_DISABLED : GTA_TRIG_STARTED;
+    if (proc_start(s, line, oneshot ? -1 : d->line) >= 0) {
+        printf("gta: script - %s %d fired, running line %ld\n",
+               gta_script_type_name(d->type), d->line, line);
+        fflush(stdout);
+    }
+}
+
+/* 1 when `d` is a watch trigger (handled here, whatever happened). */
+static int watch_tick(gta_script *s, gta_decl *d)
+{
+    const gta_script_world *w = s->world;
+    unsigned long pc;
+    long wx = 0, wy = 0;
+
+    if (!w) return 0;
+    pc = w->player_car ? w->player_car(s->world_ctx) : 0;
+    switch (d->type) {
+    case GTA_DECL_CORRECT_CAR_TRIG: {        /* L r car: the player in car X here */
+        unsigned long h = car_handle(decl_of(s, d->c));
+        if (h && pc == h && in_square(s->px, s->py, d->x, d->y, d->b))
+            watch_fire(s, d, d->a, 0);
+        return 1;
+    }
+    case GTA_DECL_CORRECT_MOD_TRIG: {        /* L r model; a wrong model here
+                                              * keeps it watching anywhere */
+        int in;
+        if (!pc) return 1;
+        in = in_square(s->px, s->py, d->x, d->y, d->b);
+        if (in || d->counter) {
+            if (w->player_car_model &&
+                w->player_car_model(s->world_ctx) == d->c) {
+                d->counter = 0;
+                watch_fire(s, d, d->a, 0);
+            } else if (in) {
+                d->counter = 1;
+            }
+        }
+        return 1;
+    }
+    case GTA_DECL_CARDESTROY_TRIG: {         /* L r car: car X a wreck here */
+        unsigned long h = car_handle(decl_of(s, d->c));
+        if (!h || pc == h || !w->car_pos || !w->car_dead) return 1;
+        if (w->car_pos(s->world_ctx, h, &wx, &wy) &&
+            in_square(wx, wy, d->x, d->y, d->b) &&
+            w->car_dead(s->world_ctx, h))
+            watch_fire(s, d, d->a, 0);
+        return 1;
+    }
+    case GTA_DECL_CARWAIT_TRIG:              /* L car: stood still on screen */
+    case GTA_DECL_CARSTUCK_TRIG: {           /* ...and off the road */
+        unsigned long h = car_handle(decl_of(s, d->b));
+        int st;
+        if (!h || pc == h || !w->car_still) { d->counter = 0; return 1; }
+        st = w->car_still(s->world_ctx, h);
+        if (d->type == GTA_DECL_CARWAIT_TRIG ? st >= 1 : st == 2) {
+            if (++d->counter > 64) {
+                d->counter = 0;
+                watch_fire(s, d, d->a, 0);
+            }
+        } else {
+            d->counter = 0;
+        }
+        return 1;
+    }
+    case GTA_DECL_GUN_SCREEN_TRIG: {         /* L ped: shots fired, ped X sees */
+        if (!s->on_foot || !w->player_firing || !w->onscreen ||
+            !w->player_firing(s->world_ctx))
+            return 1;
+        {
+            gta_decl *p = decl_of(s, d->b);
+            if (p && p->handle && live_pos(s, d->b, &wx, &wy) &&
+                w->onscreen(s->world_ctx, wx, wy))
+                watch_fire(s, d, d->a, 0);
+        }
+        return 1;
+    }
+    case GTA_DECL_DUM_PED_BLOCK_TRIG: {      /* L r ped: ped X walked here */
+        gta_decl *p = decl_of(s, d->c);
+        if (p && p->handle && live_pos(s, d->c, &wx, &wy) &&
+            in_square(wx, wy, d->x, d->y, d->b))
+            watch_fire(s, d, d->a, 0);
+        return 1;
+    }
+    case GTA_DECL_PEDCAR_TRIG: {             /* L ped car: ped X got into car Y */
+        gta_decl *p = decl_of(s, d->b);
+        unsigned long hc = car_handle(decl_of(s, d->c));
+        unsigned long hp = p ? p->handle : 0;
+        if (!hc || !hp) return 1;
+        if (hp == (hc | GTA_IN_CAR)) {
+            watch_fire(s, d, d->a, 1);
+        } else if (!(hp & GTA_IN_CAR) && w->ped_board &&
+                   w->ped_board(s->world_ctx, hp, hc)) {
+            rename_handle(s, hp, hc | GTA_IN_CAR);
+            watch_fire(s, d, d->a, 1);
+        }
+        return 1;
+    }
+    case GTA_DECL_DAMAGE_TRIG:               /* L r: the car brought here, */
+    case GTA_DECL_ALT_DAMAGE_TRIG:           /* latched, then wrecked here */
+        if (!d->handle) {
+            if (pc && in_square(s->px, s->py, d->x, d->y, d->b))
+                d->handle = pc;
+            return 1;
+        }
+        if (!w->car_pos || !w->car_pos(s->world_ctx, d->handle, &wx, &wy) ||
+            !in_square(wx, wy, d->x, d->y, d->b)) {
+            d->handle = 0;
+            return 1;
+        }
+        if (w->car_dead && w->car_dead(s->world_ctx, d->handle)) {
+            d->handle = 0;
+            watch_fire(s, d, d->a, 1);
+        }
+        return 1;
+    case GTA_DECL_MOVING_TRIG_HIRED: {       /* car r: near car X, it bolts */
+        unsigned long h = car_handle(decl_of(s, d->a));
+        if (!h || !w->car_pos || !w->car_sendto ||
+            !w->car_pos(s->world_ctx, h, &wx, &wy))
+            return 1;
+        if (in_square(s->px, s->py, (int)(wx >> 21), (int)(wy >> 21), d->b)) {
+            w->car_sendto(s->world_ctx, h, gta_script_centre(d->x),
+                          gta_script_centre(d->y));
+            d->state = GTA_TRIG_STARTED;     /* no process: only ENABLE re-arms */
+            printf("gta: script - MOVING_TRIG_HIRED %d: car %d drives to "
+                   "(%d,%d)\n", d->line, d->a, d->x, d->y);
+            fflush(stdout);
+        }
+        return 1;
+    }
+    case GTA_DECL_CARBOMB_TRIG: {            /* car L: in car X, a bomb fitted */
+        unsigned long h = car_handle(decl_of(s, d->a));
+        if (h && pc == h && w->car_bomb && w->car_bomb(s->world_ctx, h))
+            watch_fire(s, d, d->b, 1);
+        return 1;
+    }
+    case GTA_DECL_MOVING_TRIG:
+        /* all eight in the shipped script watch FUTURECARs that are never
+         * ENABLE'd, so none can fire (MISSIONS_DECLS_D.md) */
+        return 1;
+    }
+    return 0;
+}
+
 void gta_script_tick(gta_script *s, long px, long py, int on_foot)
 {
     int i;
@@ -1805,15 +2721,55 @@ void gta_script_tick(gta_script *s, long px, long py, int on_foot)
         /* A SPRAY SHOP IS A TRIGGER OF ITS OWN KIND - type 3, built into the
          * game rather than starting a line of the script - so the scan that
          * starts processes must leave it alone. It is handled below. */
-        if (d->type == GTA_DECL_SPRAY)
+        if (d->type == GTA_DECL_SPRAY || d->type == GTA_DECL_BOMBSHOP)
             continue;
-        dx = px - gta_script_centre(d->x);
-        dy = py - gta_script_centre(d->y);
+        if (watch_tick(s, d))
+            continue;
+        if (d->type == GTA_DECL_CARTRIGGER) {
+            /* `140 (154,15,4) CARTRIGGER 31220 139`: trigger type 9 fires
+             * when the player is in the car declared on line `b` - the
+             * number sits in the original's RADIUS slot, so the block test
+             * spans the map and the car is the whole condition
+             * (MISSIONS.md, trigger types). Never declared armed: ENABLE
+             * arms it once the car exists. */
+            gta_decl *car = decl_of(s, d->b);
+            if (!car || !car->handle || !s->world || !s->world->player_car ||
+                s->world->player_car(s->world_ctx) != car->handle)
+                continue;
+            d->state = GTA_TRIG_STARTED;
+            kill_on_fire(s, d);
+            if (proc_start(s, d->a, d->line) >= 0) {
+                printf("gta: script - CARTRIGGER %d fired (in car %d),"
+                       " running line %ld\n", d->line, car->line, (long)d->a);
+                fflush(stdout);
+            }
+            continue;
+        }
+        if (d->type == GTA_DECL_DUM_MISSION_TRIG) {
+            /* `618 (23,148,3) DUM_MISSION_TRIG 7700 3 319`: fires when CAR
+             * 319 - the one a SENDTO drives there - comes within 3 blocks.
+             * The player has nothing to do with it (trigger type 0xe). */
+            long cx = 0, cy = 0;
+            gta_decl *car = decl_of(s, d->c);
+            if (!car || !car->handle || !s->world || !s->world->car_pos ||
+                !s->world->car_pos(s->world_ctx, car_handle(car), &cx, &cy))
+                continue;
+            /* ...and not while the player is driving it (MISSIONS_DECLS_D) */
+            if (s->world->player_car &&
+                s->world->player_car(s->world_ctx) == car_handle(car))
+                continue;
+            dx = cx - gta_script_centre(d->x);
+            dy = cy - gta_script_centre(d->y);
+        } else {
+            dx = px - gta_script_centre(d->x);
+            dy = py - gta_script_centre(d->y);
+        }
         if (dx < 0) dx = -dx;
         if (dy < 0) dy = -dy;
         r = ((long)(d->b > 0 ? d->b : 1)) << 21;
         if (dx > r || dy > r) continue;
         d->state = GTA_TRIG_STARTED;
+        kill_on_fire(s, d);
         if (proc_start(s, d->a, d->line) >= 0) {
             printf("gta: script - trigger line %d fired, running line %ld\n",
                    d->line, (long)d->a);
@@ -1848,6 +2804,39 @@ void gta_script_tick(gta_script *s, long px, long py, int on_foot)
             s->n_resprays++;
             printf("gta: script - spray shop %d: colour %d\n",
                    d->line, d->a);
+            fflush(stdout);
+        }
+    }
+
+    /* THE BOMB SHOPS (228, the research notes) - the spray shop's twin:
+     * drive in, pay BOMBSHOP_COST, and the car carries a bomb that FIRE
+     * arms. The original re-runs every tick and a second sale is stopped
+     * only by the bomb already fitted; here one visit is one try, and it
+     * re-arms two blocks away, so "no money" is said once, not every tick. */
+    for (i = 0; i < s->n; i++) {
+        gta_decl *d = &s->d[i];
+        long dx, dy;
+        int r;
+        if (d->type != GTA_DECL_BOMBSHOP)
+            continue;
+        dx = px - gta_script_centre(d->x); if (dx < 0) dx = -dx;
+        dy = py - gta_script_centre(d->y); if (dy < 0) dy = -dy;
+        if (d->state == GTA_TRIG_STARTED) {
+            if (dx > (2L << 21) || dy > (2L << 21))
+                d->state = GTA_TRIG_ARMED;
+            continue;
+        }
+        /* THE SHOP'S BLOCK, as in the original: a garage, field ground under
+         * a roof, which a car drives into (collision here is ground-based) */
+        if (d->state != GTA_TRIG_ARMED || dx > (1L << 20) || dy > (1L << 20))
+            continue;
+        if (!s->world || !s->world->bombshop)
+            continue;
+        r = s->world->bombshop(s->world_ctx, s->bomb_cost);
+        if (r >= 0) {
+            d->state = GTA_TRIG_STARTED;
+            printf("gta: script - bomb shop %d: %s\n", d->line,
+                   r ? "bomb fitted" : "refused");
             fflush(stdout);
         }
     }

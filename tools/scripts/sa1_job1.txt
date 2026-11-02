@@ -1,0 +1,45 @@
+# SAN ANDREAS 1, FIRST JOB, END TO END. startlevel.txt 2 (section [102] of
+# mission.ini). Run: reload-gta.ps1 -WaitFor "autodrive done" -TimeoutSec 400
+# Flow followed (mission.ini line numbers in brackets):
+#   opening block: 85 PLAYER (6,9), 83 TRIGGER at the start -> 12 STARTUP 83 132
+#   [15101] -> 132.. DOOR_ON, 139 MOBILE_BRIEF -> 9000.. POWERUP_ON chain ->
+#   20008.. ENABLE 81/82, DISABLE 130/138/... [18513-18534] -> 25005 arrow
+#   loop over phones 48..51. Wait it out: 20060/20080 DISABLE 130 and 138, the
+#   two triggers this job needs, so the job must start AFTER that.
+#   81 MPHONES (130,146) r3 -> 10 MPHONE 48 100 4 [15100]: phones 48..51 at
+#   (129..132,145) ring; phone 48 = index 0 -> line 100 BRIEF 2002 [15104]
+#   -> 110..113 [15115-15118] -> 140 ARROW 44, 142 ENABLE 130 [15151-15154].
+#   130 TRIGGER (60,154) r6 -> 145 DISABLE 130, 146 ANSWER 44 [15156-15157]:
+#   phone 44 at (60,153) calls back -> 149 PARKED_ON 116 [15160] (FUTURECAR
+#   62 at (31,152)) -> 151 KICKSTART 178 189 (60 s timer, ENABLE 117 door)
+#   -> 155 STEAL 116 0 0 0 1000 [15171] -> 157 ENABLE 138 [15173].
+#   138 TRIGGER (65,154) -> 190 DISABLE 138, 192 CHECK_CAR 116 [15209-15210]
+#   -> 194/195 KILL_SPEC_PROC -> 200 PARK 117 [15217] (SPECIFIC_DOOR 117 at
+#   (65,155) for car 116) -> 15442 DROP_WANTED_LEVEL -> 201..204 ->
+#   206 MISSION_END 0 0 0 0 25000 [15222].
+# PASS: "phone 48 answered", "phone 44 is ringing for you", "STEAL: the
+#   player has car 116", "gta: script - paid 1000 (...)", "PARKED at door
+#   117", "gta: script - paid 25000 (...)", "gta: script - mission complete".
+#   (Pay amounts are 1000/25000 times the level's start multiplier.)
+# RISKY: (1) wait 2500 at the start is the guess the earlier SA tests used for
+#   the opening block; too short and 20060/20080 disable 130/138 under the job.
+#   (2) goto onto phone 48 both fires MPHONES 81 and answers on the next tick -
+#   if the stand point is >= 16 px off phone 48, phone 49 (job 2) may answer.
+#   (3) ANSWER 44 needs the player on foot within 16 px; it gives up after 30
+#   cycles. (4) the 60 s timer (178/179 SURVIVE 1500) - the script is far
+#   inside it. (5) PARK wants the car stopped within 40 units of the door
+#   centre (65,155); goto (65,154) is 32 off, as threejobs' Dulli garage.
+#   (6) SPECIFIC_DOOR 117 must open for car 116 (remap -1 = any colour).
+wait 2500
+goto 129 145      phone 48 - MPHONES 81 starts the ringing, this answers it
+wait 250
+goto 60 153       phone 44 - trigger 130 (r6), ANSWER 44 calls back
+wait 350
+goto 31 152       car 116 (FUTURECAR 62), made by 149 PARKED_ON
+enter
+wait 160
+goto 65 154       trigger 138, in the car; PARK at door 117 (65,155)
+wait 300
+enter
+wait 200
+dump

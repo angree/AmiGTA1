@@ -1,0 +1,14 @@
+# lc_train_smooth.txt - THE RIDE, FILMED FRAME BY FRAME (246). LC1
+# (startlevel 0). Aboard train at station 2 (111,122); six consecutive
+# frames while it runs, then six more later on. The developer saw it move
+# in jumps and the carriages grow and shrink; the frames should show even
+# steps and carriages of one size.
+wait 100
+goto 112 122
+wait 30
+board 6000
+wait 3600
+film 6
+wait 900
+film 6
+dump

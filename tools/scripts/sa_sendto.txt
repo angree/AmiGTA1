@@ -1,0 +1,21 @@
+# SENDTO + CARWAIT_TRIG IN THE GAME (223). San Andreas 1 (startlevel.txt 2),
+# section [102]: 602 PARKED_ON 136 -> 16242 LOCK_DOOR -> 603 ENABLE 3050 ->
+# 604 ARROW (process ends). Walking onto TRIGGER 3050 (23,172) runs 605 ->
+# 16080.. -> 607 ENABLE CARWAIT 3045, 608 PED_ON 135, 611 DUMMYON 136,
+# 612 SENDTO 136 -> DUMMY 3047 (24,172). The level's opening block DISABLEs
+# 3045/3050 a few seconds in, so the job is started after it has finished.
+# Pass: "SENDTO car 136", "car ... arrived", "CARWAIT_TRIG 3045 fired,
+# running line 613", "PED_OUT_OF_CAR 136: ped ... out".
+wait 100
+goto 30 170
+wait 2500
+script 602
+wait 50
+goto 23 172
+wait 400
+film 1
+wait 1500
+film 1
+wait 1500
+film 1
+dump

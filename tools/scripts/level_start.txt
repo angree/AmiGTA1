@@ -1,0 +1,10 @@
+# A LEVEL OTHER THAN THE FIRST (220). Put the level number (0-based) in
+# Work:startlevel.txt first - 2 is San Andreas 1, 4 is Vice City 1. Pass: the
+# log names the level and its mission.ini section, the script's declarations
+# and logic block load from that section, the player is put down at the
+# section's PLAYER block, traffic drives, and the filmed frames show the city.
+wait 300
+film 2
+run 120 1 0 0 0
+film 1
+dump

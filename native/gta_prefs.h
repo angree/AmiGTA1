@@ -119,7 +119,11 @@ typedef struct {
     int sfx_vol;    /* 0..64 */
     int cars;       /* traffic cars with a driver, GTA_CARS_MIN..MAX - the
                      * in-game Amiga options; above it nothing is spawned */
+    int level;      /* 0..GTA_LEVELS-1, the level the title screen starts:
+                     * Liberty City 1, 2, San Andreas 1, 2, Vice City 1, 2 */
 } gta_prefs;
+
+#define GTA_LEVELS 6
 
 /* The developer's range: 6 to 50 in steps of 4. The fleet is the CPU on a
  * slow Amiga, so this is the one setting that buys frame rate there. */

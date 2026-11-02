@@ -1,0 +1,15 @@
+# lc_train_wreck.txt - IS_PLAYER_ON_TRAIN and WRECK_A_TRAIN (242,
+# TRAINS.md 8). LC1 (startlevel 0). The player boards a train at station 2
+# and the script process at [1] line 6120 is started by hand: it waits for
+# him aboard (p3 = itself), stores the train in DUMMY 506, and after its
+# SURVIVE and briefs WRECK_A_TRAIN 506 pays 50000 and wrecks the train.
+# Pass: "boards train", "WRECK_A_TRAIN 506", "train N wrecked", paid 50000.
+wait 100
+goto 112 122
+wait 30
+board 6000
+wait 3000
+script 6120
+wait 1500
+film 1
+dump

@@ -24,12 +24,16 @@ extern struct IntuitionBase *IntuitionBase;
  * it, so this is what every other Amiga program uses for the same question. */
 int amigastartup_cpu(void)
 {
+#ifdef __MORPHOS__
+	return 60;      /* a PowerPC: faster than any 68k the question is about */
+#else
 	UWORD f = SysBase->AttnFlags;
 	if (f & (1 << 7)) return 60;      /* AFB_68060, set by the 060 libraries */
 	if (f & AFF_68040) return 40;
 	if (f & AFF_68030) return 30;
 	if (f & AFF_68020) return 20;
 	return 0;
+#endif
 }
 
 void amigastartup_error(const char *text)

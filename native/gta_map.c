@@ -85,7 +85,8 @@ int gta_map_load(const char *path, gta_map *m)
     /* --- columns --- */
     m->column_words = column_size / 2UL;
     if (m->column_words) {
-        m->columns = (unsigned short *)malloc(column_size);
+        m->columns = (unsigned short *)malloc(column_size +
+                                              GTA_MAP_EDIT_COLWORDS * 2UL);
         if (!m->columns) goto oom;
         raw = (unsigned char *)malloc(column_size);
         if (!raw) goto oom;
@@ -102,7 +103,8 @@ int gta_map_load(const char *path, gta_map *m)
     /* --- blocks: u16 type_map, u8 type_map_ext, then W E N S Lid --- */
     m->block_count = block_size / GTA_BLOCK_RECORD_BYTES;
     if (m->block_count) {
-        m->blocks = (gta_block *)malloc(m->block_count * sizeof(gta_block));
+        m->blocks = (gta_block *)malloc((m->block_count + GTA_MAP_EDIT_BLOCKS) *
+                                        sizeof(gta_block));
         if (!m->blocks) goto oom;
         raw = (unsigned char *)malloc(block_size);
         if (!raw) goto oom;
@@ -252,6 +254,98 @@ int gta_map_column_height(const gta_map *m, int x, int y)
 {
     int height;
     return column_at(m, x, y, &height) ? height : 0;
+}
+
+/* ---- the script's edits ------------------------------------------------ */
+
+static void edit_room_init(gta_map *m)
+{
+    if (m->column_cap) return;
+    m->column_words_file = m->column_words;
+    m->column_cap = m->column_words + GTA_MAP_EDIT_COLWORDS;
+    m->block_count_file = m->block_count;
+    m->block_cap = m->block_count + GTA_MAP_EDIT_BLOCKS;
+    m->air_block = -1;
+}
+
+static long new_block(gta_map *m, const gta_block *b)
+{
+    if (m->block_count >= m->block_cap || m->block_count >= 0xffffUL)
+        return -1;
+    m->blocks[m->block_count] = *b;
+    return (long)m->block_count++;
+}
+
+int gta_map_set_block(gta_map *m, int x, int y, int z, const gta_block *b)
+{
+    unsigned long elem;
+    int height, need, k;
+    unsigned short *col;
+    long bi;
+
+    if (!m->base || !m->columns || !m->blocks) return 0;
+    if (x < 0 || x >= GTA_MAP_DIM || y < 0 || y >= GTA_MAP_DIM) return 0;
+    if (z < 0 || z >= GTA_MAP_LAYERS) return 0;
+    edit_room_init(m);
+
+    elem = m->base[(unsigned long)y * GTA_MAP_DIM + x] / 2UL;
+    if (elem >= m->column_words) return 0;
+    height = GTA_MAP_LAYERS - (int)m->columns[elem];
+    if (height < 0 || height > GTA_MAP_LAYERS) return 0;
+
+    /* A COLUMN OF ITS OWN, tall enough: copied once, then edited in place.
+     * Entries run top down - layer z is col[height - z]. */
+    need = z + 1 > height ? z + 1 : height;
+    if (elem < m->column_words_file || need > height) {
+        unsigned long ne = m->column_words;
+        if (ne + 1UL + (unsigned long)need > m->column_cap) return 0;
+        if (need > height && m->air_block < 0) {
+            gta_block air;
+            memset(&air, 0, sizeof air);
+            m->air_block = new_block(m, &air);
+            if (m->air_block < 0) return 0;
+        }
+        col = m->columns + ne;
+        col[0] = (unsigned short)(GTA_MAP_LAYERS - need);
+        for (k = 0; k < need; k++)                    /* layer k */
+            col[need - k] = k < height ? m->columns[elem + (height - k)]
+                                       : (unsigned short)m->air_block;
+        m->column_words = ne + 1UL + (unsigned long)need;
+        m->base[(unsigned long)y * GTA_MAP_DIM + x] = ne * 2UL;
+        elem = ne;
+        height = need;
+    }
+    col = m->columns + elem;
+
+    /* AND A BLOCK OF ITS OWN, for the same reason */
+    bi = col[height - z];
+    if (bi >= (long)m->block_count_file && bi < (long)m->block_count &&
+        bi != m->air_block) {
+        m->blocks[bi] = *b;
+    } else {
+        bi = new_block(m, b);
+        if (bi < 0) return 0;
+        col[height - z] = (unsigned short)bi;
+    }
+    return 1;
+}
+
+int gta_map_set_type(gta_map *m, int x, int y, int z, unsigned long v)
+{
+    gta_block b;
+    gta_map_block(m, x, y, z, &b);
+    b.type_map = (unsigned short)(v & 0xffffUL);
+    b.type_map_ext = (unsigned char)((v >> 16) & 0xffUL);
+    return gta_map_set_block(m, x, y, z, &b);
+}
+
+int gta_map_set_face(gta_map *m, int x, int y, int z, int face, int tile)
+{
+    gta_block b;
+    if (face < 0 || face >= GTA_FACE_COUNT) return 1;   /* the original: nothing */
+    gta_map_block(m, x, y, z, &b);
+    b.faces[face] = (unsigned char)tile;
+    return gta_map_set_block(m, x, y, z, &b);
 }
 
 int gta_map_block(const gta_map *m, int x, int y, int z, gta_block *out)

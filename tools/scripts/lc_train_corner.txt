@@ -1,0 +1,20 @@
+# lc_train_corner.txt - THE EL ROUND A CORNER (246). LC1 (startlevel 0).
+# Aboard train 1 from station 2, a frame every 300 ticks: the corners on
+# the way should be quarter circles, not chords.
+wait 100
+goto 112 122
+wait 30
+board 6000
+wait 3600
+film 1
+wait 300
+film 1
+wait 300
+film 1
+wait 300
+film 1
+wait 300
+film 1
+wait 300
+film 1
+dump

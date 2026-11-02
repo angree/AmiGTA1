@@ -1,0 +1,20 @@
+# shoot_adjacent.txt - SHOOTING A CAR FROM RIGHT BESIDE IT (the developer:
+# "gdy stoje z boku auta i strzelam to naboje wylatuja za autem zamiast w
+# nie trafiac"). LC1 (startlevel 0). A car parked broadside 14 px east of
+# the player, he faces east and fires the pistol standing, then running.
+# Pass: "bullet N hit car" lines, no bullet reported beyond the car.
+wait 100
+goto 64 64
+wait 20
+park 1 14 0 0
+wait 20
+face 64
+weapon 1 40
+wait 10
+fire 30
+wait 30
+run 6 1 0 0 0
+fire 20
+wait 40
+film 1
+dump

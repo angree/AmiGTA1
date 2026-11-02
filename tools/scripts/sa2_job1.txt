@@ -1,0 +1,84 @@
+# SAN ANDREAS 2, FIRST JOB (DRAFT, not run yet). Needs startlevel.txt 3
+# (level 3 = San Andreas 2, mission.ini section [103], line 19087).
+# Run: reload-gta.ps1 -WaitFor "autodrive done" -TimeoutSec 400
+#
+# (1) THE FLOW (mission.ini line numbers in brackets):
+#  Start: PLAYER 85 (168,110) on TRIGGER 120 -> 12 STARTUP -> 149 MOBILE_BRIEF
+#  -> 15000.. POWERUP_ONs -> 29005 (KEEP_THIS_PROC, ENABLE 5840/5850, ~65
+#  DISABLEs incl. 3000) -> 26270 -> 29655 ARROW 7870 [20356..23691]. Wait it out.
+#  Phones 5800..5803 (22,45..48,1) [19820], MPHONES 5840 (20,46) r3 [19825] ->
+#  17200 MPHONE 5800 17210 4 [22702]; phone 5800 -> 17210 BRIEF 2350 -> 17250
+#  INCCOUNT 5861 .. 17253 DISABLE 5850 10000 [22705..22720] -> 10000 ARROW 30,
+#  ENABLE 3000, LOCATE 30 [22473]. Phone 30 (29,108,4) [19125] / TRIGGER 3000
+#  r6 [19698] -> 10040 DISABLE 3000, 10050 ANSWER 30 -> 10060 BRIEF 2201 ->
+#  10070 ARROW_OFF 0 200 [22478..22482].
+#  The job [20384..20522]: 201 SURVIVE 50, 215 POWERUP_ON 275 (185,107) [19268] and
+#  225 IS_POWERUP_DONE 275 (pick it up), 290..330 PIXEL_CAR_ON 200..220 (five
+#  cars, pixels -> blocks (89,90) (92,90) (97,90) (94,93) (92,93), in a car
+#  park one level down), 340/345 CAR_ON 225 (17,99) / 250 (17,239), 471/473
+#  DUMMYON 225/250 (they drive off), 517.. DESTROY 200..220 one by one (1000
+#  each), side process 950 IS_GOAL_DEAD 200..220 -> 700 SURVIVE 50 -> 760/800
+#  DESTROY 225/250 (skipped when already dead) -> 840..910 DISABLE ->
+#  920 MISSION_END 0 945 0 0 45000 [20507].
+#
+# (2) PASS, in the log:
+#  "phone 5800 answered, handler", "phone 30 answered (ANSWER)",
+#  "trigger line 3000 fired", "DUMMYON car ...: driving" (x2),
+#  "gta: script - paid 1000 ..." x5 (the parked cars, in order 200..220),
+#  "gta: script - paid 45000 (45000 x1) ..." and
+#  "gta: script - mission complete, multiplier x2".
+#  No "paid 1000" for 225/250 is expected: they die before 760/800 look.
+#
+# (3) RISKY STEPS:
+#  - The two moving cars are shot right where they appear, within ~20 ticks
+#    of their DUMMYON; if a rocket misses they wander off as traffic and the
+#    job cannot finish from a script. 225 drives WEST away from us on the
+#    westbound lane (y=99), 250 drives EAST at us (y=239, 3 lanes, no junction
+#    to x=45). Timing assumes one script step per 2 sim ticks.
+#  - 365/472 SENDTO 235 0 0 225 has car and destination SWAPPED in the data
+#    (MISSIONS_CMDS_B.md); the port may log "SENDTO car ...: not in the fleet"
+#    or send some other car. Harmless for this test, but noted.
+#  - Rockets into traffic -> wanted level; cops may interfere.
+#  - Powerup 275 must be ON (about 130 ticks after phone 30) before goto.
+#  - Rotation 768/256 read as west/east (matches the road arrows in sanb.cmp).
+wait 600
+goto 22 45        phone 5800 (MPHONES 5840 rings it, we are standing on it)
+wait 300
+goto 29 108       phone 30 - trigger 3000, ANSWER 30
+wait 400
+goto 185 107      powerup 275 -> CAR_ON 225/250 about 14 ticks later
+wait 6
+goto 21 99        4 blocks east of car 225 (17,99), westbound lane
+face 192
+weapon 3 60
+fire 70
+wait 2
+goto 36 239       east of car 250 (17,239), it comes at us
+face 192
+fire 100
+wait 100
+goto 89 87        car 200 (89,90): from the north
+face 128
+fire 25
+wait 60
+goto 92 87        car 205 (92,90)
+face 128
+fire 25
+wait 60
+goto 97 87        car 210 (97,90)
+face 128
+fire 25
+wait 60
+goto 94 95        car 215 (94,93): from the south
+face 0
+fire 25
+wait 60
+goto 92 95        car 220 (92,93)
+face 0
+fire 25
+wait 100
+wreck 225         the two that drive off: the test cannot chase them
+wreck 250
+wait 600
+film 1
+dump

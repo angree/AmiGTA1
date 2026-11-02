@@ -1,0 +1,19 @@
+# expl_seam.txt - THE LINE THROUGH AN EXPLOSION (the developer: "na
+# wybuchach jest zawsze linia dziury"). LC1 (startlevel 0). A rocket into
+# the wall two blocks east of (64,64); frames while the fireball stands.
+wait 100
+goto 64 64
+wait 20
+park 1 0 -40 0
+wait 20
+face 0
+weapon 3 5
+wait 10
+fire 1
+wait 8
+film 1
+wait 6
+film 1
+wait 6
+film 1
+dump

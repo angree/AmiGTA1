@@ -1,0 +1,26 @@
+# lc_train_ride.txt - ON THE EL (242, the research notes 5-6). LC1
+# (startlevel 0). Train 0 stands at station 0 (120,49) until station 1 is
+# free. The player waits on the platform of station 2 (111,122) - `board`
+# FIRE (+10, Hijacking), drives on and stops, then tries to get off.
+# Pass: "boards train 0", the HUD block moving along the El, "train 0
+# hijacked", and either "off train 0" or "cannot get off here" (only where
+# pavement is beside the second carriage).
+wait 100
+goto 112 122
+wait 30
+board 6000
+wait 3000
+film 1
+wait 400
+film 1
+fire 2
+wait 10
+run 300 1 0 0 0
+film 1
+run 200 0 1 0 0
+wait 100
+film 1
+enter
+wait 50
+film 1
+dump

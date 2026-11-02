@@ -803,6 +803,26 @@ static void blit_quad_h(gta_view *v, const unsigned char *tex,
  * A block with no slope decodes to (8, 8), which makes the lid code below one
  * path rather than two: the interpolation collapses to the top grid level and
  * the street keeps its memcpy fast path. */
+unsigned char gta_render_door_aux[GTA_RENDER_DOORS];
+int gta_render_door_n;
+
+/* The picture of a face byte: a side tile, or a door's aux frame (229). 0
+ * when there is nothing to draw. `transp` 1 = has see-through pixels. */
+static const unsigned char *face_src(const gta_tiles *t, int tex, int *transp)
+{
+    if (!tex) return 0;
+    if (tex < t->n_side) {
+        *transp = !gta_tiles_side_opaque(t, tex);
+        return gta_tiles_side(t, tex);
+    }
+    tex -= t->n_side;
+    if (tex < gta_render_door_n && gta_render_door_aux[tex] < t->n_aux) {
+        *transp = 1;
+        return gta_tiles_aux(t, gta_render_door_aux[tex]);
+    }
+    return 0;
+}
+
 static void slope_heights(int slope, int *axis, int *e0, int *e1)
 {
     *axis = 0; *e0 = 8; *e1 = 8;
@@ -860,7 +880,8 @@ static void draw_block(gta_view *v, const gta_block *b,
      * x = fa and is say tall, the top edge stands on grid z+1 at fb and is sby
      * tall. Those are four different numbers and that is the perspective. */
     {
-        int far_plane;
+        int far_plane, ftr = 0;
+        const unsigned char *fsrc;
 
         tex = b->faces[west ? GTA_FACE_W : GTA_FACE_E];
         if (!tex && flat)
@@ -870,7 +891,8 @@ static void draw_block(gta_view *v, const gta_block *b,
          * face is at bx+1; a flat block's is at bx, with its west face. */
         far_plane = (!west && !flat);
 
-        if (tex && tex < t->n_side) {
+        fsrc = face_src(t, tex, &ftr);
+        if (fsrc) {
             long fa = xa + (far_plane ? sax : 0);   /* screen x on grid z   */
             long fb = xb + (far_plane ? sbx : 0);   /* screen x on grid z+1 */
             int xl, yl0, yl1, xr, yr0, yr1, flip_v, flip_a;
@@ -912,16 +934,16 @@ static void draw_block(gta_view *v, const gta_block *b,
              * the extra flip. */
             flip_a = west ? (gta_block_flip_lr(b) ? 1 : 0)
                           : ((gta_block_flip_lr(b) ? 1 : 0) != !flat);
-            blit_quad_v(v, gta_tiles_side(t, tex), TILE, 1,
-                        xl, yl0, yl1, xr, yr0, yr1, flip_v, flip_a,
-                        !gta_tiles_side_opaque(t, tex));
+            blit_quad_v(v, fsrc, TILE, 1,
+                        xl, yl0, yl1, xr, yr0, yr1, flip_v, flip_a, ftr);
             v->walls_drawn++;
         }
     }
 
     /* --- and the north/south one, the trapezoid the other way up ----------- */
     {
-        int far_plane;
+        int far_plane, ftr = 0;
+        const unsigned char *fsrc;
 
         tex = b->faces[north ? GTA_FACE_N : GTA_FACE_S];
         if (!tex && flat)
@@ -929,7 +951,8 @@ static void draw_block(gta_view *v, const gta_block *b,
 
         far_plane = (!north && !flat);
 
-        if (tex && tex < t->n_side) {
+        fsrc = face_src(t, tex, &ftr);
+        if (fsrc) {
             long ga = ya + (far_plane ? say : 0);
             long gb = yb + (far_plane ? sby : 0);
             int yt, xt0, xt1, ybt, xb0, xb1, flip_v, flip_a;
@@ -954,9 +977,8 @@ static void draw_block(gta_view *v, const gta_block *b,
 
             flip_a = north ? (gta_block_flip_tb(b) ? 1 : 0)
                            : ((gta_block_flip_tb(b) ? 1 : 0) != flat);
-            blit_quad_h(v, gta_tiles_side(t, tex), TILE, 1,
-                        yt, xt0, xt1, ybt, xb0, xb1, flip_v, flip_a,
-                        !gta_tiles_side_opaque(t, tex));
+            blit_quad_h(v, fsrc, TILE, 1,
+                        yt, xt0, xt1, ybt, xb0, xb1, flip_v, flip_a, ftr);
             v->walls_drawn++;
         }
     }

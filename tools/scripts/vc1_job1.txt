@@ -1,0 +1,68 @@
+# VICE CITY 1, FIRST JOB, END TO END (draft, not run yet). Needs
+# startlevel.txt 4 (section [202] "Vice is Painless", miami.cmp). Run with
+# reload-gta.ps1 -WaitFor "autodrive done" -TimeoutSec 900
+#
+# (1) WHAT IT FOLLOWS (mission.ini line numbers):
+#   30500 `174 MPHONES 110 2` at (144,117) -> 31783 `110 MPHONE 4 120 4`
+#   rings phones 4..7; phone 4 (30320, block 144,116) -> 31786 `120 BRIEF
+#   0 200` -> 31835 line 200: FUTURECAR 175 (110,101) gets a driver and is
+#   SENDTO (31849) the DUM_MISSION_TRIG 179 at (112,241). There 31855 its
+#   driver (180) gets out and walks to TARGET 181 = block (118,241), the
+#   phone. 31861 KICKSTART 290 -> 31895 `290 DESTROY 180 .. 5000`: kill him
+#   before he gets there (if he arrives, 31862 WAIT_FOR_PED -> 253 RESET ->
+#   32300 MISSION FAILED). Then TRIGGER 20920 (118,241) r2 -> 31904 `305
+#   ANSWER 90` -> 31912 PED_ON 213 on the roof at px (10208,1952) = block
+#   (159,30) -> 31934 `384 DESTROY 213 .. 10000` -> DOOR 178 (218,204):
+#   31940 GOTO, 31941 `436 PARK 178 .. 35000` (in any car, stopped) ->
+#   31947 `442 MISSION_END`.
+#
+# (2) PASS, in order:
+#   "gta: script - phone 4 answered, handler ..."
+#   "gta: script - SENDTO car 175 -> line 179 at (112,241)"
+#   "gta: script - paid 5000 (5000 x..."     the driver, line 290
+#   "gta: script - phone 90 answered (ANSWER)"
+#   "gta: script - paid 10000 (10000 x..."   the man on the roof, line 384
+#   "gta: script - GOTO 178 reached", "PARKED at door 178"
+#   "gta: script - paid 35000 (35000 x..."   line 436
+#   "gta: script - mission complete, multiplier x.."
+#   FAIL markers: text 2501 (line 32301), "WAIT_FOR_PED 181" lines that end
+#   with him at (7584,15456), CARSTUCK_TRIG 23610 -> line 280.
+#
+# (3) RISKY STEPS:
+#   - the 140-block SENDTO drive (110,101)->(112,241) with nobody watching
+#     it; the fire window below is a guess at how long it takes.
+#   - firing on foot while driver 180 is on screen fires GUN_SCREEN_TRIG
+#     20630 -> line 272 CHANGE_PED_TYPE 180 type 7 = "standing" in the port:
+#     he may freeze by the car (112,241) instead of walking. Hence two
+#     phases: fire EAST from (115,241) across his walk (no car in that
+#     line), then WEST at the spot where he would have frozen (by then line
+#     249 has killed watcher 447, so hitting car 175 no longer fails).
+#   - a minute of machine-gun fire in the street: wanted level, a bust.
+#   - ped 213 stands on a roof (z=3 strip, column 159, rows 30..34); goto
+#     must land the player on that roof or the shots pass under him.
+#   - `park 0` model 0 on the roof strip; any car will do for PARK 178.
+#   - the corpse of 180 lying within 16 px of (118,241) would satisfy
+#     WAIT_FOR_PED 252 in the same tick DESTROY 290 pays.
+#
+# 238: the timed fire windows are gone. The SENDTO car's arrival depends on
+# traffic, and once the long route made it fast the driver reached the phone
+# before the old window opened. The test fixtures `killped <line>` (kills
+# the person the first tick he is on foot) and plain waits replace them; the
+# job's own script still decides everything else.
+wait 500
+goto 140 112
+wait 200
+goto 144 116
+wait 300
+killped 180       the driver, the moment he is out of car 175
+wait 9000
+goto 118 241      TRIGGER 20920 -> phone 90
+wait 600
+killped 213       the man on the roof
+wait 600
+park 0 0 -26 0
+enter
+wait 160
+goto 218 204      DOOR 178
+wait 1000
+dump

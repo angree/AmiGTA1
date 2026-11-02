@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "gta_player.h"
+#include "gta_nav.h"
 #include "gta_trig.h"
 
 #define FP 16
@@ -259,20 +260,28 @@ void gta_player_update(gta_player *p, const gta_map *m,
                              dx, dy);
     /* A move that changes layer is a ramp move, and the body straddles the
      * ramp block for one step - see can_stand_ex(). */
-    if (z >= 0 && can_stand_ex(m, nx, ny, z, z != p->layer)) {
+    /* THE THIN WALLS (229): a fence or a shut door stops him as a building
+     * does, on the layer he is walking on */
+#define WALL_X(x0_, y0_, x1_, y1_) \
+    (gta_nav_walls && gta_nav_wall_cross(gta_nav_walls, p->layer, \
+                                         (x0_), (y0_), (x1_), (y1_)))
+    if (z >= 0 && can_stand_ex(m, nx, ny, z, z != p->layer) &&
+        !WALL_X(p->x, p->y, nx, ny)) {
         p->x = nx; p->y = ny; p->layer = z;
     } else {
         int moved = 0;
         z = resolve_layer(m, (int)(nx >> (FP + 5)),
                              (int)(p->y >> (FP + 5)), p->layer);
-        if (z >= 0 && can_stand(m, nx, p->y, z)) {
+        if (z >= 0 && can_stand(m, nx, p->y, z) &&
+            !WALL_X(p->x, p->y, nx, p->y)) {
             p->x = nx; p->layer = z; moved = 1;
         } else {
             p->blocked_x = 1;
         }
         z = resolve_layer(m, (int)(p->x >> (FP + 5)),
                              (int)(ny >> (FP + 5)), p->layer);
-        if (z >= 0 && can_stand(m, p->x, ny, z)) {
+        if (z >= 0 && can_stand(m, p->x, ny, z) &&
+            !WALL_X(p->x, p->y, p->x, ny)) {
             p->y = ny; p->layer = z; moved = 1;
         } else {
             p->blocked_y = 1;
@@ -332,6 +341,7 @@ int gta_player_sprite(const gta_player *p)
              ? p->frame : GTA_PED_VAULT_FRAMES - 1);
         break;
     case GTA_ANIM_SLIDE_UNDER: f = GTA_PED_SLIDE_UNDER; break;
+    case GTA_ANIM_DOWN: f = GTA_PED_LIES_ON_FLOOR; break;
     case GTA_ANIM_PUNCH:
         f = GTA_PED_PUNCH_FIRST
           + (p->frame < GTA_PED_PUNCH_FRAMES

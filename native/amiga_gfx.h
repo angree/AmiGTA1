@@ -92,6 +92,26 @@ int amigagfx_rtg_has_mode(int w, int h);
 /* AMIGAGFX_BACKEND_* of the screen currently open (AGA when none is). */
 int amigagfx_backend(void);
 
+/* Non-zero when running under MorphOS (FindResident("MorphOS"), asked once and
+ * cached; logs "MorphOS detected" the first time). Safe at any time. On
+ * MorphOS amigagfx_open() turns AGA/EHB requests into RTG, and RTG screens
+ * open DEEP - see amigagfx_set_rtg_deep(). Nothing that touches the custom
+ * chips, CIAs or the VBR may run when this is non-zero. */
+int amigagfx_is_morphos(void);
+/* Lines the title bar of a new screen will take, asked of the default public
+ * screen; safe before amigagfx_open(). */
+int amigagfx_title_bar_guess(void);
+
+/* RTG DEEP: open RTG screens at 32/24/16/15 bits instead of 8 and convert
+ * every blit through WriteLUTPixelArray(CTABFMT_XRGB8). Automatic on MorphOS
+ * and when the card has no 8-bit mode for the size; this forces it on
+ * AmigaOS too. Also read from `rtg_deep 1` in PROGDIR:opts.txt at the first
+ * RTG open if this was never called. Call before amigagfx_open(). */
+void amigagfx_set_rtg_deep(int on);
+
+/* Non-zero while the open screen is an RTG deep one. */
+int amigagfx_rtg_is_deep(void);
+
 /* The AGA screen's bitplanes as one contiguous Chip RAM block, and its size in
  * bytes. NULL / 0 on RTG, where there are no bitplanes at all.
  *

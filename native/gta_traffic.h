@@ -1024,6 +1024,20 @@
  * in the city is about thirteen. */
 #define GTA_TRAFFIC_ABANDON   1500
 
+/* A HEAD-ON LOCK (A, the developer's choice 2026-11-02): two cars nose to
+ * nose at a junction, each the other's lead, stood this long - the NEWER one
+ * backs out (the older keeps the right of way), on screen or off. The
+ * original has no such rule; it never gets the lock because it runs seven
+ * cars, and gets out of the rare one off screen with the escapes below. */
+#define GTA_TRAFFIC_HEADON     100
+
+/* THE ORIGINAL'S OFF-SCREEN ESCAPES (B, TRAFFIC_SPEC.md 9): a car stood this
+ * long where nobody can see it first JUMPS up to ten blocks forward along its
+ * road (the original's routine), and failing that SWAPS places with the car blocking
+ * it (the original's routine). GTA_TRAFFIC_ABANDON stays as the last backstop. */
+#define GTA_TRAFFIC_ESCAPE     150
+#define GTA_TRAFFIC_JUMP_MAX   10
+
 
 
 /* HOW A CAR DRIVES - and this is the ORIGINAL's model, read out of the game
@@ -1338,6 +1352,29 @@ typedef struct {
      * aggressor's halving all fire once per contact, not once per
      * overlapping tick. Positional separation is never gated. */
     unsigned char hit_latch;
+    /* SET_NO_COLLIDE (221): the original's car+0x11f = 99 - no damage from
+     * a ram, a bullet or a fire. EXPLODE_CAR and a blast still destroy it. */
+    unsigned char invuln;
+    /* THE SCRIPT'S DRIVERS (222, MISSIONS_CMDS_B.md). `locked`: LOCK_DOOR,
+     * the original's car+0x237 - the player cannot get in. `mdest_*`: SENDTO,
+     * the block a mission car drives itself to by road (the original's
+     * type-9 unit); on arrival it stops, its driver still in it, and
+     * `arrived` says so. memset by car_place, so all off for a new car. */
+    unsigned char locked;
+    unsigned char mdest_on;
+    unsigned char arrived;
+    /* A SERVICE CAR (gta_service.c): 1 ambulance, 2 fire engine with its
+     * lights on, 3 fire engine going home (lights off). 0 = not. */
+    unsigned char svc;
+    /* the snapped destination whose long-route field it follows */
+    short mf_x, mf_y;
+    short mdest_x, mdest_y;
+    /* HUNTON / MODEL_HUNT (224, MISSIONS_CMDS_C.md): chasing the player the
+     * way a dispatched cop does; mode 3 is the kamikaze - 30 of the
+     * original's ticks (60 here) after it first reaches his block, it blows
+     * up. `hunt_fuse` counts those. */
+    unsigned char hunt;
+    short hunt_fuse;
 
     /* PARKED BY A PERSON, NOT BY THE SPAWNER.
      *
@@ -1417,6 +1454,10 @@ typedef struct {
      * be used for that - a car stopped behind a man on a junction block is
      * stamped GTA_HOLD_BOX by the box logic that ran before the gap did. */
     int  lead_kind;
+    /* ...and WHICH car that was, -1 for none or not a fleet car. Two cars
+     * that are each other's lead, facing opposite ways, are a head-on lock -
+     * see GTA_TRAFFIC_HEADON. */
+    int  lead_idx;
     /* THE HORN - see gta_snd.h's note on the AI cars' horns: frames of
      * honking left (the original's +0x12d, set to 40) and the pattern it
      * honks in, 1..10 (its +0x12f plus one; 0 = not picked yet). */
@@ -1859,6 +1900,10 @@ typedef struct {
      * it; without it the fleet simply does not drive, which is a great deal
      * better than driving badly and being hard to explain. */
     const gta_nav *nav;
+    /* THE LONG ROUTE for SENDTO cars (gta_route_field_build): one field,
+     * keyed by destination and layer, built on demand and kept while the
+     * key does not change. 64 KB + 32 KB, allocated the first time. */
+    int mfield_x, mfield_y, mfield_z;   /* the key; the buffers are file statics */
 
     /* ONE ROUTE SEARCH PER TICK FOR THE WHOLE FLEET, and this is which car is
      * next in line. The original has exactly this rule - a single global "a
@@ -1897,6 +1942,7 @@ typedef struct {
      * part that is actionable - the count on its own says a trap exists but
      * not which one. See GTA_TRAFFIC_ABANDON and can_get_away(). */
     long stat_abandoned;
+    long stat_headon, stat_jumped, stat_swapped;
     int  abandon_x, abandon_y, abandon_z;
 
     /* WHO IS ALLOWED TO FORCE A BLOCKED CROSSING - see junction_claim().
@@ -2687,6 +2733,31 @@ int gta_traffic_remove_car(gta_traffic *tr, unsigned long serial);
  * changes is that the player has to pull him out to take it. 1 when there
  * was such a car. */
 int gta_traffic_set_driver(gta_traffic *tr, unsigned long serial, int on);
+/* EXPLODE_CAR: written off now, its fuse lit by the usual sweep (221). */
+int gta_traffic_write_off(gta_traffic *tr, unsigned long serial);
+/* SET_NO_COLLIDE / SET_COLLIDE (221). */
+int gta_traffic_set_invuln(gta_traffic *tr, unsigned long serial, int on);
+/* HUNTON / HUNTOFF (224): mode 0 = stop hunting, back to traffic. */
+int gta_traffic_hunt(gta_traffic *tr, const gta_map *m, unsigned long serial,
+                     int mode);
+/* BATCH B (222). LOCK_DOOR / UNLOCK_DOOR. */
+int gta_traffic_set_locked(gta_traffic *tr, unsigned long serial, int on);
+/* DUMMYON: a parked car gets a driver and drives off as traffic. */
+int gta_traffic_wake(gta_traffic *tr, const gta_map *m, unsigned long serial);
+/* SENDTO: ...and drives by road to block (bx,by), where it stops. */
+int gta_traffic_send_to(gta_traffic *tr, const gta_map *m, unsigned long serial,
+                        int bx, int by);
+/* The service cars (gta_service.c): mark one (1 ambulance, 2 fire engine
+ * lit, 3 unlit); has a SENDTO car got there; is it inside the view. */
+int gta_traffic_set_service(gta_traffic *tr, unsigned long serial, int kind);
+int gta_traffic_arrived(const gta_traffic *tr, unsigned long serial);
+int gta_traffic_car_in_view(const gta_traffic *tr, unsigned long serial);
+/* Is somebody sitting in it - a moving car, or a parked one with a driver. */
+int gta_traffic_has_driver(const gta_traffic *tr, unsigned long serial);
+/* PED_OUT_OF_CAR: the car stops and its driver is to stand at (x,y), beside
+ * the driver's door. 1 done, -1 nobody in it. */
+int gta_traffic_driver_out(gta_traffic *tr, unsigned long serial,
+                           long *x, long *y, int *layer, int *face);
 
 /* GIVE A CAR BACK ITS OLD NAME. The player gets out, abandon() puts a fresh
  * car in the fleet with a fresh serial, and this renames it to the one it had

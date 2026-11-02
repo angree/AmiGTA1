@@ -87,6 +87,10 @@
  * 1, at the ped. It is the one sound at the end of both, so it is the door
  * shutting. 0x87 plays it too. (203) */
 #define GTA_SND_DOOR         1
+/* A GARAGE DOOR COMING TO REST, open or shut: the original's routine and the original's routine,
+ * the door animation's two end callbacks, both play 0x26 at the door's own
+ * block through the original's routine - at half volume, like everything but 0x27. */
+#define GTA_SND_GARAGE_DOOR  0x26
 /* ...AND 5 BESIDE IT at the end of a get-in (0x22, and 0x87), only when the
  * car's +0x88 is 0 - never on the way out. Named by that: the car being
  * started. Not heard yet - an agent cannot; the developer's ear settles it. */

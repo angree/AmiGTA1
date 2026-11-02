@@ -39,6 +39,8 @@
 #include "gta_hud.h"
 #include "gta_player.h"
 #include "gta_traffic.h"
+#include "gta_train.h"
+#include "gta_service.h"
 #include "gta_vehphys.h"
 #include "gta_peds.h"
 #include "gta_weapon.h"
@@ -53,6 +55,7 @@
 #include "gta_audio.h"
 #include "gta_snd.h"
 #include "gta_iff.h"
+#include "amiga_wblaunch.h"
 
 /* THE SCREEN, AND WHY IT IS A RUNTIME CHOICE AGAIN.
  *
@@ -146,8 +149,34 @@ static int g_scale2x = 0;
  * to change and nowhere for a nineteenth hard-coded `Work:` to hide. */
 #define GTA_DIR    "PROGDIR:"
 
-#define TILES_PATH GTA_DIR "GTADATA/style001.til"
-#define MAP_PATH   GTA_DIR "GTADATA/nyc.cmp"
+/* THE SIX LEVELS (220). GTA has three cities, two levels each, and every
+ * level is a section of mission.ini whose first line names its map:
+ * [1]/[2] nyc.cmp, [102]/[103] sanb.cmp, [202]/[203] miami.cmp. The style
+ * (tiles, sprites, cars) and the sound bank go with the city. The level
+ * being played is chosen before anything is loaded - from gta.prefs, or
+ * from PROGDIR:startlevel.txt, which the game itself writes before it
+ * leaves with code 5 to come back as the next level (the `run` script
+ * restarts it; amiga_wblaunch.c makes the Workbench icon go through that
+ * script too). */
+typedef struct {
+    int section;
+    const char *map, *til, *snd, *name;
+} gta_level;
+static const gta_level levels[GTA_LEVELS] = {
+    {   1, "nyc.cmp",   "style001.til", "level001.snd", "LIBERTY CITY 1" },
+    {   2, "nyc.cmp",   "style001.til", "level001.snd", "LIBERTY CITY 2" },
+    { 102, "sanb.cmp",  "style002.til", "level002.snd", "SAN ANDREAS 1" },
+    { 103, "sanb.cmp",  "style002.til", "level002.snd", "SAN ANDREAS 2" },
+    { 202, "miami.cmp", "style003.til", "level003.snd", "VICE CITY 1" },
+    { 203, "miami.cmp", "style003.til", "level003.snd", "VICE CITY 2" },
+};
+static int  g_level;                     /* index into levels[] */
+static int  g_level_direct;              /* came back as a chosen level: no title screen */
+static int  g_level_next_ticks;          /* passed: ticks until the next level loads */
+static char tiles_path[64], map_path[64], sfx_path[64];
+#define TILES_PATH tiles_path
+#define MAP_PATH   map_path
+#define LEVEL_FILE GTA_DIR "startlevel.txt"
 #define INI_PATH   GTA_DIR "GTADATA/mission.ini"
 #define FXT_PATH   GTA_DIR "GTADATA/english.fxt"
 #define FONT_PAGER GTA_DIR "GTADATA/pager1.fon"
@@ -157,7 +186,10 @@ static int g_scale2x = 0;
  * it, which is as clear a statement as the file makes about where it goes. */
 #define FONT_MULT  GTA_DIR "GTADATA/missmul1.fon"
 /* The front end's own font and its baked art. */
-#define FONT_MENU  GTA_DIR "GTADATA/f_mtext.fon"
+/* THE TITLE MENU'S FONT: the front end's 15-px mission text. f_mtext is
+ * 30 px tall and the items are 19 apart, so they were drawn on top of one
+ * another - "wszystkie napisy sa ze soba sklejone" (PROGRESS 246). */
+#define FONT_MENU  GTA_DIR "GTADATA/f_mmiss.fon"
 #define FRONT_PATH GTA_DIR "GTADATA/front.fnt"
 /* THE SOUND BANK IS OPTIONAL, and that is not laziness.
  *
@@ -165,7 +197,7 @@ static int g_scale2x = 0;
  * player who has only converted the art must still get a running game rather
  * than an error about a file they were never told to make. Absent means
  * silent. When there is a player, it will still mean silent. */
-#define SFX_PATH   GTA_DIR "GTADATA/level001.snd"
+#define SFX_PATH   sfx_path
 /* THE VOICE - vocalcom, baked the same way (`gtabake -sfx audio/vocalcom`)
  * but never loaded: only its index is read, and each line comes off the disk
  * when it is said. See gta_sfx_open_index(). */
@@ -307,6 +339,22 @@ static int start_bx = START_BX, start_by = START_BY;
  * else that wants it. */
 #define FRAME_CAP_HZ 60
 #define FRAME_CAP_US (1000000L / FRAME_CAP_HZ)
+
+/* WAIT OUT THE REST OF A CAPPED FRAME begun at t0 - asleep in timer.device
+ * for all but the last 2.5 ms, which are spun on the clock because a wake-up
+ * can be late by a scheduler slice. It used to spin the whole wait, which
+ * on MorphOS and AROS is a CPU at 100% for nothing (40-MorphOS-zgodnosc-68k
+ * item 5). Wrap-safe: the clock is 32 bits of microseconds. */
+static void frame_wait(unsigned long t0)
+{
+    for (;;) {
+        unsigned long el = (unsigned long)(amiga_uclock_us() - t0);
+        if (el >= (unsigned long)FRAME_CAP_US)
+            return;
+        if ((unsigned long)FRAME_CAP_US - el > 3000UL)
+            amiga_uclock_sleep_us((unsigned long)FRAME_CAP_US - el - 2500UL);
+    }
+}
 
 static void log_line(const char *s)
 {
@@ -735,8 +783,10 @@ static long veh_air_from;               /* how far it has flown, world px */
 
 static int  script_respray_to = -1;
 static int  script_in_car, script_veh_model, script_veh_damage;
+static int  script_veh_remap = -1;    /* the player car's colour, for SPECIFIC_DOOR */
 static long script_veh_x, script_veh_y, script_veh_speed;
 static long script_pl_x, script_pl_y;
+static int  script_pl_firing;           /* ARMED_NOW, for GUN_SCREEN_TRIG */
 
 /* THE SECOND ARROW - see GTA_CMD_RED_ARROW. It has no animation of its
  * own here: it stands at the first arrow's distance from the player, in the
@@ -792,8 +842,14 @@ static void script_arrow(void *ctx, int on, long wx, long wy)
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.6.1"
+#define GTA_VERSION "v0.7.0"
+/* The native MorphOS build says so on its title bar; the 68k build is the
+ * same program on AmigaOS, AROS and MorphOS's 68k emulation. */
+#ifdef __MORPHOS__
+#define GAME_TITLE  "AmiGTA PPC " GTA_VERSION
+#else
 #define GAME_TITLE  "AmiGTA 68K " GTA_VERSION
+#endif
 
 /* The renderer's own buffer, used ONLY when the picture is doubled: the
  * screen's chunky bitmap is then twice this in each axis and is written by
@@ -1348,15 +1404,35 @@ static gta_font  menu_font;
 static int       have_menu_font;
 static unsigned char front_ink;         /* brightest entry of f_pal */
 
-#define MENU_ITEMS 3
+#define MENU_ITEMS 4
 static const char *const menu_item[MENU_ITEMS] = {
-    "START GAME", "AMIGA OPTIONS", "QUIT"
+    "START GAME", "LEVEL", "AMIGA OPTIONS", "QUIT"
 };
-#define MENU_QUIT 2
+#define MENU_LEVEL   1
+#define MENU_OPTIONS 2
+#define MENU_QUIT    3
+
+/* Leave the game to come back as level `lv` (0..GTA_LEVELS-1): it becomes
+ * the title screen's level in gta.prefs, startlevel.txt says "straight into
+ * it", and code 5 has the `run` script start the game again. */
+static gta_prefs g_prefs;
+static void level_switch(int lv)
+{
+    FILE *f = fopen(GTA_DIR "startlevel.txt", "w");
+    if (f) {
+        fprintf(f, "%d\n", lv);
+        fclose(f);
+    }
+    g_prefs.level = lv;
+    gta_prefs_save(GTA_DIR, &g_prefs);
+    g_reload = 1;
+    printf("gta: level - leaving to come back as level %d\n", lv + 1);
+    fflush(stdout);
+}
 
 /* THE PLAYER'S SETTINGS AS LOADED, kept so the Amiga options page can change
- * one of them and write the file back without losing the others. */
-static gta_prefs g_prefs;
+ * one of them and write the file back without losing the others (declared
+ * above level_switch()). */
 static int g_prefs_loaded;
 
 static void menu_line(unsigned char *chunky, int pitch, int y,
@@ -1371,19 +1447,26 @@ static void menu_line(unsigned char *chunky, int pitch, int y,
                       x, y, text);
     else
         gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H, x, y, text);
-    /* THE SELECTION is a rule above and below, in the brightest colour the
-     * FRONT END'S palette has - not the game's, which is not loaded while
-     * this is on screen. */
+    /* THE SELECTION is a pair of arrowheads either side of the line, in the
+     * brightest colour the FRONT END'S palette has - not the game's, which
+     * is not loaded while this is on screen. Rules above and below used to
+     * mark it, and with the lines 19 px apart they crossed out the
+     * neighbours ("znacznik zaznaczenia przekresla inne napisy"); the
+     * arrowheads stay inside the line's own height. */
     if (on) {
-        int i;
-        for (i = 0; i < 2; i++) {
-            int by = y + (i ? fh + 2 : -3);
+        int r, k, cy = y + fh / 2, half = fh / 3;
+        if (half > 5) half = 5;
+        if (half < 2) half = 2;
+        for (r = -half; r <= half; r++) {
+            int ry = cy + r, len = half - (r < 0 ? -r : r) + 1;
             unsigned char *d;
-            int bx;
-            if (by < 0 || by >= SCREEN_H) continue;
-            d = chunky + (long)by * pitch;
-            for (bx = x - 8; bx < x + w + 8; bx++)
-                if (bx >= 0 && bx < SCREEN_W) d[bx] = front_ink;
+            if (ry < 0 || ry >= SCREEN_H) continue;
+            d = chunky + (long)ry * pitch;
+            for (k = 0; k < len; k++) {
+                int lx = x - 10 + k, rx = x + w + 9 - k;
+                if (lx >= 0 && lx < SCREEN_W) d[lx] = front_ink;
+                if (rx >= 0 && rx < SCREEN_W) d[rx] = front_ink;
+            }
         }
     }
 }
@@ -1612,6 +1695,7 @@ static int front_menu(unsigned char *chunky, int pitch)
      * game playable on a slower machine, changed here and written to
      * gta.prefs at once (gtaprefs.c edits the rest of that file) */
     int page = 0, osel = 0;
+    int sel_level = g_level;            /* the LEVEL line, shown and chosen */
     unsigned long cap_t0, menu_t0;
     long menu_frames = 0;
     AmigaGfxEvent ev;
@@ -1635,7 +1719,17 @@ static int front_menu(unsigned char *chunky, int pitch)
         gta_front_draw(&front, chunky, pitch, 0, frame >> 3);
         if (page == 0) {
             for (i = 0; i < MENU_ITEMS; i++)
-                menu_line(chunky, pitch, y0 + i * 22, menu_item[i], i == sel);
+            {
+                char ml[40];
+                const char *s = menu_item[i];
+                if (i == MENU_LEVEL) {
+                    snprintf(ml, sizeof ml, "%s", levels[sel_level].name);
+                    s = ml;
+                }
+                /* 19 px apart and 8 higher: four lines at the old 22 put
+                 * QUIT on top of the version number (220) */
+                menu_line(chunky, pitch, y0 - 8 + i * 19, s, i == sel);
+            }
         } else {
             menu_line(chunky, pitch, y0 - 4, "AMIGA OPTIONS", 0);
             {
@@ -1666,9 +1760,7 @@ static int front_menu(unsigned char *chunky, int pitch)
          * while; it is the only loop in the port that had none. The
          * subtraction is unsigned because the microsecond clock is 32 bits
          * and wraps every 71 minutes. */
-        while ((unsigned long)(amiga_uclock_us() - cap_t0)
-                   < (unsigned long)FRAME_CAP_US)
-            ;
+        frame_wait(cap_t0);
         cap_t0 = amiga_uclock_us();
         menu_frames++;
 
@@ -1717,8 +1809,25 @@ static int front_menu(unsigned char *chunky, int pitch)
             case KEY_ESC:  quit = 1; done = 1;                        break;
             case KEY_RETURN:
             case KEY_SPACE:
-                if (sel == 1) { page = 1; osel = 0; break; }
+                if (sel == MENU_OPTIONS) { page = 1; osel = 0; break; }
+                if (sel == MENU_LEVEL) {
+                    sel_level = (sel_level + 1) % GTA_LEVELS;
+                    break;
+                }
+                /* START on a level other than the one loaded: the game
+                 * leaves and comes back as that level */
+                if (sel == 0 && sel_level != g_level) {
+                    level_switch(sel_level);
+                    quit = 1; done = 1;
+                    break;
+                }
                 quit = (sel == MENU_QUIT); done = 1;                  break;
+            case KEY_LEFT:
+            case KEY_RIGHT:
+                if (sel == MENU_LEVEL)
+                    sel_level = (sel_level + ((ev.code & 0x7F) == KEY_RIGHT
+                                              ? 1 : GTA_LEVELS - 1)) % GTA_LEVELS;
+                break;
             default: break;
             }
         }
@@ -1818,6 +1927,26 @@ static const char *const weapon_name[5] = {
  * control; when it ends he is put down outside the nearest police station
  * on foot, with his weapons gone and the multiplier halved. */
 static int bust_timer;
+/* THE TRAINS (gta_train.h, the research notes) and where the player was,
+ * for the loudness of what they say. */
+static gta_trains trains;
+/* the ambulance and the fire engine (gta_service.h) */
+static gta_service service;
+static long tsnd_x, tsnd_y;
+static int train_fire_prev;
+/* TEST FIXTURE `board <ticks>`: for that long, board any train that stands
+ * within reach - a test cannot know when one will stop at the platform. */
+static int board_wait;
+/* ARRESTED ON FOOT (POLICE.md 0xd6..0xda): the cop has knocked him down
+ * (target state 0x2b, mode 9); the cop car AI counts +0x69 = 4, walks him to
+ * the car side and calls it BUSTED three of its frames later. Seven of the
+ * original's frames, fourteen ticks here, lying, with the controls dead. */
+#define FOOT_ARREST_TICKS 14
+static int foot_arrest;
+/* TEST FIXTURE `killped <line>`: the person declared on that line is killed
+ * the first tick he is on foot - an unattended run cannot aim at a man
+ * whose arrival time depends on traffic. 0 = not armed. */
+static int killped_line;
 #define BUST_TICKS 150
 /* WHAT THE CARD SAYS: 1 BUSTED, 2 WASTED, 3 GAME OVER. */
 static int card_kind;
@@ -2936,7 +3065,9 @@ static int script_player_car_model(void *ctx)
 static void script_car_release(void *ctx, unsigned long h)
 {
     (void)ctx;
+    h &= ~GTA_IN_CAR;
     if (h) {
+        gta_traffic_set_locked(&traffic, h, 0);
         gta_traffic_set_mission(&traffic, h, 0);
         if (h == veh_serial)
             veh_mission = 0;
@@ -2973,6 +3104,8 @@ static unsigned long script_ped_on(void *ctx, int line, long wx, long wy,
 
 static int script_ped_pos(void *ctx, unsigned long h, long *wx, long *wy)
 {
+    if (h & GTA_IN_CAR)
+        return script_car_pos(ctx, h & ~GTA_IN_CAR, wx, wy);
     (void)ctx;
     return gta_peds_find(&peds, h, wx, wy, 0, 0);
 }
@@ -2983,6 +3116,8 @@ static int script_ped_dead(void *ctx, unsigned long h)
     (void)ctx;
     if (!h)
         return 0;
+    if (h & GTA_IN_CAR)                 /* dies with his car */
+        return script_car_dead(ctx, h & ~GTA_IN_CAR);
     if (!gta_peds_find(&peds, h, 0, 0, 0, &alive))
         return 1;                       /* gone is dead, as for a car */
     return !alive;
@@ -2993,6 +3128,10 @@ static void script_arrow_ped(void *ctx, unsigned long h)
     (void)ctx;
     if (!h)
         return;
+    if (h & GTA_IN_CAR) {
+        script_arrow_car(ctx, h & ~GTA_IN_CAR);
+        return;
+    }
     arrow_ped_h = h;
     arrow_car_h = 0;
     arrow_on = 1;
@@ -3519,7 +3658,9 @@ static void script_setbomb(void *ctx, unsigned long h, int type)
     if (free_ < 0) return;
     bombs[free_].h = type ? h : 0UL;
     bombs[free_].type = type;
-    bombs[free_].fuse = 0x7d;
+    /* 0x7d of the original's 25 Hz ticks (the original's routine counts car+0x9e
+     * down once a tick); this runs at 50, so twice that - it was half (228) */
+    bombs[free_].fuse = 0x7d * 2;
     /* the original's routine: arming zeroes the car's damage (car+0xf7), so a type 4
      * starts from a clean slate. The fleet's cars are reachable from here;
      * the player's own is not (it lives in the main loop) and keeps his. */
@@ -4017,7 +4158,674 @@ static void script_level_end(void *ctx, int code)
     (void)ctx;
     if (s) big_show(s);
     printf("gta: LEVEL OVER - code %d, [%s] %s\n", code, key, s ? s : "");
+    /* PASSED: on to the next level once the card has been read (220); the
+     * last one ends the game's run of levels and simply plays on */
+    if (code == 1 && g_level + 1 < GTA_LEVELS) {
+        g_level_next_ticks = 250;
+        printf("gta: level - %s next, in 5 s\n", levels[g_level + 1].name);
+    }
     fflush(stdout);
+}
+
+/* ---- BATCH A, the other levels (221, the research notes) ---- */
+
+/* The player's own car lives in main(), so its write-off is asked for here
+ * and done there, on the next tick - as STOP_FRENZY is. */
+static int script_wreck_req;
+
+/* THE MODEL CAR (225). The swap needs `veh`, which lives in main(), so the
+ * script asks and the loop does it, as with script_wreck_req. */
+#define RC_REQ_START  1
+#define RC_REQ_RETURN 2
+#define GTA_RC_SERIAL 0x7fffff01UL      /* the model car's name while he has it */
+static int rc_req, rc_state;
+static unsigned long rc_real;           /* his own car, parked */
+static int rc_layer;
+
+static void script_car_explode(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    if (h == veh_serial && script_in_car) {
+        script_wreck_req = 1;
+        printf("gta: script - EXPLODE_CAR %lu: the car he is driving\n", h);
+    } else {
+        printf("gta: script - EXPLODE_CAR %lu: %s\n", h,
+               gta_traffic_write_off(&traffic, h) ? "written off"
+                                                  : "not in the fleet");
+    }
+    fflush(stdout);
+}
+
+static void script_car_invuln(void *ctx, unsigned long h, int on)
+{
+    (void)ctx;
+    gta_traffic_set_invuln(&traffic, h, on);
+    printf("gta: script - car %lu %s\n", h,
+           on ? "cannot be damaged (SET_NO_COLLIDE)" : "can be damaged again");
+    fflush(stdout);
+}
+
+/* EXPL_PED: one blast where he stands - in a car, the car is written off
+ * and takes him with it. 0 is the player. */
+static void script_ped_explode(void *ctx, unsigned long h)
+{
+    long x = 0, y = 0;
+    int layer = 0, alive = 0;
+    (void)ctx;
+    if (h == 0) {
+        if (script_in_car) {
+            script_wreck_req = 1;
+        } else {
+            gta_weapons_explode(&weapons, player.x, player.y, player.layer,
+                                &peds, &traffic, &score, 0);
+        }
+        printf("gta: script - EXPL_PED: the player%s\n",
+               script_in_car ? " (his car)" : "");
+    } else if (gta_peds_find(&peds, h, &x, &y, &layer, &alive) && alive) {
+        gta_weapons_explode(&weapons, x, y, layer, &peds, &traffic, &score, 0);
+        printf("gta: script - EXPL_PED %lu at (%ld,%ld)\n", h, x >> 16, y >> 16);
+    }
+    fflush(stdout);
+}
+
+static void script_ped_weapon(void *ctx, unsigned long h, int weapon)
+{
+    (void)ctx;
+    gta_peds_set_weapon(&peds, h, weapon);
+}
+
+static void script_ped_police(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    gta_peds_set_uniform(&peds, h);
+}
+
+static int script_ped_stunned(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    return gta_peds_stunned(&peds, h);
+}
+
+static void script_add_life(void *ctx)
+{
+    (void)ctx;
+    if (player_lives < 99) player_lives++;
+    printf("gta: script - ADD_A_LIFE: %d lives\n", player_lives);
+    fflush(stdout);
+}
+
+/* INC_HEADS: n more heads, 0 = all four, never past four. The original at
+ * three heads falls through and CLEARS the heat (MISSIONS_CMDS_A.md); the
+ * script means "more", so three goes to four here. */
+static void script_inc_heads(void *ctx, int n)
+{
+    int lv = score.level, to;
+    (void)ctx;
+    if (lv >= 4) return;
+    to = (n <= 0) ? 4 : lv + n;
+    if (lv == 3 || to > 4) to = 4;
+    gta_score_force_level(&score, to);
+    printf("gta: script - INC_HEADS %d: wanted level %d -> %d\n", n, lv, score.level);
+    fflush(stdout);
+}
+
+/* CHANGE_BLOCK / CHANGE_TYPE: the map is edited, and the navigation grid
+ * told, so what walks and drives there sees the new block. */
+/* THE FILE'S z COUNTS FROM THE TOP: the original indexes the column with
+ * col[bz + 1 - col[0]], so bz 5 is the ground and this port's layer is
+ * 5 - bz. Taken as-is it edited the wrong layers and put air blocks over
+ * the San Andreas bridge (222). */
+#define SCRIPT_LAYER(bz) (GTA_MAP_LAYERS - 1 - (bz))
+
+static void script_map_type(void *ctx, int bx, int by, int bz, long v)
+{
+    int ok;
+    (void)ctx;
+    bz = SCRIPT_LAYER(bz);
+    ok = gta_map_set_type(&map, bx, by, bz, (unsigned long)v);
+    gta_nav_update(&nav, &map, bx, by, bz);
+    printf("gta: script - CHANGE_BLOCK (%d,%d,%d) type 0x%lx%s\n", bx, by, bz,
+           (unsigned long)v, ok ? "" : " - NO ROOM");
+    fflush(stdout);
+}
+
+static void script_map_face(void *ctx, int bx, int by, int bz, int face, int tile)
+{
+    int ok;
+    (void)ctx;
+    bz = SCRIPT_LAYER(bz);
+    ok = gta_map_set_face(&map, bx, by, bz, face, tile);
+    gta_nav_update(&nav, &map, bx, by, bz);
+    printf("gta: script - CHANGE_TYPE (%d,%d,%d) face %d := tile %d%s\n",
+           bx, by, bz, face, tile, ok ? "" : " - NO ROOM");
+    fflush(stdout);
+}
+
+/* ---- BATCH B, the script's drivers (222, the research notes) ---- */
+
+static void script_car_lock(void *ctx, unsigned long h, int on)
+{
+    (void)ctx;
+    gta_traffic_set_locked(&traffic, h, on);
+    printf("gta: script - car %lu %s\n", h, on ? "locked" : "unlocked");
+    fflush(stdout);
+}
+
+static void script_car_wake(void *ctx, unsigned long h)
+{
+    int ok;
+    (void)ctx;
+    ok = gta_traffic_wake(&traffic, &map, h);
+    printf("gta: script - DUMMYON car %lu: %s\n", h,
+           ok ? "driving" : "not in the fleet");
+    fflush(stdout);
+}
+
+static void script_car_sendto(void *ctx, unsigned long h, long wx, long wy)
+{
+    int ok;
+    (void)ctx;
+    ok = gta_traffic_send_to(&traffic, &map, h, (int)(wx >> 21),
+                             (int)(wy >> 21));
+    if (!ok) {
+        printf("gta: script - SENDTO car %lu: not in the fleet\n", h);
+        fflush(stdout);
+    }
+}
+
+static int script_car_has_driver(void *ctx, unsigned long h)
+{
+    (void)ctx;
+    if (h == veh_serial && script_in_car)
+        return 0;                       /* the player is its driver */
+    return gta_traffic_has_driver(&traffic, h);
+}
+
+/* PED_OUT_OF_CAR: the car stops and a mission ped stands at its door. */
+static long script_driver_out(void *ctx, unsigned long h)
+{
+    long x = 0, y = 0;
+    int layer = 0, face = 0, r;
+    unsigned long p;
+    (void)ctx;
+    if (h == veh_serial)
+        return -1;
+    r = gta_traffic_driver_out(&traffic, h, &x, &y, &layer, &face);
+    if (r <= 0)
+        return r;
+    p = gta_peds_spawn_mission(&peds, x, y, layer, face);
+    if (!p) {
+        gta_traffic_set_driver(&traffic, h, 1);    /* no room: try again */
+        return 0;
+    }
+    return (long)p;
+}
+
+/* DUMMY_DRIVE_ON: a mission ped who has walked up to the car gets in and
+ * drives it off. A car somebody is already in just drives off. */
+#define GTA_BOARD_PX 36
+static long script_car_board(void *ctx, unsigned long h)
+{
+    long cx = 0, cy = 0;
+    int i;
+    (void)ctx;
+    if (!h || h == veh_serial)
+        return 0;
+    if (gta_traffic_has_driver(&traffic, h)) {
+        gta_traffic_wake(&traffic, &map, h);
+        return -1;
+    }
+    if (!gta_traffic_find_car(&traffic, h, &cx, &cy, 0, 0))
+        return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        gta_ped *p = &peds.p[i];
+        long dx, dy;
+        unsigned long ser;
+        if (!p->alive || !p->mission)
+            continue;
+        dx = p->x - cx; if (dx < 0) dx = -dx;
+        dy = p->y - cy; if (dy < 0) dy = -dy;
+        if (dx > ((long)GTA_BOARD_PX << 16) || dy > ((long)GTA_BOARD_PX << 16))
+            continue;
+        ser = p->serial;
+        if (!gta_peds_take_mission(&peds, ser))
+            continue;
+        gta_traffic_wake(&traffic, &map, h);
+        return (long)ser;
+    }
+    return 0;
+}
+
+/* PIXEL_CAR_ON / PARKED_PIXELS_ON: a mission car at a pixel spot. */
+static unsigned long script_car_on_px(void *ctx, int line, int model_id,
+                                      long wx, long wy, int angle, int remap,
+                                      int driven)
+{
+    int rec, lz;
+    unsigned long h;
+    (void)ctx;
+    rec = gta_script_model_index(&tiles, model_id);
+    if (rec < 0) {
+        printf("gta: script - line %d wants model %d and this style has no "
+               "such car\n", line, model_id);
+        fflush(stdout);
+        return 0;
+    }
+    lz = gta_script_stand_layer(&nav, (int)(wx >> 21), (int)(wy >> 21));
+    if (lz < 0) lz = 0;
+    h = gta_traffic_abandon(&traffic, rec, wx, wy, angle, lz,
+                            remap > 0 ? remap : -1, 0);
+    if (h) {
+        gta_traffic_set_mission(&traffic, h, 1);
+        if (driven)
+            gta_traffic_set_driver(&traffic, h, 1);
+    }
+    printf("gta: script - car line %d (model %d) put at pixel (%ld,%ld)%s, "
+           "handle %lu\n", line, model_id, wx >> 16, wy >> 16,
+           driven ? " with a driver" : "", h);
+    fflush(stdout);
+    return h;
+}
+
+/* ---- THE WATCH TRIGGERS (222, the research notes) ---- */
+
+static int script_car_still(void *ctx, unsigned long h)
+{
+    int j;
+    if (!h || h == veh_serial)
+        return 0;
+    for (j = 0; j < traffic.n; j++) {
+        const gta_car *c = &traffic.cars[j];
+        int bx, by;
+        if (c->serial != h || c->done)
+            continue;
+        if (!c->abandoned && c->speed != 0)
+            return 0;
+        if (!script_onscreen(ctx, c->x, c->y))
+            return 0;
+        bx = (int)(c->x >> 21);
+        by = (int)(c->y >> 21);
+        return gta_nav_dirs(gta_nav_at(&nav, bx, by, c->layer)) ? 1 : 2;
+    }
+    return 0;
+}
+
+static int script_player_firing(void *ctx)
+{
+    (void)ctx;
+    return script_pl_firing;
+}
+
+static int script_car_bomb(void *ctx, unsigned long h)
+{
+    int k;
+    (void)ctx;
+    for (k = 0; k < BOMB_SLOTS; k++)
+        if (h && bombs[k].h == h)
+            return bombs[k].type;
+    return 0;
+}
+
+static int script_ped_board(void *ctx, unsigned long ped, unsigned long car)
+{
+    long px_ = 0, py_ = 0, cx = 0, cy = 0, dx, dy;
+    int alive = 0;
+    (void)ctx;
+    if (car == veh_serial)
+        return 0;
+    if (!gta_peds_find(&peds, ped, &px_, &py_, 0, &alive) || !alive)
+        return 0;
+    if (!gta_traffic_find_car(&traffic, car, &cx, &cy, 0, 0))
+        return 0;
+    dx = px_ - cx; if (dx < 0) dx = -dx;
+    dy = py_ - cy; if (dy < 0) dy = -dy;
+    if (dx > (36L << 16) || dy > (36L << 16))
+        return 0;
+    if (!gta_peds_take_mission(&peds, ped))
+        return 0;
+    gta_traffic_set_driver(&traffic, car, 1);
+    printf("gta: script - ped %lu got into car %lu\n", ped, car);
+    fflush(stdout);
+    return 1;
+}
+
+static void script_car_hunt(void *ctx, unsigned long h, int mode)
+{
+    int ok;
+    (void)ctx;
+    ok = gta_traffic_hunt(&traffic, &map, h, mode);
+    printf("gta: script - car %lu %s%s\n", h,
+           mode ? (mode == 3 ? "hunts the player, kamikaze" : "hunts the player")
+                : "stops hunting", ok ? "" : " - NOT IN THE FLEET");
+    fflush(stdout);
+}
+
+static int script_model_start(void *ctx)
+{
+    (void)ctx;
+    if (!script_in_car || rc_state == GTA_RC_ALIVE || rc_req)
+        return 0;
+    rc_req = RC_REQ_START;
+    return 1;
+}
+
+static int script_model_state(void *ctx)
+{
+    (void)ctx;
+    return rc_req == RC_REQ_START ? GTA_RC_ALIVE : rc_state;
+}
+
+static void script_model_return(void *ctx)
+{
+    (void)ctx;
+    rc_req = RC_REQ_RETURN;
+}
+
+/* THE BOMB SHOP (228, the research notes). */
+static int script_bombshop(void *ctx, int cost)
+{
+    static const int refuse[6] = { 47, 37, 5, 15, 16, 42 };
+    int mid, k;
+    if (!script_in_car || !veh_serial || rc_state == GTA_RC_ALIVE)
+        return -1;
+    mid = script_player_car_model(ctx);
+    for (k = 0; k < 6; k++)
+        if (mid == refuse[k]) {
+            script_named_text(ctx, k == 0 ? "no_modelcar_respray"
+                                 : k == 1 ? "no_tank_respray"
+                                          : "no_emerg_respray");
+            return 0;
+        }
+    if (script_car_bomb(ctx, veh_serial))
+        return 0;
+    if (cost <= 0)
+        cost = 5000;
+    if (score.score < cost) {
+        script_named_text(ctx, "no_respray");
+        return 0;
+    }
+    script_named_text(ctx, score.score == cost ? "all_your" : "bomb_added");
+    score.score -= cost;
+    if (score.score < 0) score.score = 0;
+    script_setbomb(ctx, veh_serial, 1);
+    return 1;
+}
+
+/* ---- THE DOORS (229, the research notes 3, MISSIONS_DECLS_D.md 0.4)
+ *
+ * A door is a thin wall on the W or N edge of a FLAT block. Its face byte
+ * is a virtual tile, n_side + k, which the renderer shows as aux tile
+ * gta_render_door_aux[k]; it is solid in the wall grid while shut. Opening
+ * plays aux `first`..`first+frames-1`, one frame every 30 ticks here (15 of
+ * the original's 25 Hz), clears the wall at once and turns the declared
+ * block's ground to field for good; closing sets the wall at once and plays
+ * it back. "On" means automatic: open for a qualifying player car within
+ * the radius, close when he has gone and the inside is empty. */
+#define DOOR_MAX GTA_RENDER_DOORS
+#define DS_OPEN    0
+#define DS_SHUT    1
+#define DS_OPENING 2
+#define DS_CLOSING 3
+typedef struct {
+    int decl;                   /* index into script.d */
+    short dx, dy, fx, fy;       /* declared block, face block */
+    unsigned char lz, orient, edge, first, frames, cond, radius;
+    unsigned char on, state, has_face;
+    short tick;
+    long car_line;              /* cond 2: the car's declaration */
+    int model;                  /* cond 3: the original's model id */
+    int remap;                  /* cond 2: the colour the car must have, -1 any */
+} door_t;
+static door_t doors[DOOR_MAX];
+static int n_doors;
+
+static void door_wall(const door_t *dr, int solid)
+{
+    int w = gta_nav_wall(&nav, dr->fx, dr->fy, dr->lz);
+    int bit = dr->edge ? GTA_WALL_N : GTA_WALL_W;
+    gta_nav_set_wall(&nav, dr->fx, dr->fy, dr->lz, solid ? (w | bit) : (w & ~bit));
+}
+
+static void doors_build(void)
+{
+    int i;
+    n_doors = 0;
+    gta_render_door_n = 0;
+    for (i = 0; i < script.n && n_doors < DOOR_MAX; i++) {
+        const gta_decl *d = &script.d[i];
+        door_t *dr = &doors[n_doors];
+        gta_block b;
+        int orient, first, frames, lid = 0, cond, radius, lz, vt, k;
+        long carl = 0;
+        int model = -1, remap = -1;
+        switch (d->type) {
+        case GTA_DECL_DOOR:
+            orient = d->a; first = d->b; lid = d->c; frames = 8; cond = 0; radius = 2; break;
+        case GTA_DECL_SPECIFIC_DOOR:
+            orient = d->a; first = d->b; lid = d->c; carl = d->d; frames = 8;
+            remap = d->n_num >= 5 ? d->e : -1;
+            cond = 2; radius = 3; break;
+        case GTA_DECL_BARRIER:
+            orient = d->a; frames = d->b; first = d->c; cond = 1; radius = 1; break;
+        case GTA_DECL_BASIC_BARRIER:
+            orient = d->a; frames = d->b; first = d->c; cond = 0; radius = 1; break;
+        case GTA_DECL_MODEL_BARRIER:
+            orient = d->a; first = d->b; frames = d->c; model = d->d;
+            cond = 3; radius = 1; break;
+        case GTA_DECL_SPECIFIC_BARR:
+            orient = d->a; first = d->b; frames = d->c; carl = d->d;
+            remap = d->n_num >= 5 ? d->e : -1;
+            cond = 2; radius = 2; break;
+        default:
+            continue;
+        }
+        lz = GTA_MAP_LAYERS - 1 - d->z;         /* the file counts from the top */
+        if (lz < 0 || lz >= GTA_MAP_LAYERS) continue;
+        orient &= 3;
+        memset(dr, 0, sizeof *dr);
+        dr->decl = i;
+        dr->dx = d->x; dr->dy = d->y;
+        dr->fx = (short)(d->x + (orient == 1));
+        dr->fy = (short)(d->y + (orient == 3));
+        dr->lz = (unsigned char)lz;
+        dr->orient = (unsigned char)orient;
+        dr->edge = (unsigned char)(orient >= 2);
+        dr->first = (unsigned char)first;
+        dr->frames = (unsigned char)(frames > 0 ? frames : 1);
+        dr->cond = (unsigned char)cond;
+        dr->radius = (unsigned char)radius;
+        dr->car_line = carl;
+        dr->model = model;
+        dr->remap = remap;
+        dr->state = DS_SHUT;
+        vt = tiles.n_side + n_doors;
+        dr->has_face = (unsigned char)(vt <= 255);
+        /* the map: E/S of the declared block cleared for orient 1/3, the
+         * face block FLAT with the virtual tile on the wall and its back */
+        if (orient == 1 || orient == 3) {
+            gta_map_block(&map, d->x, d->y, lz, &b);
+            b.faces[orient == 1 ? GTA_FACE_E : GTA_FACE_S] = 0;
+            b.type_map |= 0x80;
+            gta_map_set_block(&map, d->x, d->y, lz, &b);
+        }
+        gta_map_block(&map, dr->fx, dr->fy, lz, &b);
+        b.type_map |= 0x80;
+        if (dr->has_face) {
+            b.faces[dr->edge ? GTA_FACE_N : GTA_FACE_W] = (unsigned char)vt;
+            b.faces[dr->edge ? GTA_FACE_S : GTA_FACE_E] = (unsigned char)vt;
+        }
+        gta_map_set_block(&map, dr->fx, dr->fy, lz, &b);
+        /* `lid`: the FLOOR under the door row, one layer down (3.1) */
+        if (lid && lz > 0)
+            for (k = -1; k <= 1; k++) {
+                int x_ = dr->edge ? d->x + k : d->x, y_ = dr->edge ? d->y : d->y + k;
+                gta_map_block(&map, x_, y_, lz - 1, &b);
+                b.faces[GTA_FACE_LID] = (unsigned char)lid;
+                gta_map_set_block(&map, x_, y_, lz - 1, &b);
+            }
+        gta_nav_update(&nav, &map, d->x, d->y, lz);
+        gta_nav_update(&nav, &map, dr->fx, dr->fy, lz);
+        door_wall(dr, 1);
+        gta_render_door_aux[n_doors] = dr->first;
+        script.d[i].state = GTA_DOOR_SHUT;
+        n_doors++;
+    }
+    gta_render_door_n = n_doors;
+    printf("gta: doors - %d doors and gates, shut and off\n", n_doors);
+    fflush(stdout);
+}
+
+static void door_open(door_t *dr)
+{
+    gta_block b;
+    if (dr->state == DS_OPEN || dr->state == DS_OPENING) return;
+    dr->state = DS_OPENING;
+    dr->tick = 0;
+    /* the declared block is field from now on (the original's routine .., 0x40) */
+    gta_map_block(&map, dr->dx, dr->dy, dr->lz, &b);
+    b.type_map = (unsigned short)((b.type_map & ~0x70) | 0x40);
+    gta_map_set_block(&map, dr->dx, dr->dy, dr->lz, &b);
+    gta_nav_update(&nav, &map, dr->dx, dr->dy, dr->lz);
+    door_wall(dr, 0);
+    script.d[dr->decl].state = GTA_DOOR_OPEN;
+    printf("gta: door %ld opens at (%d,%d)\n", script.d[dr->decl].line,
+           dr->dx, dr->dy);
+    fflush(stdout);
+}
+
+static void door_close(door_t *dr)
+{
+    if (dr->state == DS_SHUT || dr->state == DS_CLOSING) return;
+    dr->state = DS_CLOSING;
+    dr->tick = 0;
+    door_wall(dr, 1);
+    script.d[dr->decl].state = GTA_DOOR_SHUT;
+    printf("gta: door %ld closes\n", script.d[dr->decl].line);
+    fflush(stdout);
+}
+
+static int door_cond(const door_t *dr)
+{
+    static const int emerg[6] = { 4, 5, 15, 16, 32, 44 };
+    int m = script_player_car_model(0), k;
+    switch (dr->cond) {
+    case 0: return 1;
+    case 1:
+        for (k = 0; k < 6; k++) if (m == emerg[k]) return 1;
+        return 0;
+    case 2: {
+        const gta_decl *c = gta_script_by_line(&script, (int)dr->car_line);
+        /* ...AND IN THE RIGHT COLOUR, when the declaration names one: [102]
+         * 119's garage wants the car back in the remap it was stolen in. */
+        if (dr->remap >= 0 && script_veh_remap != dr->remap)
+            return 0;
+        return !c || !c->handle || (c->handle & ~GTA_IN_CAR) == veh_serial;
+    }
+    case 3: return m == dr->model;
+    }
+    return 0;
+}
+
+/* Is the player inside: the declared block and the three behind the door. */
+static int door_inside(const door_t *dr, int bx, int by)
+{
+    int k;
+    static const signed char ix[4] = { 1, -1, 0, 0 }, iy[4] = { 0, 0, 1, -1 };
+    for (k = 0; k <= 3; k++)
+        if (bx == dr->dx + ix[dr->orient] * k && by == dr->dy + iy[dr->orient] * k)
+            return 1;
+    return 0;
+}
+
+/* The door's end sound, heard from where the player is: silent beyond 16
+ * blocks (the original's 0x3ffffff), half volume at the door. */
+static void door_sound(const door_t *dr, int bx, int by)
+{
+    int d = (bx > dr->fx ? bx - dr->fx : dr->fx - bx) +
+            (by > dr->fy ? by - dr->fy : dr->fy - by);
+    if (d >= 16)
+        return;
+    gta_audio_play(&sfx, GTA_SND_GARAGE_DOOR, 32 - d * 2, 0);
+}
+
+/* A train's sound at (x,y): the air brake 0x29, the wreck 10. Half volume
+ * like every sound but the blast, fading out at sixteen blocks. */
+static void train_sound(void *ctx, int id, long x, long y)
+{
+    long dx = (x - tsnd_x) >> 21, dy = (y - tsnd_y) >> 21;
+    int d;
+    (void)ctx;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    d = (int)(dx + dy);
+    if (d >= 16)
+        return;
+    gta_audio_play(&sfx, id, 32 - d * 2, 0);
+}
+
+static void doors_tick(long px, long py, int in_a_car)
+{
+    int i;
+    int bx = (int)(px >> 21), by = (int)(py >> 21);
+    for (i = 0; i < n_doors; i++) {
+        door_t *dr = &doors[i];
+        int ax, ay, near_;
+        if (dr->state == DS_OPENING && ++dr->tick >= 30) {
+            dr->tick = 0;
+            if (gta_render_door_aux[i] + 1 < dr->first + dr->frames)
+                gta_render_door_aux[i]++;
+            else {
+                dr->state = DS_OPEN;
+                door_sound(dr, bx, by);
+            }
+        } else if (dr->state == DS_CLOSING && ++dr->tick >= 30) {
+            dr->tick = 0;
+            if (gta_render_door_aux[i] > dr->first)
+                gta_render_door_aux[i]--;
+            else {
+                dr->state = DS_SHUT;
+                door_sound(dr, bx, by);
+            }
+        }
+        if (!dr->on)
+            continue;
+        ax = bx - dr->dx; if (ax < 0) ax = -ax;
+        ay = by - dr->dy; if (ay < 0) ay = -ay;
+        near_ = ax <= dr->radius && ay <= dr->radius;
+        if (near_ && in_a_car && dr->state == DS_SHUT && door_cond(dr))
+            door_open(dr);
+        else if (!near_ && dr->state == DS_OPEN && !door_inside(dr, bx, by))
+            door_close(dr);
+    }
+}
+
+static void script_door(void *ctx, int line, int op)
+{
+    int i;
+    (void)ctx;
+    for (i = 0; i < n_doors; i++) {
+        door_t *dr = &doors[i];
+        if (script.d[dr->decl].line != line)
+            continue;
+        if (op == GTA_DOOR_OP_ON) dr->on = 1;
+        else if (op == GTA_DOOR_OP_OFF) dr->on = 0;
+        else if (op == GTA_DOOR_OP_OPEN) door_open(dr);
+        else if (op == GTA_DOOR_OP_CLOSE) door_close(dr);
+        return;
+    }
+}
+
+static int script_player_train(void *ctx)
+{
+    (void)ctx;
+    return trains.pl_on;
+}
+
+static void script_wreck_train(void *ctx, int t)
+{
+    (void)ctx;
+    if (t >= 0 && t < trains.n)
+        gta_trains_wreck(&trains, t, &traffic, train_sound, 0);
 }
 
 static const gta_script_world script_world = {
@@ -4036,7 +4844,17 @@ static const gta_script_world script_world = {
     script_setbomb, script_freeze, script_named_text,
     script_car_kill, script_ped_speed, script_red_arrow,
     script_crane_offer, script_crane_poll, script_crane_demand,
-    script_level_end, script_say, script_kf_timer
+    script_level_end, script_say, script_kf_timer,
+    script_car_explode, script_car_invuln, script_ped_explode,
+    script_ped_weapon, script_ped_police, script_ped_stunned,
+    script_add_life, script_inc_heads, script_map_type, script_map_face,
+    script_car_lock, script_car_wake, script_car_sendto, script_car_has_driver,
+    script_driver_out, script_car_board, script_car_on_px,
+    script_car_still, script_player_firing, script_car_bomb, script_ped_board,
+    script_car_hunt,
+    script_model_start, script_model_state, script_model_return,
+    script_bombshop, script_door,
+    script_player_train, script_wreck_train
 };
 
 /* PUT THE CAR BACK AND GIVE IT ITS NAME AGAIN.
@@ -4353,6 +5171,7 @@ int main(void)
      * independently of the ten-step sequence because the door is a property
      * of the CAR, not of the man - see door_delta(). */
     int  door_tick = -1;
+    int  busted_now = 0;
     /* THE APPROACH IS ITS OWN PHASE, before the ten-step sequence.
      *
      * All ten frames of gta_ped_enter_seq happen AT the car - 26 is reaching
@@ -4375,18 +5194,58 @@ int main(void)
     int frames = 0;
     unsigned long t0, t1;
 
+    /* FROM THE WORKBENCH ICON the game does not play itself: it runs the
+     * drawer's `run` script and waits, so that a level change (code 5) is
+     * restarted by the script - see amiga_wblaunch.c. */
+    if (amiga_wb_relaunch())
+        return 0;
+
     log_line("gta: start");
 
+    /* WHICH LEVEL: gta.prefs, unless the game left a startlevel.txt on its
+     * way out (the next level, or one picked on the title screen) - then
+     * that, straight into play with no title screen in between. */
+    {
+        gta_prefs lp;
+        FILE *lf;
+        gta_prefs_load(GTA_DIR, &lp);
+        g_level = lp.level;
+        lf = fopen(LEVEL_FILE, "r");
+        if (lf) {
+            int v = -1;
+            if (fscanf(lf, "%d", &v) == 1 && v >= 0 && v < GTA_LEVELS) {
+                g_level = v;
+                g_level_direct = 1;
+            }
+            fclose(lf);
+            remove(LEVEL_FILE);
+        }
+        if (g_level < 0 || g_level >= GTA_LEVELS) g_level = 0;
+        snprintf(tiles_path, sizeof tiles_path, GTA_DIR "GTADATA/%s",
+                 levels[g_level].til);
+        snprintf(map_path, sizeof map_path, GTA_DIR "GTADATA/%s",
+                 levels[g_level].map);
+        snprintf(sfx_path, sizeof sfx_path, GTA_DIR "GTADATA/%s",
+                 levels[g_level].snd);
+        printf("gta: level %d of %d - %s, mission.ini section [%d]%s\n",
+               g_level + 1, GTA_LEVELS, levels[g_level].name,
+               levels[g_level].section,
+               g_level_direct ? " (from startlevel.txt)" : "");
+        fflush(stdout);
+    }
+
     if (gta_tiles_load(TILES_PATH, &tiles) != 0) {
-        log_line("gta: FAILED to load " TILES_PATH
-                 " - run tools/bin/deploy.sh");
+        printf("gta: FAILED to load %s - run tools/bin/deploy.sh\n",
+               TILES_PATH);
+        fflush(stdout);
         return 20;
     }
     gta_tiles_describe(&tiles, stdout);
     fflush(stdout);
 
     if (gta_map_load(MAP_PATH, &map) != 0) {
-        log_line("gta: FAILED to load " MAP_PATH);
+        printf("gta: FAILED to load %s\n", MAP_PATH);
+        fflush(stdout);
         gta_tiles_free(&tiles);
         return 20;
     }
@@ -4407,7 +5266,7 @@ int main(void)
     if (gta_sfx_load(SFX_PATH, &sfx) == 0)
         gta_sfx_describe(&sfx, stdout);
     else
-        printf("sfx: no " SFX_PATH " - running silent\n");
+        printf("sfx: no %s - running silent\n", SFX_PATH);
     if (gta_sfx_open_index(VOICE_PATH, &voice) == 0)
         printf("voice: %d lines, read off the disk as they are said\n",
                voice.count);
@@ -4452,6 +5311,30 @@ int main(void)
          * is already dimensioned for the largest case. */
         gta_prefs_screen_size(prefs.screen, prefs.gfx,
                               &g_screen_w, &g_screen_h, &g_scale2x);
+        /* MORPHOS, screen `auto`: 640x480. Its cards have no mode smaller
+         * than that, so a 320-wide picture sat in the corner of a 640x480
+         * screen. The native PPC build rasterises 640x480 (it has the speed
+         * and shows more of the city); the 68k binary under emulation draws
+         * 320x240 and doubles it - the cheap "640x480 doubled" of gtaprefs.
+         * Any explicit choice in gta.prefs or opts.txt still wins. */
+        if (prefs.screen == GTA_SCR_AUTO && amigagfx_is_morphos()) {
+            /* The title bar goes ABOVE the game area (amigagfx_open makes the
+             * screen bar-many lines taller), so a full 480 would need the next
+             * mode up - 800x600, with the game in its corner. The game area
+             * is 480 minus the bar instead, and the screen is exactly 640x480.
+             * Rounded down to 4 so the doubled and half-resolution paths
+             * divide evenly. */
+            int bar = amigagfx_title_bar_guess();
+            g_screen_w = 640;
+            g_screen_h = (480 - (g_show_bar ? bar : 0)) & ~3;
+#ifdef __MORPHOS__
+            g_scale2x  = 0;
+#else
+            g_scale2x  = 1;
+#endif
+            printf("gta: MorphOS - screen auto becomes 640x480%s\n",
+                   g_scale2x ? " doubled" : "");
+        }
         g_render_w = g_scale2x ? g_screen_w / 2 : g_screen_w;
         g_render_h = g_scale2x ? g_screen_h / 2 : g_screen_h;
         printf("gta: prefs %s - audio %s, gfx %s, screen %s\n",
@@ -4670,6 +5553,7 @@ int main(void)
     traffic.prof_clock = amiga_uclock_us;
     traffic.prof_raw = opt_driveprof ? amiga_uclock_raw : 0;
     gta_peds_init(&peds, &tiles, 777UL);
+    gta_trains_init(&trains, &map, &tiles);
     /* The reservation overlay, on by default while traffic is debugged -
      * the developer reads the bookings straight off the screen. F9. */
     gta_render_set_overlay(&view, &traffic, opt_overlay);
@@ -4684,6 +5568,7 @@ int main(void)
      * so it is a printed warning and not a refusal to start. */
     if (gta_nav_build(&nav, &map) == 0) {
         gta_traffic_set_nav(&traffic, &nav);
+        gta_service_init(&service, &map, &nav, &tiles);
         gta_traffic_police_start(&traffic, &map);
         gta_traffic_lights_scan(&traffic, &map);
         printf("gta: map - %d districts, %d roadblock lists\n", map.n_districts,
@@ -4695,19 +5580,21 @@ int main(void)
         /* THE CRATES, from the level script, and with them the original's
          * start: fists, and a crate nearby. Without the file the old
          * loadout stands (the pistol and a crate's worth of everything). */
-        if (gta_pickups_load(&pickups, INI_PATH, 1, &nav, &tiles) > 0) {
+        if (gta_pickups_load(&pickups, INI_PATH, levels[g_level].section,
+                             &nav, &tiles) > 0) {
             int k_;
             weapon = 0;
             for (k_ = 1; k_ < GTA_WEAPON_COUNT; k_++) ammo[k_] = 0;
             printf("gta: you start with your fists - the weapons are in the crates\n");
             fflush(stdout);
         }
-        if (gta_script_load(&script, INI_PATH, 1) == 0) {
+        if (gta_script_load(&script, INI_PATH, levels[g_level].section) == 0) {
             static const int show[5] = { GTA_DECL_TELEPHONE, GTA_DECL_TRIGGER,
                                          GTA_DECL_PARKED, GTA_DECL_DOOR,
                                          GTA_DECL_SPRAY };
             int k_, j_;
-            printf("gta: script - %d declarations in section [1]", script.n);
+            printf("gta: script - %d declarations in section [%d]", script.n,
+                   levels[g_level].section);
             for (k_ = 0; k_ < 5; k_++) {
                 int c_ = 0;
                 for (j_ = 0; j_ < script.n; j_++)
@@ -4717,10 +5604,12 @@ int main(void)
             printf("%s\n", script.n_unknown ? " (some names unknown)" : "");
             fflush(stdout);
             gta_script_place(&script, &nav, &tiles);
-            if (gta_script_load_cmds(&script, INI_PATH, 1) == 0) {
+            if (gta_script_load_cmds(&script, INI_PATH,
+                                     levels[g_level].section) == 0) {
                 gta_script_set_brief(&script, script_brief, 0);
                 gta_script_set_world(&script, &script_world, 0);
                 cranes_init();
+                doors_build();
                 printf("gta: script - %d commands in the logic block, "
                        "%d distinct names\n", script.n_cmds, script.n_cnames);
                 /* AND THE CRATES ARE THE SCRIPT'S NOW. The file reader above
@@ -4765,6 +5654,7 @@ int main(void)
         gta_weapons_init(&weapons, &tiles);
         gta_weapons_set_pickups(&weapons, &pickups);
         gta_score_init(&score);
+        gta_score_set_city(map.style_number);    /* the city's wanted thresholds */
         printf("gta: navigation grid %ld KB\n", (long)(GTA_NAV_BYTES / 1024));
     } else {
         log_line("gta: no memory for the navigation grid - traffic will not "
@@ -4801,6 +5691,8 @@ int main(void)
         if (sf) {
             fclose(sf);
             log_line("gta: front end skipped - a script is driving");
+        } else if (g_level_direct) {
+            log_line("gta: front end skipped - straight into the chosen level");
         } else if (front_menu(chunky, pitch)) {
             log_line("gta: front end - quit");
             gta_front_free(&front);
@@ -5379,6 +6271,12 @@ int main(void)
                     adq[adq_n].op = 13; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq[adq_n].brk = b;
                     adq[adq_n].st = c; adq_n++;
+                } else if (sscanf(ln, "goto %d %d face %d", &a, &b, &c) == 3) {
+                    /* ...and turned to face `c` (0 north .. 128 south), for
+                     * a car that has to drive in through a door. */
+                    adq[adq_n].op = 17; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq[adq_n].hb = 1; adq_n++;
                 } else if (sscanf(ln, "goto %d %d", &a, &b) == 2) {
                     /* A TEST FIXTURE: put the player on block (a,b). The
                      * city is 256 blocks across and a job crosses most of
@@ -5401,6 +6299,18 @@ int main(void)
                     /* A TEST FIXTURE: F4's window size, which cannot be
                      * pressed from a script. 0..5, smallest first. */
                     adq[adq_n].op = 18; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "board %d", &a) == 1) {
+                    adq[adq_n].op = 32; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "killped %d", &a) == 1) {
+                    adq[adq_n].op = 31; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "wreck %d", &a) == 1) {
+                    /* A TEST FIXTURE: write off the car declared on script
+                     * line `a`, wherever it has driven - a job that wants a
+                     * fleeing car destroyed cannot chase it unattended. */
+                    adq[adq_n].op = 30; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq_n++;
                 } else if (sscanf(ln, "score %d", &a) == 1) {
                     /* A TEST FIXTURE: `a` points onto the score, as if
@@ -5472,6 +6382,9 @@ int main(void)
      * again, and the index is bounds-checked as well - a mode that does not
      * exist should fall back to full width, not to a number. */
     mode_narrow = VIEW_FAST;
+    /* MorphOS starts on the whole screen: its CPU does not need the narrower
+     * window, and the black side bars read as "not full screen". */
+    if (amigagfx_is_morphos()) mode_narrow = VIEW_FULL;
     if (opt_width == 320) mode_narrow = VIEW_FULL;
     if (opt_width == 256) mode_narrow = VIEW_FAST;
     if (opt_camh >= 25 && opt_camh <= 96)
@@ -5489,7 +6402,11 @@ int main(void)
     t0 = amiga_uclock_us();
     prof_t0 = t0;
     amiga_watchdog_start();
-    pager_brief(1001);          /* the opening brief, now that frames count */
+    /* the opening brief, now that frames count - Liberty City 1's text;
+     * every other level's script says its own (220: San Andreas and Vice
+     * City showed "the South Park phones" over their own openings) */
+    if (g_level == 0)
+        pager_brief(1001);
 
     while (running) {
         int dx = 0, dy = 0, speed;
@@ -5921,6 +6838,119 @@ int main(void)
             while (sim_accum >= (unsigned long)SIM_US && ticks < opt_catchup &&
                    (ticks == 0 ||
                     (unsigned long)(amiga_uclock_us() - sim_t0) < SIM_BUDGET_US)) {
+                /* THE MODEL CAR (225): back into his own car - unlocked,
+                 * damageable, taken out of the fleet as RETURN would. */
+#define RC_BACK() do { \
+                    long bx_ = 0, by_ = 0; int wr_ = 0, m_, f_, rm_, dm_, dv_; \
+                    long cx_, cy_; \
+                    gta_traffic_set_locked(&traffic, rc_real, 0); \
+                    gta_traffic_set_invuln(&traffic, rc_real, 0); \
+                    if (gta_traffic_find_car(&traffic, rc_real, &bx_, &by_, 0, &wr_) && \
+                        gta_traffic_grab_car(&traffic, bx_, by_, rc_layer, 4, &m_, \
+                                             &cx_, &cy_, &f_, &rm_, &dm_, &dv_)) { \
+                        veh_serial = gta_traffic_last_grab_serial(&traffic); \
+                        veh_mission = gta_traffic_last_grab_mission(&traffic); \
+                        gta_veh_init(&veh, &tiles, m_, cx_, cy_, f_); \
+                        veh.remap = rm_; veh.damage = dm_; \
+                        player.layer = rc_layer; \
+                        player.x = cx_; player.y = cy_; \
+                        in_car = 1; \
+                        printf("gta: model car - back in his own car %lu\n", veh_serial); \
+                    } else { \
+                        in_car = 0; veh_serial = 0; veh_mission = 0; \
+                        printf("gta: model car - his own car is gone, on foot\n"); \
+                    } \
+                    fflush(stdout); \
+                } while (0)
+                if (rc_req == RC_REQ_START && in_car && !enter_anim) {
+                    int rec_ = gta_script_model_index(&tiles, 47);
+                    long x0 = veh.ox, y0 = veh.oy;
+                    int f0 = gta_veh_angle(&veh);
+                    unsigned long real_;
+                    rc_req = 0;
+                    real_ = rec_ >= 0
+                        ? leave_car(veh.model, x0, y0, f0, player.layer,
+                                    veh.remap, veh.damage)
+                        : 0;
+                    if (real_) {
+                        rc_real = real_;
+                        rc_layer = player.layer;
+                        gta_traffic_set_locked(&traffic, real_, 1);
+                        gta_traffic_set_invuln(&traffic, real_, 1);
+                        gta_traffic_set_mission(&traffic, real_, 1);
+                        /* beside it, a car's width to its right */
+                        gta_veh_init(&veh, &tiles, rec_,
+                                     x0 + (long)gta_cos(f0) * 22 * 4,
+                                     y0 + (long)gta_sin(f0) * 22 * 4, f0);
+                        veh_serial = GTA_RC_SERIAL;
+                        veh_mission = 0;
+                        rc_state = GTA_RC_ALIVE;
+                        printf("gta: model car - his car %lu parked, he drives "
+                               "the model car (fire sets it off)\n", real_);
+                    } else {
+                        printf("gta: model car - no model 47 / fleet full\n");
+                    }
+                    fflush(stdout);
+                }
+                if (rc_req == RC_REQ_RETURN) {
+                    rc_req = 0;
+                    if (rc_state == GTA_RC_ALIVE && in_car)
+                        RC_BACK();
+                    if (rc_real)
+                        gta_traffic_set_locked(&traffic, rc_real, 0);
+                    rc_state = GTA_RC_NONE;
+                    rc_real = 0;
+                }
+                /* A SHOP BOMB (kind 1) IS ARMED BY FIRE in the car: kind 2,
+                 * five seconds (the original's routine, the research notes) */
+                if (in_car && fire_held && veh_serial &&
+                    rc_state != GTA_RC_ALIVE) {
+                    int k_;
+                    for (k_ = 0; k_ < BOMB_SLOTS; k_++)
+                        if (bombs[k_].h == veh_serial && bombs[k_].type == 1) {
+                            bombs[k_].type = 2;
+                            bombs[k_].fuse = 0x7d * 2;
+                            printf("gta: bomb armed - five seconds\n");
+                            fflush(stdout);
+                        }
+                }
+                if (rc_state == GTA_RC_ALIVE && in_car &&
+                    (veh.damage >= GTA_CAR_WRECKED || fire_held)) {
+                    /* IT GOES OFF: fire, or anything that wrecks it. He is
+                     * not in it, so nobody dies but what is next to it. */
+                    /* He is put back in his own car FIRST: the blast is
+                     * measured from where the player is, and while he drove
+                     * the model car that was the model car - the first run
+                     * blew him up with it, 27 blocks from his body. */
+                    int wm = veh.model, wr = veh.remap, wl = player.layer;
+                    int wf = gta_veh_angle(&veh);
+                    long wx = veh.ox, wy = veh.oy;
+                    fire_held = 0;
+                    RC_BACK();
+                    rc_state = GTA_RC_DEAD;
+                    /* ...and the weapons told: they keep last tick's player,
+                     * which is still the model car */
+                    gta_weapons_set_player(&weapons,
+                                           in_car ? veh.ox : player.x,
+                                           in_car ? veh.oy : player.y,
+                                           player.layer, in_car,
+                                           veh.len / 2, veh.wid / 2);
+                    gta_weapons_wreck_car(&weapons, &tiles.cars[wm], wx, wy,
+                                          wf, wl, &peds, &traffic, &score, 1);
+                    if (opt_traffic)
+                        gta_traffic_leave_wreck(&traffic, wm, wx, wy, wf, wl,
+                                                wr);
+                    printf("gta: model car - it went off at (%ld,%ld)\n",
+                           wx >> 16, wy >> 16);
+                }
+                if (script_wreck_req) {
+                    /* EXPLODE_CAR / EXPL_PED on the car he is driving */
+                    script_wreck_req = 0;
+                    if (in_car && veh.damage < GTA_CAR_WRECKED) {
+                        veh.damage = GTA_CAR_WRECKED;
+                        log_line("gta: script - his car is written off");
+                    }
+                }
                 if (bust_timer > 0) {
                     up = down = left = right = 0;
                     handbrake = 0;
@@ -6100,6 +7130,8 @@ int main(void)
                             veh.oy = veh.y = (((long)adq[adq_i].brk * 32 + 16) << 16);
                             veh.vx = veh.vy = 0;
                             veh.omega = 0;
+                            if (adq[adq_i].hb == 1)
+                                veh.ang16 = ((long)(adq[adq_i].st & 255)) << 16;
                             player.x = veh.ox;
                             player.y = veh.oy;
                             /* ON THE SURFACE THERE, not the layer he left:
@@ -6135,6 +7167,26 @@ int main(void)
                         gta_audio_play(&sfx, adq[adq_i].thr,
                                        adq[adq_i].brk, 0);
                         break;
+                    case 32:
+                        board_wait = adq[adq_i].thr;
+                        break;
+                    case 31:
+                        killped_line = adq[adq_i].thr;
+                        printf("gta: autodrive - killped %d armed\n",
+                               killped_line);
+                        fflush(stdout);
+                        break;
+                    case 30: {
+                        const gta_decl *wd_ = gta_script_by_line(&script,
+                                                  adq[adq_i].thr);
+                        int ok_ = wd_ && wd_->handle &&
+                                  gta_traffic_write_off(&traffic,
+                                      wd_->handle & ~GTA_IN_CAR);
+                        printf("gta: autodrive - wreck line %d: %s\n",
+                               adq[adq_i].thr, ok_ ? "written off" : "no car");
+                        fflush(stdout);
+                        break;
+                    }
                     case 21:
                         score.score += adq[adq_i].thr;
                         printf("gta: autodrive - score +%d, now %ld\n",
@@ -6238,6 +7290,49 @@ int main(void)
                     enter_req = 0;
                     printf("gta: RETURN refused - the script holds him\n");
                     fflush(stdout);
+                }
+                if (enter_req && !enter_anim && !in_car) {
+                    /* A TRAIN (TRAINS.md 5): on board only while it stands;
+                     * off only while it stands and with pavement by the
+                     * second carriage. The car code below never sees it. */
+                    if (trains.pl_on >= 0) {
+                        long gx_, gy_;
+                        int gl_, t_ = trains.pl_on;
+                        enter_req = 0;
+                        if (gta_trains_get_off(&trains, t_, &gx_, &gy_, &gl_)) {
+                            if (trains.t[t_].control == 2)
+                                gta_trains_hijack(&trains, t_);
+                            player.x = gx_; player.y = gy_; player.layer = gl_;
+                            trains.pl_on = -1;
+                            printf("gta: off train %d at (%ld,%ld)\n", t_,
+                                   gx_ >> 21, gy_ >> 21);
+                        } else
+                            printf("gta: train %d - cannot get off here\n", t_);
+                        fflush(stdout);
+                    } else {
+                        int t_ = gta_trains_board(&trains, player.x, player.y,
+                                                  player.layer,
+                                                  adq_i < adq_n ? 64 : 24);
+                        if (t_ >= 0) {
+                            enter_req = 0;
+                            trains.pl_on = t_;
+                            train_fire_prev = fire_held;
+                            printf("gta: boards train %d\n", t_);
+                            fflush(stdout);
+                        }
+                    }
+                }
+                if (enter_req && !enter_anim && rc_state == GTA_RC_ALIVE &&
+                    in_car) {
+                    /* OUT OF THE MODEL CAR = the session is over: it is left
+                     * where it is and he is back in his own (the original's routine) */
+                    enter_req = 0;
+                    if (opt_traffic)
+                        gta_traffic_abandon(&traffic, veh.model, veh.ox, veh.oy,
+                                            gta_veh_angle(&veh), player.layer,
+                                            veh.remap, veh.damage);
+                    RC_BACK();
+                    rc_state = GTA_RC_CANCEL;
                 }
                 if (enter_req && !enter_anim) {
                     enter_req = 0;
@@ -6854,6 +7949,11 @@ int main(void)
                     wx0_ = veh.x;   wy0_ = veh.y;
                     wox0_ = veh.ox; woy0_ = veh.oy;
                     wang0_ = veh.ang16;
+                    if (gta_peds_cop_pulling(&peds) > 0) {
+                        /* HELD BY THE COP AT HIS DOOR - see the pull below */
+                        up = down = left = right = 0;
+                        handbrake = 1;
+                    }
                     gta_veh_step(&veh, up ? 1 : 0, down ? 1 : 0,
                                  (right ? 1 : 0) - (left ? 1 : 0),
                                  handbrake, road_);
@@ -7281,6 +8381,33 @@ int main(void)
                      * discarded. The player stood motionless at frame 98 for
                      * the whole 0.8 seconds: dead code that looked exactly
                      * like a missing feature. */
+                    if (trains.pl_on >= 0) {
+                        /* ABOARD A TRAIN: carried by it, FIRE takes or hands
+                         * back the controls, up / down drive (TRAINS.md 6) */
+                        int t_ = trains.pl_on, l_, a_;
+                        long x_, y_;
+                        if (fire_held && !train_fire_prev) {
+                            if (gta_trains_hijack(&trains, t_)) {
+                                gta_score_crime(&score, GTA_CRIME_HIJACK);
+                                printf("gta: train %d hijacked\n", t_);
+                            } else
+                                printf("gta: train %d handed back\n", t_);
+                            fflush(stdout);
+                        }
+                        train_fire_prev = fire_held;
+                        gta_trains_drive(&trains, t_, up, down);
+                        gta_trains_body(&trains, t_,
+                                        trains.t[t_].type == 2 ? 0 : 1,
+                                        &x_, &y_, &l_, &a_);
+                        player.x = x_; player.y = y_; player.layer = l_;
+                        if (trains.t[t_].wrecked)
+                            trains.pl_on = -1;
+                    } else
+                    if (foot_arrest > 0) {
+                        /* KNOCKED DOWN BY THE COP - see FOOT_ARREST_TICKS */
+                        player.anim = GTA_ANIM_DOWN;
+                        player.frame = 0;
+                    } else
                     if (punch_left > 0 && !up && !down) {
                         /* THE STANDING PUNCH is a state of its own,
                          * 0xa9..0xae, a frame every GTA_PUNCH_TICKS;
@@ -7362,7 +8489,7 @@ int main(void)
                     }
                 }
                 if (fire_held && walk_mode && !in_car && !enter_anim
-                    && !vault && !slide) {
+                    && !vault && !slide && trains.pl_on < 0) {
                     if (weapon == 0) {
                         if (punch_left == 0)
                             punch_left = GTA_PUNCH_TICKS * GTA_PED_PUNCH_FRAMES;
@@ -7419,6 +8546,7 @@ int main(void)
                     script_in_car = in_car;
                     script_veh_model = in_car ? veh.model : -1;
                     script_veh_damage = in_car ? veh.damage : 0;
+                    script_veh_remap = in_car ? veh.remap : -1;
                     script_veh_x = veh.ox;
                     script_veh_y = veh.oy;
                     {
@@ -7524,6 +8652,7 @@ int main(void)
                         }
                     }
                     script_pl_x = player.x;
+                    script_pl_firing = ARMED_NOW;
                     script_pl_y = player.y;
                     gta_script_tick(&script, in_car ? veh.ox : player.x,
                                     in_car ? veh.oy : player.y,
@@ -7551,6 +8680,30 @@ int main(void)
                                         in_car ? veh.len / 2 : 0,
                                         in_car ? veh.wid / 2 : 0,
                                         in_car ? gta_veh_angle(&veh) : 0);
+                    /* WHERE A COP TAKES HIM: the driver's door, the point
+                     * the player walks to himself, and whether the car is
+                     * slow enough for it - the cop car's own stop rule. */
+                    if (in_car) {
+                        car_door_point(&tiles.cars[veh.model], veh.ox, veh.oy,
+                                       gta_veh_angle(&veh), &peds.pl_door_x,
+                                       &peds.pl_door_y);
+                        peds.pl_slow = bust_timer == 0 &&
+                                       (traffic.pl_speed < (2L << 16) ||
+                                        traffic.pl_still >= GTA_PL_STILL_TICKS);
+                    } else
+                        peds.pl_slow = 0;
+                    {
+                        /* THE PULL HOLDS THE CAR (0xd4: the target car's
+                         * speed, gas and brake are zeroed and it is marked
+                         * taken) and swings his door open. */
+                        int pull_ = in_car ? gta_peds_cop_pulling(&peds) : 0;
+                        if (pull_ > 0) {
+                            up = down = left = right = 0;
+                            handbrake = 1;
+                            if (pull_ == 1 && !enter_bike)
+                                door_tick = 0;
+                        }
+                    }
                     {
                         long cx_, cy_;
                         int cl_, ca_;
@@ -7592,8 +8745,60 @@ int main(void)
                             if (gta_peds_spawn_cop(&peds, rx_, ry_, rl_, ra_))
                                 gta_peds_post_last_cop(&peds);
                     }
-                    if (bust_timer == 0 && score.level > 0 && peds.cop_shoot == 0 &&
-                        gta_peds_cop_event(&peds)) {
+                    {
+                        int bust_now_ = 0;
+                        if (bust_timer == 0 && foot_arrest == 0 &&
+                            score.level > 0 && peds.cop_shoot == 0 &&
+                            gta_peds_cop_event(&peds)) {
+                            if (in_car)
+                                bust_now_ = 1;  /* the pull already ran */
+                            else {
+                                foot_arrest = FOOT_ARREST_TICKS;
+                                printf("gta: police - knocked down, arrested on"
+                                       " foot\n");
+                                fflush(stdout);
+                            }
+                        }
+                        if (foot_arrest > 0 && --foot_arrest == 0)
+                            bust_now_ = 1;
+                        if (board_wait > 0) {
+                            board_wait--;
+                            if (trains.pl_on >= 0 || in_car)
+                                board_wait = 0;
+                            else {
+                                int t_ = gta_trains_board(&trains, player.x,
+                                                          player.y, player.layer,
+                                                          64);
+                                if (t_ >= 0) {
+                                    trains.pl_on = t_;
+                                    train_fire_prev = fire_held;
+                                    board_wait = 0;
+                                    printf("gta: boards train %d\n", t_);
+                                    fflush(stdout);
+                                }
+                            }
+                        }
+                        if (killped_line) {
+                            const gta_decl *kd_ = gta_script_by_line(&script,
+                                                      killped_line);
+                            if (kd_ && kd_->handle &&
+                                !(kd_->handle & GTA_IN_CAR)) {
+                                int k_;
+                                for (k_ = 0; k_ < GTA_MAX_PEDS; k_++)
+                                    if (peds.p[k_].serial == kd_->handle &&
+                                        peds.p[k_].alive) {
+                                        gta_peds_kill(&peds, k_);
+                                        printf("gta: autodrive - killped %d:"
+                                               " killed\n", killped_line);
+                                        fflush(stdout);
+                                        killped_line = 0;
+                                        break;
+                                    }
+                            }
+                        }
+                        busted_now = bust_now_;
+                    }
+                    if (busted_now) {
                         /* BUSTED. The original: the jingle, the card, the
                          * multiplier halved (never below 1), armour, speed
                          * and every weapon gone, heat and level zero, and
@@ -7750,6 +8955,19 @@ int main(void)
                                             (render_w() / 2) / zoom_eff() + 1);
                     amiga_wd_set(AMIGA_WD_PHASE_TRAFFIC);
                     gta_traffic_tick(&traffic, &map, view.cam_x, view.cam_y);
+                    tsnd_x = in_car ? veh.ox : player.x;
+                    tsnd_y = in_car ? veh.oy : player.y;
+                    gta_trains_tick(&trains, &traffic, &peds, tsnd_x, tsnd_y,
+                                    player.layer,
+                                    !in_car && trains.pl_on < 0,
+                                    train_sound, 0);
+                    gta_service_tick(&service, &traffic, &peds, &weapons);
+                    if (trains.pl_hit) {
+                        trains.pl_hit = 0;
+                        player_health = 0;
+                        printf("gta: run over by a train\n");
+                        fflush(stdout);
+                    }
                     amiga_wd_set(AMIGA_WD_PHASE_SIM);
                 }
                 /* The spawner puts people on the edge of the view ahead of
@@ -7937,6 +9155,8 @@ int main(void)
                 alarms_tick(in_car ? veh.ox : player.x,
                             in_car ? veh.oy : player.y);
                 bombs_tick(&veh, in_car && script_in_car);
+                doors_tick(in_car ? veh.ox : player.x,
+                           in_car ? veh.oy : player.y, in_car);
                 cranes_tick(in_car ? veh.ox : player.x, in_car ? veh.oy : player.y);
                 /* EVERY BLAST IS HEARD. Until 2026-09-18 none was: the
                  * rocket, the wrecked car and now the script's explosions
@@ -8220,6 +9440,10 @@ int main(void)
                  * the restart that takes the mouse and the keyboard off the
                  * developer working beside it - which is what happened,
                  * every couple of minutes, and was rightly objected to. */
+                if (g_level_next_ticks > 0 && --g_level_next_ticks == 0) {
+                    level_switch(g_level + 1);
+                    running = 0;
+                }
                 if ((sim_ticks % 25) == 0 && !g_reload) {
                     FILE *rf = fopen(GTA_DIR "reload.txt", "r");
                     if (rf) {
@@ -8349,12 +9573,14 @@ int main(void)
                     snprintf(ln, sizeof ln,
                              "gta: traffic pavement %ld excursions (%ld "
                              "car-ticks, %ld deep), last at (%d,%d), "
-                             "recovered %ld, abandoned %ld",
+                             "recovered %ld, abandoned %ld; head-on gave way"
+                             " %ld, jumped %ld, swapped %ld",
                              traffic.stat_offroad_events, traffic.stat_offroad,
                              traffic.stat_offroad_deep,
                              traffic.stat_offroad_x, traffic.stat_offroad_y,
                              traffic.stat_offroad_recovered,
-                             traffic.stat_abandoned);
+                             traffic.stat_abandoned, traffic.stat_headon,
+                             traffic.stat_jumped, traffic.stat_swapped);
                     log_line(ln);
                     /* AND THE PEOPLE: how many are alive, and where. A
                      * brain whose peds all die unborn looks, on a film,
@@ -8656,7 +9882,7 @@ int main(void)
             int on_top = pi && (pi->vtype == GTA_VEH_BIKE
                                 || (pi->convertible & 1) || vault == 1);
 
-            if (!in_car && !on_top && vault != 2)
+            if (!in_car && !on_top && vault != 2 && trains.pl_on < 0)
                 gta_render_add_sprite(&view, player.x, player.y, player.layer,
                                       gta_player_grid(&player),
                                       armed_sprite(&player, punch_left,
@@ -8749,6 +9975,8 @@ int main(void)
          * keyboard is driving. */
         if (opt_traffic)
             gta_traffic_draw(&traffic, &view);
+            gta_trains_draw(&trains, &view);
+            gta_service_draw(&service, &traffic, &view);
         /* The free vault is over a FLEET car, so he goes in after the
          * fleet. */
         if (vault == 2)
@@ -8822,11 +10050,8 @@ int main(void)
          * every 71 minutes - a session longer than that would otherwise
          * freeze here for the rest of the wrap. */
         amiga_wd_set(AMIGA_WD_PHASE_CAP);
-        if (frame_cap) {
-            while ((unsigned long)(amiga_uclock_us() - frame_t0)
-                       < (unsigned long)FRAME_CAP_US)
-                ;
-        }
+        if (frame_cap)
+            frame_wait(frame_t0);
         frame_t0 = amiga_uclock_us();
     }
 
@@ -8852,6 +10077,7 @@ int main(void)
     log_line("gta: exit - data");
     gta_map_free(&map);
     gta_tiles_free(&tiles);
+    amiga_uclock_close();
     log_line("gta: clean exit");
     /* 5 is WARN to AmigaDOS: the run script's `if warn` restarts the game.
      * A player's ESC returns 0 and the script falls through. */

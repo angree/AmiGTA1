@@ -1,0 +1,32 @@
+# foot_bust.txt - ARRESTED ON FOOT (232, POLICE.md 0xd6..0xda).
+# Wanted by three run-overs, carried to (61,52), out of the car, standing.
+# Pass: "the cop gets out", "knocked down, arrested on foot", then BUSTED
+# 14 ticks later, the player drawn lying (sprite 42) in between.
+park 0 0 -40 0
+wait 20
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+run 150 1 0 0 0
+run 45 0 1 0 0
+wait 10
+goto 61 52
+wait 20
+enter
+wait 400
+film 1
+wait 60
+film 1
+wait 60
+film 1
+wait 60
+film 1
+wait 60
+film 1
+wait 60
+film 1
+wait 300
+dump

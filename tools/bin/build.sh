@@ -91,6 +91,8 @@ compile gta_font.c
 compile gta_text.c
 compile gta_route.c
 compile gta_traffic.c
+compile gta_train.c
+compile gta_service.c
 compile gta_map.c
 # The settings file, shared with the external editor below. No Amiga
 # headers in it, so it also builds on the host and for the PowerPC tree.
@@ -123,6 +125,7 @@ compile amiga_startup.c
 compile amiga_uclock.c
 compile amiga_trap.c
 compile amiga_watchdog.c
+compile amiga_wblaunch.c
 compile libnix_fixes.c
 compile fp_conv.c
 compile fp_single.c

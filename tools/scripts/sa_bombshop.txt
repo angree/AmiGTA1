@@ -1,0 +1,29 @@
+# THE BOMB SHOP IN THE GAME (228, the research notes). San Andreas 1
+# (startlevel.txt 2), section [102]: `108 1 (240,207,4) BOMBSHOP 0 0` (no
+# BOMBSHOP_COST in [102], so the default 5000). The player gets 10000, a car
+# parked on the road north of the shop facing south, DRIVES into the garage
+# (240,207), arms the bomb with FIRE, gets out and runs.
+# Pass: "bomb shop 108: bomb fitted", "text [bomb_added]", score down by
+# 5000, "bomb armed - five seconds", and the bomb going off about 250 sim
+# ticks later.
+wait 100
+goto 240 203
+wait 100
+score 10000
+park 1 0 20 128
+wait 20
+enter
+wait 200
+run 60 1 0 0 0
+wait 60
+run 40 0 1 0 0
+wait 80
+film 1
+fire 1
+wait 10
+enter
+wait 120
+run 100 1 0 0 0
+wait 300
+film 1
+dump

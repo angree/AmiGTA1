@@ -1,0 +1,43 @@
+# LIBERTY CITY 2, FIRST JOB, from start to finish. Needs Work:startlevel.txt = 1
+# (LC2 = mission.ini section [2]). Draft, not run yet. Same command set as threejobs.txt.
+#  (1) WHAT IT FOLLOWS: this job does not start from an MPHONE. TRIGGER 396 at
+#      (102,222) sits on the PLAYER block, so line 31000 starts on the first
+#      tick. The calls are ANSWER phone 32 (161,170) at 31030, then ANSWER phone
+#      44 (231,127) at 31090. Next is DROP_ON / GOTO_DROPOFF 241, the FUTURE at
+#      px (12992,5184) = block (203,81), at 31100-31170, followed by the
+#      money throw to the boat. Then PARKED_ON car 139 (FUTURECAR 17 at
+#      (154,15)) at 31214, and CARTRIGGER 140 starts 31220. Last, TRIGGER 143 at
+#      (84,153) in front of DOOR 141 (84,154, orientation 2) starts
+#      31228-31238: CHECK_CAR 139, PARK 141 and 31288 MISSION_END.
+#      mission.ini lines 8459-8528 (labels 31000-31238) and 8543 (31288).
+#      Declarations are at lines 3989-3995 (139-143), 4172-4173 (241-242),
+#      4270 (PLAYER) and 4460/4516 (triggers 396/425).
+#  (2) PASS = these log lines, in this order: "phone 32 answered (ANSWER)",
+#      "phone 44 answered (ANSWER)", "drop-off 241 reached", "paid 40000",
+#      "paid 5000" (31220 ARROW_OFF), "PARKED at door 141", "paid 30000" and
+#      "mission complete, multiplier x2". With a starting multiplier of 1 the
+#      score gains 75 000.
+#      FAIL = "phone 32 rang out" / "phone 44 rang out" (the 31239/31250 bombs),
+#      "drop-off 241 not reached in time", or brief 2501 = "MISSION FAILED".
+#  (3) RISKY STEPS: the player waits ON each phone before it rings (ANSWER also
+#      answers on its first tick), so the phone timing is not critical but he
+#      has to survive standing in the street for ~30 s. The drop-off is
+#      checked at a block CORNER, 16 px from where goto puts him. That is right
+#      at the edge of the 16 px reach, the same as LC1's drop 240. `enter` at
+#      (154,15) must pick car 139 and not a passing traffic car.
+#      The PARK needs the car stopped within 40 px of the door centre. He must
+#      not get out before "PARKED at door 141" appears.
+wait 500
+goto 161 170      phone 32 - ANSWER at 31030, ~1580 waits after the start
+wait 1300
+goto 231 127      phone 44 - ANSWER at 31090, ~1310 waits after phone 32
+wait 1500
+goto 203 81       drop-off 241 (FUTURE 47 at px 12992,5184), GOTO_DROPOFF pays 40000
+wait 800
+goto 154 15       car 139, FUTURECAR 17 - PARKED_ON ~230 waits after the drop
+enter
+wait 160
+goto 84 153       trigger 143 in front of door 141, PARK pays 30000
+wait 260
+enter
+wait 400

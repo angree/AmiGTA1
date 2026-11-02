@@ -442,7 +442,7 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
             w->pl_burn++;
         if ((f->ticks % GTA_FIRE_CAR_EVERY) == 0) {
             int ci = car_at(tr, t, f->x, f->y, f->layer);
-            if (ci >= 0 && !tr->cars[ci].wrecked)
+            if (ci >= 0 && !tr->cars[ci].wrecked && !tr->cars[ci].invuln)
                 tr->cars[ci].damage += 5;
         }
     }
@@ -479,6 +479,31 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
             continue;
         }
 
+        /* A FENCE, A RAILING OR A DOOR stops it before anything behind it
+         * can be hit - the original's flat-face test (the original's routine), where
+         * most flat faces stop a shot and a short list lets it through. */
+        if (gta_nav_shot_cross(nav, b->layer, ox, oy, b->x, b->y)) {
+            if (b->kind == GTA_PROJ_ROCKET)
+                gta_weapons_explode(w, ox, oy, b->layer, peds, tr, sc,
+                                    b->owner < 0);
+            else if (b->kind == GTA_PROJ_BULLET)
+                splat(w, ox, oy, b->layer);
+            printf("gta: shot %d stopped by a flat face at (%ld,%ld)\n",
+                   i, b->x >> 16, b->y >> 16);
+            b->alive = 0;
+            w->stat_wall++;
+            continue;
+        }
+
+        /* THE GRACE TICKS of a shot fired on the run skip the man who fired
+         * it - not a CAR he is standing beside: "gdy stoje z boku auta i
+         * strzelam to naboje wylatuja za autem". With a car under the shot
+         * the tests below run, grace or not. */
+        if (b->grace > 0 &&
+            (car_at(tr, t, ox + ((b->x - ox) >> 1), oy + ((b->y - oy) >> 1),
+                    b->layer) >= 0 ||
+             car_at(tr, t, b->x, b->y, b->layer) >= 0))
+            b->grace = 0;
         if (b->grace > 0) {
             b->grace--;
         } else if (b->owner >= 0 && b->kind != GTA_PROJ_FLAME &&
@@ -524,7 +549,7 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 printf("gta: flame caught ped %d\n", pi);
             }
             ci = car_at(tr, t, b->x, b->y, b->layer);
-            if (ci >= 0) {
+            if (ci >= 0 && !tr->cars[ci].invuln) {
                 tr->cars[ci].damage += 15;
                 tr->cars[ci].dmg_bits |= 1UL << gta_car_panel_delta(
                     &t->cars[tr->cars[ci].model], tr->cars[ci].x,
@@ -572,8 +597,13 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                 continue;
             }
             /* THEN THE CARS. A bullet adds five and is spent; a rocket
-             * writes the car off and bursts. Neither pushes it. */
-            ci = car_at(tr, t, b->x, b->y, b->layer);
+             * writes the car off and bursts. Neither pushes it. Tested
+             * half way along the step as well: a shot fired from right
+             * beside a car crossed its whole width in one step. */
+            ci = car_at(tr, t, ox + ((b->x - ox) >> 1), oy + ((b->y - oy) >> 1),
+                        b->layer);
+            if (ci < 0)
+                ci = car_at(tr, t, b->x, b->y, b->layer);
             if (ci >= 0) {
                 if (b->kind == GTA_PROJ_ROCKET) {
                     tr->cars[ci].damage = GTA_CAR_WRECKED;
@@ -588,7 +618,7 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
                     }
                     printf("gta: rocket burst on car %d (model %d)\n", ci,
                            tr->cars[ci].model);
-                } else {
+                } else if (!tr->cars[ci].invuln) {
                     tr->cars[ci].damage += gta_weapons_bullet_damage(
                             &t->cars[tr->cars[ci].model],
                             tr->cars[ci].damage);
@@ -728,7 +758,12 @@ void gta_weapons_draw_air(const gta_weapons *w, gta_view *v)
                 continue;
             for (q = 0; q < 4; q++) {
                 long qx = e->x + ((q & 1) ? (16L << 16) : -(16L << 16));
-                long qy = e->y + ((q & 2) ? (16L << 16) : -(16L << 16));
+                /* ...and one pixel short of a block apart DOWN the screen:
+                 * the vertical squash rounds two halves that meet at 16 px
+                 * a screen line apart, and the fireball had a dark line
+                 * through its middle ("na wybuchach jest zawsze linia
+                 * dziury", PROGRESS 241). */
+                long qy = e->y + ((q & 2) ? (15L << 16) : -(15L << 16));
                 /* ANGLE 0, NOT THE ART-SOUTH OFFSET. These four tile into
                  * one fireball, and half a turn puts each quarter in the
                  * opposite corner - which is exactly what the developer saw:

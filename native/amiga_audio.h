@@ -33,6 +33,12 @@ extern "C" {
  * every other call below is safe but a no-op / failure in that state). */
 int AmigaAudio_Open(void);
 
+/* AmiFFE 2026-10-29: 1 = the next Open uses ahi.device (unit 0, its device
+ * interface) instead of audio.device. Everything below works the same on
+ * both. IsAHI: 1 while ahi.device is the open backend. */
+void AmigaAudio_SetBackend(int ahi);
+int  AmigaAudio_IsAHI(void);
+
 /* Abort any playing sound, free the channels, close the device.
  * Safe to call at any time, including after a failed/absent Open. */
 void AmigaAudio_Close(void);
@@ -46,6 +52,10 @@ void AmigaAudio_FreeSample(void *p);
  * WaitIO) as a side effect; never blocks. 0 while still playing. */
 int AmigaAudio_ChannelIdle(int ch);
 
+/* Abort whatever channel ch plays, at once (FFE). 0 if the channel is held
+ * by music or audio is down. */
+int AmigaAudio_Stop(int ch);
+
 /* Start playing on channel ch: 8-bit signed samples in Chip RAM (from
  * AllocSample), even byte count (max 131070 - the Paula length register),
  * Paula period (>= 124 on PAL, i.e. <= ~28.6 kHz), hardware volume 0..64.
@@ -53,22 +63,6 @@ int AmigaAudio_ChannelIdle(int ch);
  * 0 if not open / channel busy / bad arguments. */
 int AmigaAudio_Play(int ch, void *chipdata, unsigned long bytes,
                     int period, int volume);
-
-/* THE ENGINE NOTE: play a sample round and round until stopped, and change
- * its pitch while it runs. `ioa_Cycles = 0` is audio.device's own "for ever";
- * ADCMD_PERVOL is the only command that reaches a channel with a write
- * outstanding, so the note revs instead of restarting sixty times a second.
- * The caller owns the Chip buffer and must keep it alive until Stop. */
-int  AmigaAudio_PlayLoop(int ch, void *chipdata, unsigned long bytes,
-                         int period, int volume);
-void AmigaAudio_SetPeriod(int ch, int period, int volume);
-
-/* Stop channel ch NOW, so it can be given something else in the same tick.
- * Aborts the outstanding write and waits for the device to reply, which is
- * what makes the channel idle again - without the WaitIO the request is still
- * queued and the next Play on that channel is refused. Safe on an idle
- * channel and on a channel music holds (it does nothing to those). */
-void AmigaAudio_Stop(int ch);
 
 /* ---- streaming music on Paula channels 2 (right) + 3 (left) -------------
  *
@@ -111,6 +105,21 @@ int  AmigaAudio_MusicActive(void);
 /* 1 once the stream has drained AND both channels have played the last
  * buffer out (so the caller can loop or advance to the next track). */
 int  AmigaAudio_MusicFinished(void);
+
+/* Ami MoM 0.4.4: osobny proces dolewajacy muzyke (priorytet = gra + pri).
+ * 1 = dziala. Stop czeka na koniec procesu; AmigaAudio_Close wola go sam. */
+int  AmigaAudio_MusicThreadStart(int pri_wzgledem_gry);
+void AmigaAudio_MusicThreadStop(void);
+unsigned long AmigaAudio_MusicUnderruns(void);   /* ile razy kolejka muzyki byla pusta */
+int  AmigaAudio_MusicThreadRunning(void);          /* 1 = muzyke dolewa osobny proces (0.7.5) */
+
+
+/* GTA: THE ENGINE NOTE - play a sample round and round until stopped and
+ * change its pitch while it runs (ADCMD_PERVOL). Paula only: 0 / no-op
+ * under AHI. */
+int  AmigaAudio_PlayLoop(int ch, void *chipdata, unsigned long bytes,
+                         int period, int volume);
+void AmigaAudio_SetPeriod(int ch, int period, int volume);
 
 #ifdef __cplusplus
 }

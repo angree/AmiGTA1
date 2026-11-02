@@ -130,6 +130,7 @@ void gta_prefs_defaults(gta_prefs *p)
     p->music_vol = 48;   /* music sits under the effects, as in the original */
     p->sfx_vol   = 64;   /* Paula's maximum */
     p->cars      = GTA_CARS_DEFAULT;
+    p->level     = 0;
 }
 
 static void clamp_vol(int *v)
@@ -211,6 +212,8 @@ int gta_prefs_load(const char *dir, gta_prefs *p)
             p->sfx_vol = (int)strtol(val, NULL, 10);
         } else if (word_eq(key, "cars")) {
             p->cars = (int)strtol(val, NULL, 10);
+        } else if (word_eq(key, "level")) {
+            p->level = (int)strtol(val, NULL, 10) - 1;  /* the file says 1..6 */
         }
     }
     fclose(f);
@@ -218,6 +221,7 @@ int gta_prefs_load(const char *dir, gta_prefs *p)
     clamp_vol(&p->music_vol);
     clamp_vol(&p->sfx_vol);
     clamp_cars(&p->cars);
+    if (p->level < 0 || p->level >= GTA_LEVELS) p->level = 0;
     return 1;
 }
 
@@ -251,6 +255,8 @@ int gta_prefs_save(const char *dir, const gta_prefs *p)
     fprintf(f, "musicvol %d\n", q.music_vol);
     fprintf(f, "sfxvol %d\n",   q.sfx_vol);
     fprintf(f, "cars %d\n",     q.cars);
+    if (q.level < 0 || q.level >= GTA_LEVELS) q.level = 0;
+    fprintf(f, "level %d\n",    q.level + 1);
     fclose(f);
 
     /* AND KEEP backend.txt IN STEP - see the header for why this is here and

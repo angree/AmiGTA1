@@ -52,17 +52,22 @@ static int route_bfs(const gta_nav *nav, int sx, int sy, int z,
     int ban_i = -1;                            /* the step index `ban` names */
     int wpx = -1, wpy = -1;                    /* the wandering pick, if any */
     long wseen = 0;                            /* how many were eligible */
+    /* THE CHASE'S FALLBACK: the reachable cell nearest the target. */
+    int bpx = -1, bpy = -1, bpd = 0x7fff;
 
     g_last_fail = GTA_ROUTE_NO_START;
     if (max <= 0 || nav->b == 0) return 0;
     if (gta_nav_dirs(gta_nav_at(nav, sx, sy, z)) == 0) return 0;
     g_last_fail = GTA_ROUTE_NO_TARGET;
     if (!wander) {
+    if (!g_allow_reverse) {
     if (gta_nav_dirs(gta_nav_at(nav, tx, ty, z)) == 0) return 0;
     g_last_fail = GTA_ROUTE_FAR;
     if (tx - ox < 0 || tx - ox >= W || ty - oy < 0 || ty - oy >= W) return 0;
+    }
     g_last_fail = GTA_ROUTE_SAME;
     if (sx == tx && sy == ty) return 0;
+    bpd = (sx > tx ? sx - tx : tx - sx) + (sy > ty ? sy - ty : ty - sy);
     }
 
     /* ONE POINTER AND NO BOUNDS CHECKS IN THE LOOP.
@@ -106,6 +111,9 @@ static int route_bfs(const gta_nav *nav, int sx, int sy, int z,
          * arrows and asks again later - than with a frame-long pause. */
         if (head > GTA_ROUTE_BUDGET) {
             if (wander && wpx >= 0) { tx = wpx; ty = wpy; goto found; }
+            if (!wander && g_allow_reverse && bpx >= 0) {
+                tx = bpx; ty = bpy; goto found;
+            }
             g_last_fail = GTA_ROUTE_BUDGET_HIT;
             return 0;
         }
@@ -318,7 +326,23 @@ static int route_bfs(const gta_nav *nav, int sx, int sy, int z,
                 }
             } else if (nx == tx && ny == ty)
                 goto found;
+            else if (g_allow_reverse) {
+                int dd = (nx > tx ? nx - tx : tx - nx) +
+                         (ny > ty ? ny - ty : ty - ny);
+                if (dd < bpd) { bpd = dd; bpx = nx; bpy = ny; }
+            }
         }
+    }
+    if (!wander && g_allow_reverse && bpx >= 0) {
+        /* NOT REACHABLE INSIDE THE WINDOW - a one-way avenue the wrong way,
+         * or simply too far. The chase and the script's own drivers go to
+         * the reachable block nearest it and ask again from there, which is
+         * what the original's path-at-a-time search amounts to. Without it
+         * a Vice City SENDTO car sat on its block for the whole job,
+         * "reason 6" every reroute. */
+        tx = bpx;
+        ty = bpy;
+        goto found;
     }
     if (wander && wpx >= 0) {
         /* THE SEARCH IS THE TARGET PICKER. Everything reachable has been seen
@@ -455,4 +479,73 @@ int gta_route_pick_target(const gta_nav *nav, int bx, int by, int z,
         }
     }
     return 0;
+}
+
+/* ---- the long route (see gta_route.h) ---------------------------------- */
+
+long gta_route_field_build(const gta_nav *nav, int z, int tx, int ty,
+                           unsigned char *field, unsigned short *scratch)
+{
+    const unsigned char *layer;
+    unsigned head = 0, tail = 0;     /* ring indices, masked */
+    long reached = 0;
+    int i;
+
+    memset(field, 0, 256 * 256);
+    if (!nav || !nav->b || z < 0 || z >= GTA_MAP_LAYERS ||
+        tx < 0 || tx > 255 || ty < 0 || ty > 255)
+        return 0;
+    layer = nav->b + ((long)z << 16);
+    field[(ty << 8) | tx] = 0xff;
+    scratch[tail++ & (GTA_ROUTE_FIELD_Q - 1)] = (unsigned short)((ty << 8) | tx);
+    while (head != tail) {
+        int cell = scratch[head++ & (GTA_ROUTE_FIELD_Q - 1)];
+        int cx = cell & 0xff, cy = cell >> 8;
+        reached++;
+        /* Who can step INTO (cx,cy)? The block on side i whose arrow points
+         * back at us: from the north neighbour that is its S arrow, etc. */
+        for (i = 0; i < 4; i++) {
+            int px = cx - step_x[i], py = cy - step_y[i], pc;
+            if (px < 0 || px > 255 || py < 0 || py > 255)
+                continue;
+            pc = (py << 8) | px;
+            if (field[pc])
+                continue;
+            if ((layer[pc] & dir_bit[i]) == 0)
+                continue;          /* P does not leave towards us */
+            if (gta_nav_sloped(layer[pc]) && nav->map) {
+                static const int ang_of[4] = { 0, 128, 192, 64 };
+                if (gta_map_slope_up_dir(nav->map, px, py, z) == ang_of[i])
+                    continue;      /* that step climbs to the next layer */
+            }
+            if (tail - head >= GTA_ROUTE_FIELD_Q)
+                return reached;    /* frontier overflow: partial field */
+            field[pc] = (unsigned char)(1 + i);
+            scratch[tail++ & (GTA_ROUTE_FIELD_Q - 1)] = (unsigned short)pc;
+        }
+    }
+    return reached;
+}
+
+int gta_route_field_follow(const unsigned char *field, int sx, int sy,
+                           gta_route_node *out, int max)
+{
+    int n = 0, x = sx, y = sy;
+    if (sx < 0 || sx > 255 || sy < 0 || sy > 255)
+        return 0;
+    if (field[(sy << 8) | sx] == 0 || field[(sy << 8) | sx] == 0xff)
+        return 0;
+    while (n < max) {
+        int f = field[(y << 8) | x];
+        if (f == 0xff || f == 0 || f > 4)
+            break;
+        x += step_x[f - 1];
+        y += step_y[f - 1];
+        if (x < 0 || x > 255 || y < 0 || y > 255)
+            break;
+        out[n].x = (unsigned char)x;
+        out[n].y = (unsigned char)y;
+        n++;
+    }
+    return n;
 }

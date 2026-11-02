@@ -1,0 +1,25 @@
+# density_wanted.txt - FEWER CARS WHEN THE POLICE ARE OUT (238).
+# LC1 (startlevel.txt 0). The original's spawner stops at 7 cars by the
+# view, 6/4/3/2 as the wanted level rises; the port scales the CARS limit
+# by the same shares, police cars on top. Read the "gta: traffic N/M moving"
+# lines: M before the run-overs, and M after the wanted level has risen and
+# the fleet has had time to thin (cars only leave off screen).
+wait 1500
+park 0 0 -40 0
+wait 20
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+ped 0 -230 128
+ped 6 -270 128
+ped -6 -310 128
+ped 0 -350 128
+wait 5
+run 220 1 0 0 0
+run 45 0 1 0 0
+wait 10
+goto 61 52
+wait 3000
+dump

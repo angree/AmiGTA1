@@ -8,9 +8,9 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.6.1.zip    the game, the settings editor, the tile converter,
+#   AmiGTA-v0.7.0.zip    the game, the settings editor, the tile converter,
 #                        icons, run
-#   AmiGTA-v0.6.1.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.7.0.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -44,7 +44,7 @@ DIST=/mnt/c/temp/amiga_gta/dist
 # instead of three. gta-aga / gta-rtg240 / gta-rtg480 were the same program
 # built with different screen sizes; the size is a setting in gtaprefs now, so
 # the archive carries `AmiGTA` and nothing else has to be chosen by icon.
-VER=v0.6.1
+VER=v0.7.0
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory
@@ -60,9 +60,17 @@ mkdir -p "$STAGE" 2>/dev/null || true
 # go and fetch a second archive at that point would be the same fault as
 # telling them to create backend.txt in a text editor, which is what it
 # replaces.
+# THE BINARIES COME FROM WHERE THE BUILD PUTS THEM. Since the build moved to
+# C: (tools/bin/cbuild.sh) $ROOT/build holds September's files; packaging from
+# there would ship a stale game. GTA_BUILD overrides, the C: build is the
+# default when it exists.
+BIN=${GTA_BUILD:-/mnt/c/temp/amiga_gta_build/build}
+[ -f "$BIN/AmiGTA" ] || BIN=$ROOT/build
+MOSBIN=${MOS_BUILD:-/mnt/c/temp/amiga_gta/mos-build}/AmiGTA_MorphOS
+echo "package: binaries from $BIN"
 for b in AmiGTA gtaprefs; do
-    [ -f "$ROOT/build/$b" ] || { echo "package: missing build/$b - run build.sh"; exit 1; }
-    cp "$ROOT/build/$b" "$STAGE/$b"
+    [ -f "$BIN/$b" ] || { echo "package: missing $BIN/$b - run build.sh"; exit 1; }
+    cp "$BIN/$b" "$STAGE/$b"
     [ -f "$WORK/$b.info" ] && cp "$WORK/$b.info" "$STAGE/$b.info"
 done
 cp "$ROOT/winuae/work-template/run" "$STAGE/run"
@@ -92,8 +100,8 @@ python3 "$ROOT/tools/bin/readme_gen.py" "$STAGE/README.txt"
 # byte-identical file - checked with cmp against build/data/style001.til. The
 # player converts their own art on their own machine and nothing derived from
 # the game ever leaves this one.
-if [ -f "$ROOT/build/gtabake" ]; then
-    cp "$ROOT/build/gtabake" "$STAGE/gtabake"
+if [ -f "$BIN/gtabake" ]; then
+    cp "$BIN/gtabake" "$STAGE/gtabake"
     # Its own icon, like the other two - deploy.sh generated it. Without this
     # the converter was the one program in the drawer with no icon at all, so
     # a Workbench-only player could not start the one step the archive
@@ -112,8 +120,8 @@ fi
 # converter as a Shell program, for one track at a time or for looking at what
 # came out (-info). Not fatal if it is missing - a player without it still
 # gets the first-run extraction.
-if [ -f "$ROOT/build/gtaiff" ]; then
-    cp "$ROOT/build/gtaiff" "$STAGE/gtaiff"
+if [ -f "$BIN/gtaiff" ]; then
+    cp "$BIN/gtaiff" "$STAGE/gtaiff"
     echo "package: gtaiff"
 fi
 
@@ -128,12 +136,27 @@ python3 "$ROOT/tools/bin/readme_gen.py" --datanote \
     "$STAGE/GTADATA/_PUT_YOUR_GTA_FILES_HERE.txt"
 
 # --- archive ----------------------------------------------------------------
-cd "$DIST"
-zip -r -q "AmiGTA-$VER.zip" "AmiGTA-$VER"
+# TWO ARCHIVES SINCE v0.7.0, one per CPU:
+#   AmiGTA-$VER-68k      AmigaOS 3.1+ and AROS 68k (and MorphOS's emulation)
+#   AmiGTA-$VER-MorphOS  the same drawer with AmiGTA swapped for the native
+#                        PPC build; the 68k tools stay, MorphOS runs them.
+# Both unpack to a drawer of the same name, AmiGTA-$VER.
 # lha(1) here takes the archive name FIRST and has no -q: passing one makes it
 # the archive name and leaves a file literally called "-q" behind, which is
 # exactly what the first run of this script did.
-lha a "AmiGTA-$VER.lha" "AmiGTA-$VER" >/dev/null 2>&1 || echo "package: lha failed"
+cd "$DIST"
+zip -r -q "AmiGTA-$VER-68k.zip" "AmiGTA-$VER"
+lha a "AmiGTA-$VER-68k.lha" "AmiGTA-$VER" >/dev/null 2>&1 || echo "package: lha failed"
+if [ -f "$MOSBIN" ]; then
+    file "$MOSBIN" | grep -q PowerPC || { echo "package: $MOSBIN is not PowerPC"; exit 1; }
+    cp "$STAGE/AmiGTA" "$DIST/AmiGTA.68k"
+    cp "$MOSBIN" "$STAGE/AmiGTA"
+    zip -r -q "AmiGTA-$VER-MorphOS.zip" "AmiGTA-$VER"
+    lha a "AmiGTA-$VER-MorphOS.lha" "AmiGTA-$VER" >/dev/null 2>&1 || echo "package: lha (MorphOS) failed"
+    mv "$DIST/AmiGTA.68k" "$STAGE/AmiGTA"     # --with-data below stays 68k
+else
+    echo "package: no $MOSBIN - run build-morphos.sh; MorphOS archive NOT built"
+fi
 
 # --- and, ONLY ON REQUEST, the same thing with the data in it ---------------
 #
@@ -155,10 +178,21 @@ if [ "$1" = "--with-data" ]; then
         # Copying the drawer whole made a 30 MB archive out of a 2.3 MB need -
         # every other city, every sound bank, the lot. Shipping somebody
         # else's game at all is the thing to keep small.
-        for f in style001.til nyc.cmp; do
+        # (2026-09-30: the game reads more than those two by now - the level
+        # script, the texts, the fonts, the title screen, the effects, the
+        # voices and the converted radio. The first group is required; the
+        # music is optional and simply copied when it is there.)
+        for f in style001.til nyc.cmp mission.ini english.fxt front.fnt \
+                 level001.snd vocalcom.snd big1.fon f_mtext.fon \
+                 missmul1.fon pager1.fon score1.fon; do
             [ -f "$WORK/GTADATA/$f" ] || {
                 echo "package: --with-data needs $WORK/GTADATA/$f"; exit 1; }
             cp "$WORK/GTADATA/$f" "$STAGE/GTADATA/$f"
+        done
+        for f in title.mus title.8svx police.mus radio1.mus radio2.mus \
+                 radio3.mus sanb.cmp miami.cmp style002.til style003.til \
+                 level002.snd level003.snd; do
+            [ -f "$WORK/GTADATA/$f" ] && cp "$WORK/GTADATA/$f" "$STAGE/GTADATA/$f"
         done
         # The note about supplying your own files is wrong once they are here.
         rm -f "$STAGE/GTADATA/_PUT_YOUR_GTA_FILES_HERE.txt"
@@ -178,4 +212,5 @@ rm -rf "AmiGTA-$VER"
 ls -la "$DIST"
 
 echo "--- member names (must use / and never \\) ---"
-unzip -l "AmiGTA-$VER.zip" | head -12
+unzip -l "AmiGTA-$VER-68k.zip" | head -12
+[ -f "AmiGTA-$VER-MorphOS.zip" ] && unzip -l "AmiGTA-$VER-MorphOS.zip" | head -12

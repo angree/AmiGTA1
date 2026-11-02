@@ -130,4 +130,23 @@ int gta_route_pick_target(const gta_nav *nav, int bx, int by, int z,
                           int min, int max, unsigned long *seed,
                           int *tx, int *ty);
 
+/* THE LONG ROUTE - for the script's own drivers (SENDTO), whose
+ * destination can be a hundred blocks away through one-way avenues, where a
+ * 48-block window aimed at a waypoint in a straight line drives the car round
+ * in circles (Vice City's first job, PROGRESS.md 236).
+ *
+ * One breadth-first search BACKWARDS from the destination over the whole of
+ * one layer, following the arrows in reverse, writes into `field` (256 x 256
+ * bytes) the way to leave every block that can reach it: 1 + {0 N, 1 S, 2 W,
+ * 3 E}, 0xff on the destination, 0 where it cannot be reached. Built once per
+ * destination; `scratch` is GTA_ROUTE_FIELD_Q unsigned shorts of queue.
+ * Returns the number of blocks that reach it. */
+#define GTA_ROUTE_FIELD_Q 16384
+long gta_route_field_build(const gta_nav *nav, int z, int tx, int ty,
+                           unsigned char *field, unsigned short *scratch);
+/* Follow the field from (sx,sy) for up to `max` blocks. 0 if (sx,sy) does
+ * not reach the destination. */
+int gta_route_field_follow(const unsigned char *field, int sx, int sy,
+                           gta_route_node *out, int max);
+
 #endif /* GTA_ROUTE_H */

@@ -105,8 +105,13 @@ int gta_score_crime(gta_score *s, int crime);
 void gta_score_clear_heat(gta_score *s);
 void gta_score_new_life(gta_score *s);
 
-/* The level the heat would give, from Liberty City's table. */
+/* The level the heat would give, from the city's table. */
 int gta_score_level_of(int heat);
+/* Which city's table: the map's style number, 1 Liberty, 2 San Andreas,
+ * 3 Vice City (221). */
+void gta_score_set_city(int style);
+/* Heat at which `level` (0..4) heads begin in that city. */
+int gta_score_threshold(int level);
 
 /* Heat set to exactly the threshold of `level` when below it - the
  * original's "hit a police car / take a police car at level 0 -> level

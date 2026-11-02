@@ -37,7 +37,29 @@ static const struct { const char *name; int type; } decl_names[] = {
     { "PHONE_TOGG",  GTA_DECL_PHONE_TOGG },
     { "DUM_MISSION_TRIG", GTA_DECL_DUM_MISSION_TRIG },
     { "POWERUP",     GTA_DECL_POWERUP },
+    { "BLOCK_INFO",  GTA_DECL_BLOCK_INFO },
     { "GUN_TRIG",    GTA_DECL_GUN_TRIG },
+    { "MOVING_TRIG",       GTA_DECL_MOVING_TRIG },
+    { "BARRIER",           GTA_DECL_BARRIER },
+    { "MODEL_BARRIER",     GTA_DECL_MODEL_BARRIER },
+    { "SPECIFIC_BARR",     GTA_DECL_SPECIFIC_BARR },
+    { "SPECIFIC_DOOR",     GTA_DECL_SPECIFIC_DOOR },
+    { "BASIC_BARRIER",     GTA_DECL_BASIC_BARRIER },
+    { "BOMBSHOP_COST",     GTA_DECL_BOMBSHOP_COST },
+    { "PARKED_PIXELS",     GTA_DECL_PARKED_PIXELS },
+    { "CHOPPER_ENDPOINT",  GTA_DECL_CHOPPER_ENDPOINT },
+    { "CORRECT_MOD_TRIG",  GTA_DECL_CORRECT_MOD_TRIG },
+    { "CORRECT_CAR_TRIG",  GTA_DECL_CORRECT_CAR_TRIG },
+    { "MOVING_TRIG_HIRED", GTA_DECL_MOVING_TRIG_HIRED },
+    { "CARBOMB_TRIG",      GTA_DECL_CARBOMB_TRIG },
+    { "DAMAGE_TRIG",       GTA_DECL_DAMAGE_TRIG },
+    { "GUN_SCREEN_TRIG",   GTA_DECL_GUN_SCREEN_TRIG },
+    { "CARDESTROY_TRIG",   GTA_DECL_CARDESTROY_TRIG },
+    { "CARWAIT_TRIG",      GTA_DECL_CARWAIT_TRIG },
+    { "PEDCAR_TRIG",       GTA_DECL_PEDCAR_TRIG },
+    { "DUM_PED_BLOCK_TRIG", GTA_DECL_DUM_PED_BLOCK_TRIG },
+    { "CARSTUCK_TRIG",     GTA_DECL_CARSTUCK_TRIG },
+    { "ALT_DAMAGE_TRIG",   GTA_DECL_ALT_DAMAGE_TRIG },
     { "GTA_DEMAND",  GTA_DECL_GTA_DEMAND },
     { "MISSION_COUNTER", GTA_DECL_MISSION_COUNTER },
     { "SECRET_MISSION_COUNTER", GTA_DECL_SECRET_MISSION_COUNTER },
@@ -72,6 +94,8 @@ int gta_script_is_block(int type)
      * fixed-point conversion and put Liberty City's only drop-off at
      * (18448,18448). */
     case GTA_DECL_FUTURE:
+    case GTA_DECL_PARKED_PIXELS:
+    case GTA_DECL_CHOPPER_ENDPOINT:
         return 0;
     default:
         return 1;
@@ -134,17 +158,18 @@ static int parse_line(const char *ln, gta_decl *out)
         v[nv++] = strtol(p, (char **)&p, 10);
     }
 
-    out->line = (short)line;
+    out->line = line;
     out->type = (unsigned char)name_to_type(w, wl);
     out->flag = (unsigned char)flag;
     out->x = (short)x; out->y = (short)y; out->z = (short)z;
-    out->a = out->b = out->c = out->d = 0;
+    out->a = out->b = out->c = out->d = out->e = 0;
     for (i = 0; i < nv; i++) {
         short sv = (short)v[i];
         if (i == 0) out->a = sv;
         else if (i == 1) out->b = sv;
         else if (i == 2) out->c = sv;
-        else out->d = sv;
+        else if (i == 3) out->d = sv;
+        else if (i == 4) out->e = sv;
     }
     out->n_num = (unsigned char)nv;
     return 1;
@@ -325,17 +350,21 @@ int gta_script_place(gta_script *s, const gta_nav *nav, const gta_tiles *t)
     for (i = 0; i < s->n; i++) {
         const gta_decl *d = &s->d[i];
         int lz, mi;
-        if (d->type != GTA_DECL_PARKED) continue;
+        int px_ = d->type == GTA_DECL_PARKED_PIXELS;
+        int bx_ = px_ ? d->x / 64 : d->x, by_ = px_ ? d->y / 64 : d->y;
+        if (d->type != GTA_DECL_PARKED && !px_) continue;
         if (s->n_mcars >= GTA_MAX_MCARS) break;
-        if (d->x < 0 || d->y < 0 || d->x >= GTA_MAP_DIM || d->y >= GTA_MAP_DIM)
+        if (bx_ < 0 || by_ < 0 || bx_ >= GTA_MAP_DIM || by_ >= GTA_MAP_DIM)
             continue;
         mi = gta_script_model_index(t, d->a);
-        lz = stand_layer(nav, d->x, d->y);
+        lz = stand_layer(nav, bx_, by_);
         if (mi < 0 || lz < 0) { lost++; continue; }
         {
             gta_mcar *c = &s->mcar[s->n_mcars++];
-            c->x = gta_script_centre(d->x);
-            c->y = gta_script_centre(d->y);
+            /* PARKED_PIXELS (226) is where the file says to the pixel - the
+             * original's 64 a block, this port's 32 */
+            c->x = px_ ? ((long)d->x / 2) << 16 : gta_script_centre(d->x);
+            c->y = px_ ? ((long)d->y / 2) << 16 : gta_script_centre(d->y);
             c->line = d->line;
             c->model = (short)mi;
             c->layer = (unsigned char)lz;
@@ -430,7 +459,7 @@ const gta_decl *gta_script_by_line(const gta_script *s, int line)
      * times a tick. The declarations are in file order, which is line order,
      * so a binary search is available the moment it is worth writing. */
     for (i = 0; i < s->n; i++)
-        if (s->d[i].line == (short)line)
+        if (s->d[i].line == line)
             return &s->d[i];
     return 0;
 }

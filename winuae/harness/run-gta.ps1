@@ -39,7 +39,8 @@ param(
   [string]$WaitFor = "gta: interactive",
   [switch]$KeepRunning,   # accepted for old callers; keeping the guest is the DEFAULT now
   [switch]$KillAfter,     # the old default: kill this config's guest once WaitFor is seen
-  [switch]$Force
+  [switch]$Force,
+  [string]$WorkDir = "C:\temp\amiga_gta\work"   # its own Work: for a second guest (gta-aros.uae)
 )
 
 $exe = "I:\GITHUB\Amiga_OpenTTD\tools\winuae281\winuae-gta.exe"
@@ -55,7 +56,7 @@ if (Test-Path "C:\temp\amiga_gta\uae\winuae-gta.exe") {
 }
 # The runtime (Work:, the hardfile, the Kickstart) lives on the SSD, not in the
 # repository on the network drive - see the note in gta-aga.uae.
-$log = "C:\temp\amiga_gta\work\gta.log"
+$log = Join-Path $WorkDir "gta.log"
 
 if (-not (Test-Path $exe)) { Write-Output "ERROR: WinUAE not found at $exe"; exit 1 }
 if (-not (Test-Path $Config)) { Write-Output "ERROR: config not found: $Config"; exit 1 }

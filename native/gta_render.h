@@ -525,4 +525,11 @@ void gta_render_set_overlay(gta_view *v, const void *tr, int on);
 void gta_render_expand(const unsigned char *src, int sw, int sh, int spitch,
                        unsigned char *dst, int dpitch, int sx, int sy);
 
+/* THE DOORS (229, the research notes 3): a door's face byte is a
+ * VIRTUAL tile, n_side + k, and what it shows is aux tile door_aux[k] - the
+ * frame its animation is on. Filled by the game. */
+#define GTA_RENDER_DOORS 64
+extern unsigned char gta_render_door_aux[GTA_RENDER_DOORS];
+extern int gta_render_door_n;
+
 #endif /* GTA_RENDER_H */

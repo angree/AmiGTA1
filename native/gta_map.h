@@ -95,7 +95,27 @@ typedef struct {
     unsigned long   column_words;
     gta_block      *blocks;
     unsigned long   block_count;
+
+    /* THE SCRIPT'S EDITS (221: CHANGE_BLOCK / CHANGE_TYPE). Columns and
+     * blocks are shared between many cells, as in the original, so an edit
+     * copies first: a private column and block are appended in the spare
+     * room after the file's own, and edited in place from then on. */
+    unsigned long   column_words_file, column_cap;
+    unsigned long   block_count_file, block_cap;
+    long            air_block;          /* an all-empty block, -1 until needed */
 } gta_map;
+
+/* Room for the edits: the original gives each kind 0x2000 bytes. */
+#define GTA_MAP_EDIT_COLWORDS 4096
+#define GTA_MAP_EDIT_BLOCKS   1024
+
+/* Replace the block at (x,y,z), growing the column if z is above it.
+ * Returns 1, or 0 when out of range or out of edit room. */
+int  gta_map_set_block(gta_map *m, int x, int y, int z, const gta_block *b);
+/* CHANGE_BLOCK: the type word (and type_map_ext from bits 16..23), faces
+ * kept. CHANGE_TYPE: one face, 0 W 1 E 2 N 3 S 4 lid, to `tile`. */
+int  gta_map_set_type(gta_map *m, int x, int y, int z, unsigned long v);
+int  gta_map_set_face(gta_map *m, int x, int y, int z, int face, int tile);
 
 int  gta_map_load(const char *path, gta_map *m);
 void gta_map_free(gta_map *m);

@@ -116,7 +116,11 @@ typedef enum {
      * 50..55. Thrown running it is not a state but a sprite offset on the
      * run frames (GTA_PED_RUNPUNCH_OFFSET); LEFTOFF.md, the
      * weapons. */
-    GTA_ANIM_PUNCH
+    GTA_ANIM_PUNCH,
+    /* ON THE GROUND - arrested on foot: the cop's the original's routine case 4 puts
+     * the target in state 0x2b, lying, until the cop car AI calls it
+     * BUSTED. The pedestrians' lying sprite. */
+    GTA_ANIM_DOWN
 } gta_player_anim;
 
 #define GTA_PED_PUNCH_FIRST    50

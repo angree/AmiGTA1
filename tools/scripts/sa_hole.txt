@@ -1,0 +1,15 @@
+# CHANGE_TYPE / CHANGE_BLOCK IN THE GAME (221). San Andreas 1 (startlevel.txt
+# 2): section [102] lines 5705..5870 blow a 3x2 hole into the building at
+# (187..189,182..183) - EXPL_NO_FIRE, then each block's roof lid := 0
+# (CHANGE_TYPE) and the block under it := air (CHANGE_BLOCK). The player is
+# put beside it and the camera looks. Pass: six "CHANGE_TYPE ... face 4 :=
+# tile 0" and six "CHANGE_BLOCK ... type 0x0" lines, no "NO ROOM", and the
+# second film shows the roof open where the first shows it whole.
+wait 100
+goto 187 185
+wait 60
+film 1
+script 5705
+wait 200
+film 1
+dump

@@ -1,0 +1,29 @@
+# THE MODEL CAR IN THE GAME (225). San Andreas 1 (startlevel.txt 2), section
+# [102] 11200: a kill frenzy with model cars - 11220 START_MODEL 2570 0 0 -1
+# 100, 11238 DO_MODEL 11220 -1 11244 -1 0. The player gets into a parked car
+# first (START_MODEL waits for that). Pass: "his car .. parked, he drives the
+# model car", "it went off", "back in his own car", "DO_MODEL: another model
+# car, 98 left", and after the RETURN "back in his own car" again with the
+# frenzy failing (DO_MODEL -> 11244).
+wait 100
+goto 30 170
+wait 2500
+park 1 0 24 64
+wait 20
+enter
+wait 200
+script 11200
+wait 100
+film 1
+run 120 1 0 0 0
+wait 120
+film 1
+fire 1
+wait 20
+film 1
+wait 400
+film 1
+enter
+wait 200
+film 1
+dump

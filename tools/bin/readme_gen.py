@@ -72,8 +72,24 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.5.0
-A native AmigaOS 68k port of Grand Theft Auto (1997)
+TEXT = """AmiGTA v0.7.0
+A native Amiga port of Grand Theft Auto (1997) - AmigaOS 3.x and AROS on
+68k, and MorphOS (PowerPC)
+
+===========================================================================
+WHICH ARCHIVE
+===========================================================================
+
+  AmiGTA-v0.7.0-68k      AmigaOS 3.1 and later, and AROS 68k. AmiGTA is a
+                         68020 program; the same file also runs under
+                         MorphOS's 68k emulation.
+
+  AmiGTA-v0.7.0-MorphOS  MorphOS on PowerPC. AmiGTA is a native PPC build
+                         (its title bar says "AmiGTA PPC"); gtaprefs,
+                         gtabake and gtaiff are the 68k tools, which
+                         MorphOS runs as they are.
+
+Everything below is the same for both.
 
 ===========================================================================
 IMPORTANT: THIS ARCHIVE CONTAINS NO GAME DATA
@@ -123,8 +139,10 @@ WHAT YOU NEED
 ===========================================================================
 
   * 68020 or better. No FPU is required and none is used.
+    Or AROS 68k, or MorphOS (either archive; the PPC one is faster).
   * AGA, or a CyberGraphX / Picasso96 8-bit screen, or - slower, and
     where neither of those works - a window on the Workbench.
+    On MorphOS the game opens a 640x480 screen of its own by itself.
   * About 8 MB of fast RAM to play. The one-off conversion below wants
     about 6 MB free while it runs.
   * Your own copy of GTA (1997) for the PC.
@@ -183,6 +201,17 @@ STEP 3 - convert the art. From a shell, in the drawer you unpacked to:
 
     You can keep or delete style001.gry afterwards - the game does not
     read it. Only style001.til and nyc.cmp are used.
+
+    SAN ANDREAS AND VICE CITY are the same job with their own files:
+    copy sanb.cmp and style002.gry (San Andreas), miami.cmp and
+    style003.gry (Vice City), then
+
+        gtabake GTADATA/style002.gry GTADATA/style002.til
+        gtabake GTADATA/style003.gry GTADATA/style003.til
+
+    and, for their sound, -sfx with audio/level002 and audio/level003
+    the way SOUND shows for level001. Without them, play Liberty City
+    only - do not pick a level whose files you have not converted.
 
 STEP 4 - you should now have:
 
@@ -290,12 +319,7 @@ It opens a small window on Workbench with three choices:
               mixes in software. Auto picks Paula where a real chipset
               exists and AHI where one does not.
 
-              PAULA WORKS. AHI DOES NOT YET - choosing it (or Auto on a
-              machine with no real chipset) gets you silence rather than
-              something half-written pretending to be sound support. The
-              setting has always been here because the choice had to be
-              settled before the sound layer was written; the Paula half
-              of it is what v0.5.0 delivers.
+              Both work since v0.7.0. On MorphOS Auto always means AHI.
 
   Graphics    Auto, AGA, RTG or Window.
               Auto opens an AGA screen. Window runs the game inside a
@@ -309,7 +333,9 @@ It opens a small window on Workbench with three choices:
               320x200 is the reference and what every speed figure in the
               project's notes was measured at. 320x240 shows more of the
               city and wants an RTG screen. Auto means 320x200, or
-              320x240 if you chose RTG above.
+              320x240 if you chose RTG above - and on MorphOS a full
+              640x480 screen: drawn at 640x480 by the PPC build, doubled
+              from 320x240 by the 68k one.
 
               THE TWO 640x480 MODES ARE DIFFERENT PICTURES:
 
@@ -342,6 +368,44 @@ pointer at all:
 Settings are written to gta.prefs beside the game, which is plain text you
 can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
+
+===========================================================================
+NEW IN v0.7.0
+===========================================================================
+
+  ALL SIX LEVELS. Liberty City, San Andreas and Vice City, two levels
+  each, load and play; the first job of every one of them has been
+  played through from the phone to the pay-out. (Each level needs its
+  own style and map files from your copy - see SETTING IT UP.)
+
+  AROS AND MORPHOS. The 68k AmiGTA runs on AROS 68k and under MorphOS's
+  68k emulation, and there is a native MorphOS PowerPC build in its own
+  archive. Sound goes through AHI on MorphOS; the frame cap sleeps in
+  timer.device instead of spinning the CPU.
+
+  THE POLICE TAKE YOU THE ORIGINAL'S WAY. In a car the cop gets out,
+  walks to your door, waits for the car to stop and pulls you out - no
+  more BUSTED the moment he touches you. On foot you are knocked down
+  first and then arrested.
+
+  TRAINS. The El runs on its tracks with its stations, round curved
+  corners; you can board it and ride it, and a train hit hard enough is
+  wrecked - and the script's train jobs work.
+
+  THE AMBULANCE AND THE FIRE ENGINE. Run someone over and an ambulance
+  comes for the body and its medic brings him back; set something alight
+  and a fire engine comes and puts it out.
+
+  TRAFFIC that sorts itself out: two cars nose to nose at a junction give
+  way to each other, and out of sight a jammed car hops ahead, swaps with
+  the one blocking it or a junction stuck for long enough is cleared, as
+  the original does. More traffic at a higher wanted level.
+
+  WALLS ARE SOLID AND DOORS OPEN. Shots stop at walls and fences, cars at
+  posts; garage doors open for the right car only. The bomb shop works.
+
+  And: shots from beside a car hit the car, explosions have no seam, the
+  title menu's letters no longer run into each other.
 
 ===========================================================================
 NEW SINCE v0.2.0
@@ -497,16 +561,15 @@ than the WAVs they came from, but they are still roughly 1.3 MB a
 minute. You do not have to convert all of them.
 
 ===========================================================================
-WHAT IS NOT IN v0.5.0
+WHAT IS NOT IN v0.7.0
 ===========================================================================
 
-  * Missions past the third. The script's whole vocabulary is not
-    written yet - what the game reaches next is in its own log.
-  * The police cars have no siren, and the cop has no firing pose.
+  * Not every job has been played through - the first of each level
+    has. What the game reaches is in its own log.
   * Tyre marks, blood and oil are not drawn.
-  * Only Liberty City. The startup path is fixed to nyc.cmp.
-  * AHI. The Sound setting offers it and choosing it gets you silence:
-    only the Paula path is written.
+  * Trams stand still - as they do in the original, DOS and Windows.
+  * Speed: a plain 68020 is not enough for the full city; an 030/040
+    or faster with fast RAM is what it wants.
   * There is no engine note. The original does not have one either -
     its own code has nothing that holds a sound channel open - so this
     is not a missing feature so much as a thing that was never there.
@@ -548,8 +611,10 @@ IF IT DOES NOT START
   The city is drawn in the wrong colours, or as noise
       The game asked for an 8-bit screen, did not get one, and fell back
       to a path that needs the real Amiga chipset. Run gtaprefs and set
-      Graphics to Window. This is what MorphOS does.
+      Graphics to Window.
       With no pointer:  gtaprefs GFX=WB
+      (MorphOS needs none of this since v0.7.0: it opens a 32-bit RTG
+      screen by itself.)
 
   A black screen with the machine still alive
       Try F3 to toggle the title bar, which reopens the screen.

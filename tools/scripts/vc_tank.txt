@@ -1,0 +1,10 @@
+# PARKED_PIXELS IN THE GAME (226). Vice City 1 (startlevel.txt 4), section
+# [202]: `3000 1 (15872,8384,256) PARKED_PIXELS 37 768` - a tank (model 37)
+# parked at pixel (15872,8384), block (248,131). The player walks up to it.
+# Pass: "mission car (line 3000, model 37) put down at (7936,4192)" and the
+# tank in the film.
+wait 100
+goto 247 133
+wait 300
+film 1
+dump

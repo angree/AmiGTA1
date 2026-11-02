@@ -1,0 +1,50 @@
+# VICE CITY 2, FIRST JOB, END TO END (startlevel.txt 5), section [203]
+# "Vice is Painless". Run: reload-gta.ps1 -WaitFor "autodrive done" -TimeoutSec 300
+#
+# (1) WHAT IT FOLLOWS. The first job here is NOT a phone: the player
+# (209 at (228,211)) stands on `211 TRIGGER 1007` (mission.ini 37321), so it
+# starts on the first tick, like a pager job. The phones (MPHONES 220/240/260)
+# come later. The flow, mission.ini lines 38742..38820:
+#   1010 PARKED_ON 1000 - FUTURECAR 1000, model 82, at (8,209)
+#   1030 STEAL 1000 0 0 0 6000      player drives it            -> pays 6000
+#   1032 KICKSTART 1260             120 s timer (1261 SURVIVE 3000) -> 1339 fail
+#   1034 PED_ON 1020                Rasta at px (275,13408) = block (4,209)
+#   1040 ENABLE 1170                CARBOMB_TRIG 1000 -> 1069
+#   bomb shop (any; default cost 5000, no BOMBSHOP_COST in [203])
+#   1069 DISABLE 1170 ... 1000                                  -> pays 1000
+#   1098 ENABLE 1010                CORRECT_CAR_TRIG (8,209) r1 -> 1110
+#   1110..1135  timer cancelled, SURVIVE 100, Rasta walks to (7,209) and gets
+#               in; 1136 watcher: player back in car 1000 = fail (3562)
+#   1170 PEDCAR_TRIG -> 1221 RESET -> 1180 PLAYER_ARE_BOTH_ONSCREEN 1000 0 1210
+#   1190 EXPLODE_CAR 1000 ... 20000                             -> pays 20000
+#   1192 MISSION_END                                     -> multiplier +1
+#
+# (2) PASS: "gta: script - paid 6000", "paid 1000", "paid 20000",
+# "gta: script - mission complete, multiplier x2", text 2500 MISSION COMPLETE.
+#
+# (3) RISKY STEPS.
+# * BLOCKER IN THE PORT: gta_script_run.c maps PLAYER_ARE_BOTH_ONSCREEN to
+#   GTA_CMD_UNKNOWN_CHECK, which always takes p3 -> 1210: the car blows up,
+#   no pay, 2501 MISSION FAILED, 3543 "I said to wait". Until that command is
+#   implemented (player and car 1000 both on screen) this script ends there.
+# * The bomb shop at (140,247) is entered by goto, not driven into; door 134
+#   is ENABLEd by STARTUP 30012. (67,110)'s door 128 is never ENABLEd - avoid.
+# * The STEAL's 6000 must cover the 5000 bomb; if money is short add
+#   `score 5000` before the shop goto.
+# * goto 10 209 on foot may report "nothing walkable"; the player must be out
+#   of car 1000 and out of the Rasta's way, and stay near for the onscreen test.
+wait 500
+goto 8 209        FUTURECAR 1000, model 82
+enter
+wait 160          STEAL -> paid 6000
+goto 140 244 face 128   in front of bomb shop 135, door 134 (N edge), facing it
+wait 150          the door opens for the car
+run 70 1 0 0 0    drive in - a garage cannot be teleported into, it is building until opened
+wait 260          bomb fitted -> CARBOMB_TRIG -> paid 1000
+goto 8 209        CORRECT_CAR_TRIG 1010, radius 1
+wait 60
+enter             out at once - 1136 fails him if he is back in
+wait 40
+goto 10 209       two blocks off, car still on screen
+wait 1500         Rasta walks over, gets in, car goes up
+dump

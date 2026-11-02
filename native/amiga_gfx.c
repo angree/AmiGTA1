@@ -46,6 +46,7 @@
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <graphics/gfx.h>
+#include <graphics/gfxbase.h>
 #include <graphics/displayinfo.h>
 #include <exec/memory.h>
 #include <exec/io.h>
@@ -59,8 +60,13 @@
  * this file's (hand-written) compile line. The inline/ header there is the
  * repaired one: the 1995 FD2Inline original lists d0 both as the "=r" output
  * and in the clobber list and declares "register _res" with no type at all,
- * which GCC 6.5 either rejects or miscompiles. */
+ * which GCC 6.5 either rejects or miscompiles.
+ * The MorphOS SDK has its own, with the tags and pixel formats in
+ * cybergraphx/cybergraphics.h (45-MorphOS-natywny-PPC-2D.md). */
 #include <proto/cybergraphics.h>
+#ifdef __MORPHOS__
+#include <cybergraphx/cybergraphics.h>
+#endif
 
 #include "amiga_gfx.h"
 
@@ -186,6 +192,27 @@ static struct Screen *g_screen;
 static struct Window *g_window;
 static struct BitMap  g_bitmap;
 static UBYTE *g_chip;
+/* WHERE THE PLANAR BLIT WRITES - read by both c2p calls and by nothing else.
+ *
+ * On Kickstart, and on a current AROS, the screen shows the bitmap handed over
+ * with SA_BitMap, so these are just g_chip / g_planesize / &g_bitmap and the
+ * c2p receives exactly the arguments it always did.
+ *
+ * The AROS ROM built into WinUAE IGNORES SA_BitMap: OpenScreen gives the screen
+ * bitplanes of its own, and a c2p into g_chip is never displayed - a black
+ * screen with the game running behind it. adopt_screen_planes() notices that
+ * right after OpenScreen (the screen's Planes[0] is not ours) and either points
+ * these at the screen's planes, when their layout is one the c2p can write, or
+ * sets g_planes_rp so the blit goes through the screen's RastPort instead. The
+ * test can never fire where the system honours SA_BitMap, so no build flag.
+ * (Ported from AmiSC 68K, I:\GITHUB\Amiga_OpenBW\amiga\amiga_gfx.c.) */
+#define PLANES_DIRECT 0   /* c2p into g_planes / g_planes_bm             */
+#define PLANES_WCP    1   /* WriteChunkyPixels into the screen RastPort   */
+#define PLANES_WPA8   2   /* WritePixelArray8, graphics.library below v40 */
+static UBYTE         *g_planes;           /* 8-plane c2p target, plane 0 */
+static ULONG          g_planes_step;      /* distance between two planes */
+static struct BitMap *g_planes_bm = &g_bitmap; /* EHB c2p target         */
+static int            g_planes_rp;        /* PLANES_*                    */
 static UBYTE *g_chunky;
 static UBYTE *g_ehb_scratch;              /* NULL unless an EHB screen is open */
 static int    g_ehb_scratch_rows;
@@ -248,6 +275,107 @@ static int   g_backend;        /* AMIGAGFX_BACKEND_* of the open screen */
 static int   g_rtg_method;
 static int   g_rtg_demoted;    /* log the LOCK->WLUT demotion once */
 static ULONG g_ctable[256];    /* CTABFMT_XRGB8 mirror of the palette */
+static int   g_ctable_valid;   /* a palette has been set at least once */
+
+/* ---- RTG DEEP: a 15/16/24/32-bit card screen ------------------------------
+ *
+ * Ported from AmiSC 68K (I:\GITHUB\Amiga_OpenBW\amiga\amiga_gfx.c, 2026-10-25).
+ *
+ * Why it exists. MorphOS runs these same 68k executables, and on it the 8-bit
+ * CLUT path cannot be trusted: measured there in QEMU pegasos2 + MorphOS 3.20
+ * the 8-bit screen opened, the lock reported LUT8, and the picture came out as
+ * rainbow noise - the colour table never reached the display. Real MorphOS
+ * machines with Radeon HD/RX cards often offer no 8-bit mode at all. So there
+ * the screen is opened DEEP and every rectangle goes through
+ * WriteLUTPixelArray with g_ctable, which converts our palette indices to
+ * true colour at blit time. The display then holds colours, not indices.
+ *
+ * WHEN (the whole condition, decided in open_screen_rtg and nowhere else):
+ * the RTG backend is being opened AND at least one of
+ *   - MorphOS is running (FindResident("MorphOS")),
+ *   - cybergraphics offers no usable 8-bit mode for this size,
+ *   - `rtg_deep 1` in opts.txt, or amigagfx_set_rtg_deep(1).
+ * On AmigaOS with an 8-bit card mode and no `rtg_deep`, nothing changes.
+ *
+ * THE ONE CONSEQUENCE that is not free: conversion happens at blit time, so a
+ * palette change leaves everything already on the display in the OLD colours.
+ * amigagfx_set_palette therefore sets g_deep_full_pending, which widens the
+ * NEXT blit, whoever makes it, to the whole screen. */
+static int   g_rtg_deep;          /* the open RTG screen is deep */
+static int   g_rtg_deep_depth;    /* its depth, for the log */
+static int   g_rtg_deep_forced;   /* `rtg_deep 1` (opts.txt or the setter) */
+static int   g_rtg_deep_asked;    /* opts.txt read, or the setter called */
+static int   g_deep_full_pending; /* next blit must cover the whole screen */
+static int   g_morphos = -1;      /* -1 not asked yet, else 0/1 */
+
+/* MorphOS registers a resident module named "MorphOS"; AmigaOS has none. The
+ * call is plain exec and works from 68k code under Trance. Asked once.
+ *
+ * THIS IS ALSO THE GUARD for everything that would touch the Amiga's custom
+ * chips, CIAs or the VBR: MorphOS has none of them. Nothing in this file does
+ * today - every display path goes through Intuition, graphics.library and
+ * cybergraphics.library - and on MorphOS the planar paths are not even
+ * reached (amigagfx_open forces RTG there). Anything hardware-level added
+ * later must check is_morphos() first. */
+static int is_morphos(void)
+{
+	if (g_morphos < 0) {
+		g_morphos = FindResident((CONST_STRPTR)"MorphOS") != NULL ? 1 : 0;
+		if (g_morphos) amigagfx_log("MorphOS detected");
+	}
+	return g_morphos;
+}
+
+int amigagfx_is_morphos(void) { return is_morphos(); }
+
+/* The lines a screen's title bar will take (BarHeight + 1), read off the
+ * default public screen before ours exists: our screen opens with the same
+ * default font, so its bar comes out the same. 20 if there is no public
+ * screen to ask. */
+int amigagfx_title_bar_guess(void)
+{
+	struct Screen *pub = LockPubScreen(NULL);
+	int bar = 20;
+	if (pub != NULL) {
+		bar = (int)pub->BarHeight + 1;
+		UnlockPubScreen(NULL, pub);
+	}
+	if (bar < 8 || bar > 64) bar = 20;
+	return bar;
+}
+
+void amigagfx_set_rtg_deep(int on)
+{
+	g_rtg_deep_forced = on ? 1 : 0;
+	g_rtg_deep_asked  = 1;
+	if (g_rtg_deep_forced)
+		amigagfx_log("rtg_deep 1 - an RTG screen will be opened deep (WriteLUTPixelArray)");
+}
+
+int amigagfx_rtg_is_deep(void) { return g_screen != NULL && g_rtg_deep; }
+
+/* `rtg_deep 1` in PROGDIR:opts.txt, read here rather than by the game so the
+ * switch works without anything outside this file knowing about it. Same
+ * "word value" pairs the game's own opts.txt reader takes (it ignores keys it
+ * does not know, so the two readers do not disturb each other). Read once, and
+ * not at all if amigagfx_set_rtg_deep() has already decided. */
+static void rtg_deep_read_opts(void)
+{
+	FILE *of;
+	char  word[16];
+	long  val;
+
+	if (g_rtg_deep_asked) return;
+	g_rtg_deep_asked = 1;
+	of = fopen("PROGDIR:opts.txt", "r");
+	if (of == NULL) return;
+	while (fscanf(of, "%15s %ld", word, &val) == 2) {
+		if (strcmp(word, "rtg_deep") == 0) g_rtg_deep_forced = val ? 1 : 0;
+	}
+	fclose(of);
+	if (g_rtg_deep_forced)
+		amigagfx_log("opts rtg_deep 1 - an RTG screen will be opened deep (WriteLUTPixelArray)");
+}
 
 /* ---- WINDOW mode (a window on the Workbench screen) ---------------------
  *
@@ -335,6 +463,13 @@ static void wb_pointer_blank(int on)
 
 	if (on) {
 		if (!wb_pointer_have_sprite()) return;
+		/* The WHOLE buffer is cleared before every SetPointer, not just
+		 * trusted to still be MEMF_CLEAR zeros. The Amiga's sprite DMA stops
+		 * at the end words, but a graphics card's hardware cursor built from
+		 * this data need not: on real MorphOS hardware AmiSC 68K players saw
+		 * a strip under the pointer, fixed by clearing everything behind the
+		 * end words (I:\GITHUB\Amiga_OpenBW\amiga\amiga_gfx.c, 2026-10-25). */
+		memset(g_blank_pointer, 0, 6 * sizeof(UWORD));
 		SetPointer(g_window, g_blank_pointer, 1, 16, 0, 0);
 		g_pointer_blanked = 1;
 	} else {
@@ -421,7 +556,11 @@ static struct BitMap  *g_tempbm;
  * here - so the bar always shows the game's own name and version and this
  * file never hard-codes either. The default only ever shows if the screen
  * opens before the game names itself. */
+#ifdef __MORPHOS__
+static UBYTE g_screen_title[80] = "AmiGTA PPC";
+#else
 static UBYTE g_screen_title[80] = "AmiGTA 68K";
+#endif
 
 void amigagfx_set_screen_title(const char *t)
 {
@@ -510,6 +649,70 @@ void amigagfx_set_bar_pens(int text, int fill, int trim)
 	g_screen_pens[11] = (UWORD)trim;   /* BARTRIMPEN         */
 }
 
+/* RTG DEEP: the title bar gets its OWN four colormap entries, fixed at open.
+ *
+ * Measured by AmiSC 68K on MorphOS 3.20 (QEMU pegasos2): the bar of a deep
+ * screen is rendered with the colormap as it stood at OpenScreen, and neither
+ * a later LoadRGB32 nor a ShowTitle toggle changes it - on a deep screen a
+ * drawn pixel is a colour, not an index, so a later colormap write recolours
+ * nothing that is already there.
+ *
+ * So on a deep screen the colours go in WITH the open (SA_Colors32), on pens
+ * that nothing writes afterwards: amigagfx_set_palette loads only 17..19 (the
+ * pointer's registers) on a deep screen - g_ctable does the pixels. The
+ * colours themselves are still the game's choice: the indices handed to
+ * amigagfx_set_bar_pens are looked up in g_ctable at open time (deep_bar_colours),
+ * so the bar looks the same as on AGA. Pens 1, 2, 3 were picked because the
+ * system's OWN defaults there are black, white and blue - should some system
+ * ignore SA_Colors32 the bar still reads as dark with white text. Entry 0 is
+ * black too, so anything Intuition erases with pen 0 does not turn grey. */
+#define DEEP_PEN_TRIM 1
+#define DEEP_PEN_TEXT 2
+#define DEEP_PEN_FILL 3
+static UWORD g_deep_pens[] = {
+	DEEP_PEN_TEXT,  /* DETAILPEN     */
+	DEEP_PEN_FILL,  /* BLOCKPEN      */
+	DEEP_PEN_TEXT,  /* TEXTPEN       */
+	DEEP_PEN_TEXT,  /* SHINEPEN      */
+	DEEP_PEN_TRIM,  /* SHADOWPEN     */
+	DEEP_PEN_FILL,  /* FILLPEN       */
+	DEEP_PEN_TEXT,  /* FILLTEXTPEN   */
+	DEEP_PEN_FILL,  /* BACKGROUNDPEN */
+	DEEP_PEN_TEXT,  /* HIGHLIGHTTEXT */
+	DEEP_PEN_TEXT,  /* BARDETAILPEN  */
+	DEEP_PEN_FILL,  /* BARBLOCKPEN   */
+	DEEP_PEN_TRIM,  /* BARTRIMPEN    */
+	(UWORD)~0
+};
+#define C32(v) ((ULONG)(v) * 0x01010101UL)
+static ULONG g_deep_colors32[] = {
+	(4UL << 16) | 0UL,
+	C32(0),   C32(0),   C32(0),     /* 0: black - pen-0 erases          */
+	C32(0),   C32(0),   C32(0),     /* 1: trim                          */
+	C32(255), C32(255), C32(255),   /* 2: text                          */
+	C32(56),  C32(64),  C32(96),    /* 3: fill                          */
+	0UL
+};
+
+/* Fill entries 1..3 of g_deep_colors32 from the game's palette at the indices
+ * amigagfx_set_bar_pens chose (g_screen_pens[9..11]: bar text, fill, trim).
+ * Before any palette has been set the defaults above stay - white on a dark
+ * blue-grey, black trim. */
+static void deep_bar_colours(void)
+{
+	static const int slot[3] = { DEEP_PEN_TEXT, DEEP_PEN_FILL, DEEP_PEN_TRIM };
+	int i;
+
+	if (!g_ctable_valid) return;
+	for (i = 0; i < 3; i++) {
+		ULONG c = g_ctable[g_screen_pens[9 + i] & 0xff];
+		g_deep_colors32[1 + slot[i] * 3 + 0] = C32((c >> 16) & 0xff);
+		g_deep_colors32[1 + slot[i] * 3 + 1] = C32((c >>  8) & 0xff);
+		g_deep_colors32[1 + slot[i] * 3 + 2] = C32( c        & 0xff);
+	}
+}
+#undef C32
+
 /* Make Intuition draw the screen title bar again.
  *
  * THIS EXISTS BECAUSE THE BAR IS PIXELS IN OUR OWN BITMAP. The AGA screen is
@@ -554,9 +757,18 @@ int amigagfx_backend(void) { return g_backend; }
  * all. Writing here paints garbage on the visible screen, which is exactly
  * what makes it an honest measurement: it is the real display memory, with
  * display DMA competing for the same bus, not a quiet buffer somewhere else. */
-unsigned char *amigagfx_planes(void) { return (unsigned char *)g_chip; }
+unsigned char *amigagfx_planes(void)
+{
+	/* g_planes is g_chip unless adopt_screen_planes took the screen's own
+	 * planes - and then those are the ones on display. On the RastPort route
+	 * nothing of ours is displayed, so there is nothing honest to measure. */
+	if (g_planes_rp != PLANES_DIRECT) return NULL;
+	return (unsigned char *)(g_planes != NULL ? g_planes : g_chip);
+}
 long amigagfx_planes_bytes(void)
 {
+	if (g_planes != NULL && g_planes != g_chip)
+		return (long)g_planes_step * (long)g_depth;
 	return (long)g_planesize * (long)g_depth;
 }
 
@@ -625,9 +837,91 @@ static ULONG rtg_best_mode(int w, int h)
 	return id;
 }
 
+/* The RTG DEEP mode for w x h: ask for 32, 24, 16 and 15 bits in that order
+ * and take the first answer that is a Cybergraphics id, really is 15 bits or
+ * deeper at 2+ bytes a pixel, and is at least as big as the screen. The same
+ * distrust as rtg_best_mode: BestCModeIDTagList returns its nearest guess,
+ * which may be a chipset mode or a different depth.
+ *
+ * If all four come back unusable, walk the whole display database
+ * (NextDisplayInfo) for the SMALLEST CGX mode of 15+ bits that holds w x h,
+ * the deepest one on a tie. Needed on MorphOS under QEMU (ati-vga), which has
+ * no mode anywhere near 320x200 and where BestCModeIDTags answers INVALID_ID
+ * for every depth (measured by AmiFFE, E:\GITHUB\amiffe\amiga\amiga_gfx.c).
+ * The screen is then opened at the game's size inside that bigger mode, and
+ * the game sits in its top left corner.
+ *
+ * Fills *depth on success, returns INVALID_ID otherwise. */
+static ULONG rtg_best_deep_mode(int w, int h, int *depth)
+{
+	static const ULONG want[4] = { 32UL, 24UL, 16UL, 15UL };
+	struct TagItem tags[4];
+	ULONG id, best = (ULONG)INVALID_ID, bestarea = 0xffffffffUL;
+	int   i, bestd = 0;
+
+	if (!cgx_open()) return (ULONG)INVALID_ID;
+
+	for (i = 0; i < 4; i++) {
+		ULONG d;
+		tags[0].ti_Tag = CYBRBIDTG_NominalWidth;  tags[0].ti_Data = (ULONG)w;
+		tags[1].ti_Tag = CYBRBIDTG_NominalHeight; tags[1].ti_Data = (ULONG)h;
+		tags[2].ti_Tag = CYBRBIDTG_Depth;         tags[2].ti_Data = want[i];
+		tags[3].ti_Tag = TAG_END;                 tags[3].ti_Data = 0UL;
+		id = BestCModeIDTagList(tags);
+		if (id == (ULONG)INVALID_ID || !IsCyberModeID(id)) continue;
+		d = GetCyberIDAttr(CYBRIDATTR_DEPTH, id);
+		if (d < 15UL || GetCyberIDAttr(CYBRIDATTR_BPPIX, id) < 2UL) continue;
+		if (GetCyberIDAttr(CYBRIDATTR_WIDTH, id)  < (ULONG)w ||
+		    GetCyberIDAttr(CYBRIDATTR_HEIGHT, id) < (ULONG)h) continue;
+		*depth = (int)d;
+		return id;
+	}
+
+	id = (ULONG)INVALID_ID;
+	while ((id = NextDisplayInfo(id)) != (ULONG)INVALID_ID) {
+		ULONG mw, mh, d;
+		if (!IsCyberModeID(id)) continue;
+		d  = GetCyberIDAttr(CYBRIDATTR_DEPTH, id);
+		if (d < 15UL || GetCyberIDAttr(CYBRIDATTR_BPPIX, id) < 2UL) continue;
+		mw = GetCyberIDAttr(CYBRIDATTR_WIDTH, id);
+		mh = GetCyberIDAttr(CYBRIDATTR_HEIGHT, id);
+		if (mw < (ULONG)w || mh < (ULONG)h) continue;
+		if (mw * mh < bestarea || (mw * mh == bestarea && (int)d > bestd)) {
+			best = id; bestarea = mw * mh; bestd = (int)d;
+		}
+	}
+	fprintf(stdout, "amiga: RTG deep: BestCModeID found nothing for %dx%d,"
+	                " mode list -> $%08lx depth %d\n",
+	        w, h, (unsigned long)best, bestd);
+	fflush(stdout);
+	if (best != (ULONG)INVALID_ID) { *depth = bestd; return best; }
+	return (ULONG)INVALID_ID;
+}
+
+/* May this session use a deep RTG screen in place of an AGA/EHB one when the
+ * card has no 8-bit mode? Only where the alternative is worse or absent:
+ * MorphOS (no chipset to fall back to), `rtg_deep 1`, or no AGA chipset. An
+ * AGA machine on AmigaOS keeps choosing AGA for a size its card cannot show
+ * in 8 bits, exactly as before - a per-frame WriteLUTPixelArray conversion on
+ * a 68020 is not an upgrade over the c2p. (GfxBase is a library base, not a
+ * chip register: reading ChipRevBits0 is safe on MorphOS too.) */
+static int rtg_deep_allowed(void)
+{
+	rtg_deep_read_opts();
+	return is_morphos() || g_rtg_deep_forced ||
+	       (GfxBase->ChipRevBits0 & GFXF_AA_ALICE) == 0;
+}
+
 int amigagfx_rtg_has_mode(int w, int h)
 {
 	ULONG id = rtg_best_mode(w, h);
+
+	/* No 8-bit mode: the card still counts when a deep mode exists and this
+	 * session may use one (rtg_deep_allowed). */
+	if (id == (ULONG)INVALID_ID && CyberGfxBase != NULL && rtg_deep_allowed()) {
+		int d = 0;
+		id = rtg_best_deep_mode(w, h, &d);
+	}
 
 	/* The probe runs while building the resolution list, long before any
 	 * screen exists. Leave the library open only if it is already carrying an
@@ -806,6 +1100,101 @@ unsigned long amigagfx_millis(void)
 	return (unsigned long)((raw_ticks() - g_epoch) * 20UL);
 }
 
+/* Undo adopt_screen_planes: called before every CloseScreen of a planar
+ * screen, because the planes it may have borrowed go with the screen, and the
+ * RastPort route's scratch bitmap was allocated with the screen's bitmap as
+ * its friend. Window mode uses g_tempbm too but never at the same time as a
+ * screen of ours, so it is only freed here when this route took it. */
+static void forget_screen_planes(void)
+{
+	if (g_planes_rp == PLANES_WPA8 && !g_win_mode && g_tempbm != NULL) {
+		FreeBitMap(g_tempbm);
+		g_tempbm = NULL;
+	}
+	g_planes      = NULL;
+	g_planes_step = 0;
+	g_planes_bm   = &g_bitmap;
+	g_planes_rp   = PLANES_DIRECT;
+}
+
+/* Called once per planar screen, right after OpenScreen succeeded. Decides
+ * where amigagfx_blit writes - see the comment at g_planes.
+ *
+ * The ONLY way out of the normal case is the first test: the screen's own
+ * bitmap does not start at our plane 0. Kickstart (every version) and a current
+ * AROS put our bitmap on the screen, so that test is false there and the state
+ * is exactly what the c2p always used.
+ *
+ * Adopting the screen's planes needs the layout the c2p assumes: Chip RAM (the
+ * display fetches from nowhere else), the same row length (the c2p's row
+ * modulo is g_bpr), at least our rows and depth, and planes spaced one constant
+ * plane size apart (the 8-plane c2p takes one spacing; the EHB one reads the
+ * plane pointers itself but is handed the same bitmap anyway). An interleaved
+ * bitmap fails the row-length test and takes the RastPort route, which is
+ * slower but correct on any layout. The screen's planes are only borrowed:
+ * forget_screen_planes drops them before the screen goes. */
+static void adopt_screen_planes(int w, int h, int depth)
+{
+	struct BitMap *sb = g_screen->RastPort.BitMap;
+	ULONG step;
+	int i, same;
+
+	forget_screen_planes();
+	g_planes      = g_chip;
+	g_planes_step = g_planesize;
+
+	if (sb == NULL || sb->Planes[0] == g_bitmap.Planes[0]) return;
+
+	step = (ULONG)sb->BytesPerRow * sb->Rows;
+	same = sb->Planes[0] != NULL && (int)sb->Depth >= depth &&
+	       (int)sb->BytesPerRow == g_bpr && (int)sb->Rows >= h &&
+	       (TypeOfMem((APTR)sb->Planes[0]) & MEMF_CHIP) != 0;
+	for (i = 1; same && i < depth; i++)
+		same = sb->Planes[i] != NULL &&
+		       (ULONG)((UBYTE *)sb->Planes[i] - (UBYTE *)sb->Planes[0]) == (ULONG)i * step;
+
+	fprintf(stdout, "amiga: screen bitmap planes[0] $%08lx, ours $%08lx, bpr %d (ours %d),"
+	                " rows %d, depth %d, chip %s\n",
+	        (unsigned long)sb->Planes[0], (unsigned long)g_bitmap.Planes[0],
+	        (int)sb->BytesPerRow, g_bpr, (int)sb->Rows, (int)sb->Depth,
+	        (sb->Planes[0] != NULL && (TypeOfMem((APTR)sb->Planes[0]) & MEMF_CHIP)) ? "yes" : "no");
+	fflush(stdout);
+
+	if (same) {
+		g_planes      = (UBYTE *)sb->Planes[0];
+		g_planes_step = step;
+		g_planes_bm   = sb;
+		amigagfx_log("system ignored our bitmap - drawing into the screen's own planes");
+		return;
+	}
+
+	if (GfxBase->LibNode.lib_Version >= 40) {
+		g_planes_rp = PLANES_WCP;
+		amigagfx_log("system ignored our bitmap - drawing into the screen's own planes"
+		             " through WriteChunkyPixels");
+		return;
+	}
+
+	/* graphics.library before v40 has no WriteChunkyPixels. WritePixelArray8
+	 * reads its array with a stride of the width rounded up to 16 and wants a
+	 * one-row scratch RastPort of the screen's depth; full rows of a width that
+	 * is already a multiple of 16 satisfy the first without a copy. Planar
+	 * widths here are multiples of 32, so this always holds in practice. */
+	if ((w & 15) == 0) {
+		InitRastPort(&g_temprp);
+		g_tempbm = AllocBitMap((ULONG)w, 1UL, (ULONG)sb->Depth, 0UL, sb);
+		if (g_tempbm != NULL) {
+			g_temprp.BitMap = g_tempbm;
+			g_planes_rp = PLANES_WPA8;
+			amigagfx_log("system ignored our bitmap - drawing into the screen's own planes"
+			             " through WritePixelArray8");
+			return;
+		}
+	}
+	amigagfx_log("system ignored our bitmap and offers no way to draw into its own"
+	             " - the picture will stay black");
+}
+
 /* AGA and EHB: one contiguous Chip RAM block for equally spaced bitplanes,
  * handed to Intuition with SA_BitMap. depth is DEPTH_AGA (8) or DEPTH_EHB (6);
  * six additionally sets the chipset's Extra-Half-Brite bit in the mode id, which
@@ -958,6 +1347,9 @@ static int open_screen_aga(int w, int h, ULONG quiet, ULONG title, int depth)
 			return 8;
 		}
 	}
+	/* Last, so no failure path above has anything of it to undo. On every
+	 * system that honours SA_BitMap this only sets g_planes = g_chip. */
+	adopt_screen_planes(w, h, depth);
 	return 0;
 }
 
@@ -1003,27 +1395,75 @@ static int wb_screen_is_deep(void)
 static int open_screen_rtg(int w, int h, ULONG quiet, ULONG title)
 {
 	ULONG modeid = rtg_best_mode(w, h);
+	int   deep = 0, deep_depth = 0;
+	ULONG sa_depth = (ULONG)DEPTH_AGA;
+
+	g_rtg_deep = 0;
+	g_deep_full_pending = 0;
+	rtg_deep_read_opts();
+
+	/* RTG DEEP - the full condition, see the block at g_rtg_deep. An 8-bit
+	 * mode with neither MorphOS nor `rtg_deep` takes the old path untouched. */
+	if (is_morphos() || g_rtg_deep_forced || modeid == (ULONG)INVALID_ID) {
+		ULONG deep_id = rtg_best_deep_mode(w, h, &deep_depth);
+		if (deep_id != (ULONG)INVALID_ID) {
+			fprintf(stdout, "amiga: RTG deep wanted (%s) - mode $%08lx, %d bits\n",
+			        is_morphos() ? "MorphOS" :
+			        g_rtg_deep_forced ? "rtg_deep 1" : "no 8-bit mode for this size",
+			        (unsigned long)deep_id, deep_depth);
+			fflush(stdout);
+			modeid   = deep_id;
+			deep     = 1;
+			sa_depth = (ULONG)deep_depth;
+		} else if (modeid != (ULONG)INVALID_ID) {
+			fprintf(stdout, "amiga: RTG deep wanted but no 15..32-bit mode for %dx%d"
+			                " - keeping the 8-bit mode\n", w, h);
+			fflush(stdout);
+		}
+	}
 
 	if (modeid == (ULONG)INVALID_ID) {
-		fprintf(stdout, "amiga: RTG: no 8-bit mode for %dx%d - falling back to AGA\n", w, h);
+		fprintf(stdout, "amiga: RTG: no 8-bit and no deep mode for %dx%d - falling back to AGA\n", w, h);
 		fflush(stdout);
 		return 5;
 	}
 	g_want_modeid = modeid;
 
-	g_screen = OpenScreenTags(NULL,
-	                          SA_Width,     (ULONG)w,
-	                          SA_Height,    (ULONG)h,
-	                          SA_Depth,     (ULONG)DEPTH_AGA,
-	                          SA_Type,      (ULONG)CUSTOMSCREEN,
-	                          SA_Quiet,     quiet,
-	                          SA_ShowTitle, title,
-	                          SA_Title,     (ULONG)g_screen_title,
-	                          SA_DetailPen, g_detail_pen,
-	                          SA_BlockPen,  g_block_pen,
-	                          SA_Pens,      (ULONG)g_screen_pens,
-	                          SA_DisplayID, modeid,
-	                          TAG_END);
+	if (!deep) {
+		/* 8-bit: exactly the tags this path has always used. */
+		g_screen = OpenScreenTags(NULL,
+		                          SA_Width,     (ULONG)w,
+		                          SA_Height,    (ULONG)h,
+		                          SA_Depth,     (ULONG)DEPTH_AGA,
+		                          SA_Type,      (ULONG)CUSTOMSCREEN,
+		                          SA_Quiet,     quiet,
+		                          SA_ShowTitle, title,
+		                          SA_Title,     (ULONG)g_screen_title,
+		                          SA_DetailPen, g_detail_pen,
+		                          SA_BlockPen,  g_block_pen,
+		                          SA_Pens,      (ULONG)g_screen_pens,
+		                          SA_DisplayID, modeid,
+		                          TAG_END);
+	} else {
+		/* Deep: the bar's own pens and their colours, given WITH the open -
+		 * see g_deep_pens. The colours are the game's bar colours as far as
+		 * its palette is known by now. */
+		deep_bar_colours();
+		g_screen = OpenScreenTags(NULL,
+		                          SA_Width,     (ULONG)w,
+		                          SA_Height,    (ULONG)h,
+		                          SA_Depth,     sa_depth,
+		                          SA_Type,      (ULONG)CUSTOMSCREEN,
+		                          SA_Quiet,     quiet,
+		                          SA_ShowTitle, title,
+		                          SA_Title,     (ULONG)g_screen_title,
+		                          SA_DetailPen, (ULONG)g_deep_pens[0],
+		                          SA_BlockPen,  (ULONG)g_deep_pens[1],
+		                          SA_Pens,      (ULONG)g_deep_pens,
+		                          SA_Colors32,  (ULONG)g_deep_colors32,
+		                          SA_DisplayID, modeid,
+		                          TAG_END);
+	}
 	if (g_screen == NULL) {
 		fprintf(stdout, "amiga: RTG: OpenScreen refused mode $%08lx at %dx%d"
 		                " - falling back to AGA\n", (unsigned long)modeid, w, h);
@@ -1036,6 +1476,20 @@ static int open_screen_rtg(int w, int h, ULONG quiet, ULONG title)
 	 * reading 6 from a previous EHB screen. */
 	g_depth   = DEPTH_AGA;
 	g_backend = AMIGAGFX_BACKEND_RTG;
+	if (deep) {
+		/* No lock probe: the surface holds colours, never our indices, so the
+		 * only correct blit is the converting one. The pending flag makes the
+		 * first blit cover the whole screen with the current table. */
+		g_rtg_deep          = 1;
+		g_rtg_deep_depth    = deep_depth;
+		g_rtg_method        = RTG_METHOD_WLUT;
+		g_rtg_demoted       = 1;
+		g_deep_full_pending = 1;
+		fprintf(stdout, "amiga: RTG deep screen %dx%d depth %d (WriteLUTPixelArray, no 8-bit CLUT)\n",
+		        w, h, deep_depth);
+		fflush(stdout);
+		return 0;
+	}
 	probe_rtg_lock();
 	return 0;
 }
@@ -1517,6 +1971,18 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		backend = AMIGAGFX_BACKEND_AGA;
 	}
 
+	/* ON MORPHOS A PLANAR SCREEN IS NEVER RIGHT. MorphOS has no AGA: it
+	 * grants the planar screen without complaint and then shows it black (or,
+	 * on some setups, as colour noise from a c2p into planes nobody displays).
+	 * So AGA and EHB requests become RTG there - which opens deep on MorphOS
+	 * anyway, see open_screen_rtg. The window mode is left alone: it goes
+	 * through WriteLUTPixelArray and was measured correct on MorphOS. */
+	if (is_morphos() &&
+	    (backend == AMIGAGFX_BACKEND_AGA || backend == AMIGAGFX_BACKEND_EHB)) {
+		amigagfx_log("MorphOS: planar screens show black there - using RTG instead");
+		backend = AMIGAGFX_BACKEND_RTG;
+	}
+
 	/* Ask for what was requested; fall back to a plain 8-bitplane AGA screen
 	 * whenever that did not work out. A machine with no graphics card therefore
 	 * behaves exactly as it did before RTG support existed, one without the
@@ -1553,7 +2019,10 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		 * So: window first, planar only if there is no window either. On a
 		 * real Amiga with no card cgx_open() fails and none of this runs, so
 		 * the AGA path is exactly what it always was. */
-		if (backend == AMIGAGFX_BACKEND_RTG && wb_screen_is_deep()) {
+		/* On MorphOS the window is tried whatever wb_screen_is_deep says -
+		 * that test did not fire there (see its comment), and a planar screen
+		 * on MorphOS is black anyway. */
+		if (backend == AMIGAGFX_BACKEND_RTG && (is_morphos() || wb_screen_is_deep())) {
 			amigagfx_log("RTG has no 8-bit mode - a planar screen here would "
 			             "be c2p garbage; opening a WINDOW instead");
 			cgx_close();
@@ -1582,6 +2051,7 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		if (bar > 0 && bar < h / 2) {
 			int prev = g_backend;
 			/* close only what open_screen_* allocated */
+			forget_screen_planes();
 			if (g_screen != NULL) { CloseScreen(g_screen); g_screen = NULL; }
 			if (g_chip != NULL)   { FreeMem(g_chip, g_planesize * g_depth); g_chip = NULL; }
 			if (g_ehb_scratch != NULL) { FreeVec(g_ehb_scratch); g_ehb_scratch = NULL; }
@@ -1623,7 +2093,11 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		 * Intuition opens it with the default colours (grey background, red
 		 * bar pens), which flashed for a moment before the splash or the
 		 * game loaded a real palette. All black until someone says otherwise. */
-		{
+		/* NOT on an RTG deep screen: there the colormap holds only the title
+		 * bar's colours, given with the open (g_deep_pens), and blanking it
+		 * would draw the bar black on black. The pixels of a deep screen are
+		 * colours converted at blit time, so there is nothing to flash. */
+		if (!(g_backend == AMIGAGFX_BACKEND_RTG && g_rtg_deep)) {
 			static ULONG blank_[2 + 256 * 3];
 			blank_[0] = (256UL << 16);
 			LoadRGB32(&g_screen->ViewPort, blank_);
@@ -1634,7 +2108,8 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 		 * prints the pixel dimensions. */
 		ULONG got = GetVPModeID(&g_screen->ViewPort);
 		if (g_backend == AMIGAGFX_BACKEND_RTG) {
-			fprintf(stdout, "amiga: RTG screen open %dx%d depth 8 (no Chip RAM, no c2p)\n", w, h);
+			fprintf(stdout, "amiga: RTG screen open %dx%d depth %d (no Chip RAM, no c2p)\n",
+			        w, h, g_rtg_deep ? g_rtg_deep_depth : 8);
 			fprintf(stdout, "amiga: modeid wanted $%08lx got $%08lx  blit=%s\n",
 			        (unsigned long)g_want_modeid, (unsigned long)got,
 			        g_rtg_method == RTG_METHOD_LOCK ? "LockBitMap+memcpy"
@@ -1710,6 +2185,9 @@ void amigagfx_close(void)
 	g_win_direct = 0;
 	g_win_bl = g_win_bt = 0;
 	if (g_window != NULL) { CloseWindow(g_window); g_window = NULL; }
+	/* The screen's planes may be the ones the blit writes (adopt_screen_planes);
+	 * they go with the screen, so forget them first. */
+	forget_screen_planes();
 	if (g_screen != NULL) { CloseScreen(g_screen); g_screen = NULL; }
 	/* Chip RAM only ever exists on the AGA path; on RTG g_chip stays NULL and
 	 * this is a no-op, which is exactly the point - the card owns the display
@@ -1724,6 +2202,8 @@ void amigagfx_close(void)
 	 * OpenLibrary on an already-resident library - not worth keeping state for. */
 	cgx_close();
 	g_backend = AMIGAGFX_BACKEND_AGA;
+	g_rtg_deep = 0;
+	g_deep_full_pending = 0;
 	g_yoff = 0;
 }
 
@@ -1737,22 +2217,32 @@ void amigagfx_set_palette(const unsigned char *rgb, int first, int count)
 	ULONG table[1 + 256 * 3 + 1];
 	int i;
 
-	if ((g_screen == NULL && !g_win_mode) || count <= 0) return;
+	if (count <= 0) return;
 	if (first < 0) first = 0;
 	if (first + count > 256) count = 256 - first;
+	if (count <= 0) return;
+
+	/* The XRGB8 mirror is kept even while no screen is open, so an RTG deep
+	 * screen opened later can take its title bar colours from the game's
+	 * palette (deep_bar_colours). Nothing else reads it without a screen. */
+	for (i = 0; i < count; i++) {
+		g_ctable[first + i] = ((ULONG)rgb[i*3 + 0] << 16) |
+		                      ((ULONG)rgb[i*3 + 1] <<  8) |
+		                       (ULONG)rgb[i*3 + 2];
+	}
+	g_ctable_valid = 1;
+	if (g_screen == NULL && !g_win_mode) return;
 
 	table[0] = ((ULONG)count << 16) | (ULONG)first;
 	for (i = 0; i < count; i++) {
 		table[1 + i*3 + 0] = ((ULONG)rgb[i*3 + 0]) * 0x01010101UL;
 		table[1 + i*3 + 1] = ((ULONG)rgb[i*3 + 1]) * 0x01010101UL;
 		table[1 + i*3 + 2] = ((ULONG)rgb[i*3 + 2]) * 0x01010101UL;
-		/* Mirror into the CTABFMT_XRGB8 table WriteLUTPixelArray needs. Kept
-		 * up to date unconditionally rather than only on RTG: it costs three
-		 * shifts per changed colour and means the WLUT fallback is always
-		 * ready, including when a mid-session lock failure demotes to it. */
-		g_ctable[first + i] = ((ULONG)rgb[i*3 + 0] << 16) |
-		                      ((ULONG)rgb[i*3 + 1] <<  8) |
-		                       (ULONG)rgb[i*3 + 2];
+		/* The CTABFMT_XRGB8 mirror WriteLUTPixelArray needs was filled above.
+		 * Kept up to date unconditionally rather than only on RTG: it costs
+		 * three shifts per changed colour and means the WLUT fallback is
+		 * always ready, including when a mid-session lock failure demotes to
+		 * it. */
 	}
 	table[1 + count * 3] = 0UL;
 
@@ -1784,6 +2274,32 @@ void amigagfx_set_palette(const unsigned char *rgb, int first, int count)
 			wb_lut_rebuild(0, 256);
 		} else {
 			wb_lut_rebuild(first, count);
+		}
+		return;
+	}
+
+	/* RTG DEEP: g_ctable (above) is what the pixels are converted with, and
+	 * what is already on the display was converted with the old one - so the
+	 * next blit, whoever makes it, covers the whole screen. Not for the
+	 * pointer's 17..19 alone: no game pixel depends on those being current
+	 * on the display the way a CLUT screen would show them.
+	 *
+	 * The ColorMap gets ONLY 17..19, the hardware pointer's colours. Loading
+	 * the full table would overwrite the title bar's own entries 0..3
+	 * (g_deep_pens) with game colours; nothing else on a deep screen reads
+	 * the ColorMap. */
+	if (g_backend == AMIGAGFX_BACKEND_RTG && g_rtg_deep) {
+		int lo = first, hi = first + count;
+		if (!(first >= 17 && first + count <= 20)) g_deep_full_pending = 1;
+		if (lo < 17) lo = 17;
+		if (hi > 20) hi = 20;
+		if (lo < hi) {
+			ULONG sub[1 + 3 * 3 + 1];
+			int n = hi - lo;
+			sub[0] = ((ULONG)n << 16) | (ULONG)lo;
+			for (i = 0; i < n * 3; i++) sub[1 + i] = table[1 + (lo - first) * 3 + i];
+			sub[1 + n * 3] = 0UL;
+			LoadRGB32(&g_screen->ViewPort, sub);
 		}
 		return;
 	}
@@ -1849,6 +2365,10 @@ static void splash_palette_step(const UBYTE *pal, int ncol, long factor)
 		rgb[i] = (UBYTE)(((long)pal[i] * factor) >> 8);
 	}
 	amigagfx_set_palette(rgb, 0, ncol);
+	/* RTG DEEP converts at blit time, so a palette-only fade step shows
+	 * nothing until the picture is converted again with the new table. */
+	if (g_rtg_deep && g_screen != NULL && g_chunky != NULL)
+		amigagfx_blit(0, 0, g_width, g_height);
 }
 
 /* Ramp the palette factor from 'from' to 'to' over dur_ms, paced by the
@@ -2106,7 +2626,7 @@ static void ehb_blit(int x, int y, int w, int h)
 
 	a.chunkyx = (UWORD)w;
 	a.offsx   = (UWORD)x;
-	a.bitmap  = (APTR)&g_bitmap;
+	a.bitmap  = (APTR)g_planes_bm;     /* &g_bitmap unless adopt_screen_planes */
 
 	if (x == 0 && w == g_width) {
 		a.chunkyy = (UWORD)h;
@@ -2136,6 +2656,31 @@ static void ehb_blit(int x, int y, int w, int h)
 		y += band;
 		h -= band;
 	}
+}
+
+/* The RastPort route of adopt_screen_planes: the system took its own planes for
+ * the screen and their layout is not one the c2p can write, so the library
+ * draws the rectangle. Pens go in unremapped - the chunky bytes ARE the pens,
+ * 0..255 on AGA and 0..63 on EHB (the caller already reduced its sprites into
+ * the EHB index space). The screen's RastPort has no layer, so the write lands
+ * on the display exactly where the c2p would have put it. */
+static void planes_rp_blit(int x, int y, int w, int h)
+{
+	struct RastPort *rp = &g_screen->RastPort;
+
+	if (g_planes_rp == PLANES_WCP) {
+		WriteChunkyPixels(rp, (ULONG)x, (ULONG)(y + g_yoff),
+		                  (ULONG)(x + w - 1), (ULONG)(y + g_yoff + h - 1),
+		                  g_chunky + (ULONG)y * g_width + x, (LONG)g_width);
+		return;
+	}
+	/* WritePixelArray8: whole rows, so the array stride is g_width, which
+	 * adopt_screen_planes made sure is a multiple of 16. The scratch bitmap is
+	 * one row high, so the library goes a row at a time anyway. */
+	(void)x; (void)w;
+	WritePixelArray8(rp, 0, (ULONG)(y + g_yoff),
+	                 (ULONG)(g_width - 1), (ULONG)(y + g_yoff + h - 1),
+	                 g_chunky + (ULONG)y * g_width, &g_temprp);
 }
 
 void amigagfx_blit(int x, int y, int w, int h)
@@ -2199,6 +2744,12 @@ void amigagfx_blit(int x, int y, int w, int h)
 	if (x2 <= x || y2 <= y) return;
 
 	if (g_backend == AMIGAGFX_BACKEND_RTG) {
+		/* RTG DEEP after a palette change: the whole screen, so nothing
+		 * converted with the old table stays on display. */
+		if (g_rtg_deep && g_deep_full_pending) {
+			g_deep_full_pending = 0;
+			x = 0; y = 0; x2 = g_width; y2 = g_height;
+		}
 		if (g_rtg_method == RTG_METHOD_LOCK &&
 		    !rtg_blit_locked(x, y, x2 - x, y2 - y)) {
 			/* Demote once and for this screen only. Logged outside the lock. */
@@ -2213,8 +2764,24 @@ void amigagfx_blit(int x, int y, int w, int h)
 
 		g_blits++;
 		if (g_blits == 1 || (g_verbose && (g_blits % 200) == 0)) {
-			fprintf(stdout, "amiga: rtg blit #%lu  %dx%d at %d,%d\n",
-			        g_blits, x2 - x, y2 - y, x, y);
+			fprintf(stdout, "amiga: rtg blit #%lu  %dx%d at %d,%d%s\n",
+			        g_blits, x2 - x, y2 - y, x, y,
+			        g_rtg_deep ? "  (deep, WriteLUTPixelArray)" : "");
+			fflush(stdout);
+		}
+		return;
+	}
+
+	/* Planar screen whose own planes the c2p cannot write (adopt_screen_planes).
+	 * Never taken where the system honours SA_BitMap. */
+	if (g_planes_rp != PLANES_DIRECT) {
+		planes_rp_blit(x, y, x2 - x, y2 - y);
+
+		g_blits++;
+		if (g_blits == 1 || (g_verbose && (g_blits % 200) == 0)) {
+			fprintf(stdout, "amiga: rastport blit #%lu  %dx%d at %d,%d  %s\n",
+			        g_blits, x2 - x, y2 - y, x, y,
+			        g_planes_rp == PLANES_WCP ? "WriteChunkyPixels" : "WritePixelArray8");
 			fflush(stdout);
 		}
 		return;
@@ -2239,13 +2806,16 @@ void amigagfx_blit(int x, int y, int w, int h)
 	args.h = (UWORD)(y2 - y);
 	args.cmod = (UWORD)g_width;
 	args.bmod = (UWORD)g_bpr;
-	args.bplsize = g_planesize;
+	/* g_planes / g_planes_step are g_chip / g_planesize unless the system
+	 * ignored SA_BitMap and adopt_screen_planes took the screen's own planes,
+	 * which it does only when their row length is g_bpr. */
+	args.bplsize = g_planes_step;
 	args.chunky = g_chunky;
 	/* Skip the title bar lines when the bar is visible: plane spacing
 	 * (bplsize) stays the full-screen plane size, only the row origin moves.
 	 * g_bpr is a multiple of 4 for every offered width, so the 32-pixel column
 	 * alignment of the c2p is unaffected. */
-	args.bpl = g_chip + (ULONG)g_yoff * g_bpr;
+	args.bpl = g_planes + (ULONG)g_yoff * g_bpr;
 	c2p_rect_asm(&args);
 
 	/* The FIRST blit is logged always - it is the one-shot proof that the main

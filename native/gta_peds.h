@@ -99,6 +99,17 @@
  * to the door (0xd3), which takes it several frames whatever the geometry.
  * This is that delay, and it is also what makes the arrest visible. */
 #define GTA_COP_ARREST_WAIT 25
+/* The cop's own exit from the police car: the exit sequence's nine frames
+ * at four ticks (GTA_PED_EXITCAR_FRAMES x GTA_EXIT_TICKS). */
+#define GTA_COP_EXIT_TICKS  36
+/* At the player's door: the door-open wait (the jacker's 0x1c comes when
+ * the door clock is fully open, 20 ticks) and the six pull states of
+ * GTA_PULL_TICKS (0x93..0x98, 24 ticks) - then the player is out (0x2b)
+ * and 0xd5 calls it BUSTED. */
+#define GTA_COP_PULL_TICKS  (20 + 6 * 4)
+/* Close enough to the door to start: the original puts the cop AT the door
+ * once he is there, so a few pixels. */
+#define GTA_COP_DOOR_PX     6
 #define GTA_COP_GIVE_UP_PX 400    /* farther than this, he walks back (retired) */
 
 /* The gait sub-modes - the original's `ped+0x72`. */
@@ -129,6 +140,8 @@ typedef struct {
      * him however far the player drives. */
     unsigned long serial;
     unsigned char mission;
+    /* his body has been reported to the ambulances (gta_service.c) */
+    unsigned char svc_q;
     /* HUNT: the target is the PLAYER declaration, so it is not a point that
      * can be resolved once - it has to be re-read every tick. */
     unsigned char hunt_pl;
@@ -196,6 +209,11 @@ typedef struct {
      * him within GTA_COP_ARREST_PX. `arrest` is the event, read and cleared
      * by gta_peds_cop_event(). */
     int  cop;
+    /* PED_POLICE (221): the police uniform without the police brain - the
+     * original writes only the sprite set and the remap */
+    unsigned char uniform;
+    /* PED_WEAPON (221): what he holds, 0 fist .. 4 flamethrower (ped+0x59) */
+    unsigned char weapon;
     int  arrest;
     int  cop_cool;          /* ticks before this cop may fire again */
     int  arrest_wait;       /* ticks before he may arrest - see below */
@@ -203,6 +221,13 @@ typedef struct {
     int  shoot_angle;
     int  execute;           /* level 4: the caught player is shot, not arrested */
     int  post;              /* a roadblock's cop: stands until the player is near */
+    /* GETTING OUT OF HIS CAR (the cop-car AI's 0x6f waits for the cop to
+     * be out and standing): ticks left of the exit, during which he stands
+     * at the door and does nothing else. */
+    int  exit_wait;
+    /* PULLING THE PLAYER OUT (0xd4 -> 0xd5 -> 0xda): ticks into the pull,
+     * 0 = not. The door opens, then the six pull states, then BUSTED. */
+    int  pulling;
 
     /* CROSSING AT THE LIGHTS (the original's mode 3 wait / mode 4 cross):
      * the axis he is crossing along - x when he walks east or west - so
@@ -265,6 +290,10 @@ typedef struct {
      * a car (then the cop walks to the car and pulls him out). */
     long pl_x, pl_y;
     int  pl_layer, pl_in_car;
+    /* THE DRIVER'S DOOR of his car, and whether the car is slow enough to
+     * be opened (the original's target speed < 4): set by the game. */
+    long pl_door_x, pl_door_y;
+    int  pl_slow;
     int  pl_hl, pl_hw, pl_face;  /* his car's half extents and heading: a cop
                                   * arrests AT the body, not at the middle */
     long stat_cops_out, stat_cops_killed;
@@ -308,6 +337,10 @@ unsigned long gta_peds_spawn_mission(gta_peds *ps, long x, long y, int layer,
 int gta_peds_find(const gta_peds *ps, unsigned long serial,
                   long *x, long *y, int *layer, int *alive);
 
+/* THE MEDIC'S WORK: the body in slot i gets up with full health and walks
+ * off (EMERGENCY.md 3, state 0x65). */
+void gta_peds_revive(gta_peds *ps, int i);
+
 /* He has got into a car: take him out of the world. 1 when he was there. */
 int gta_peds_take_mission(gta_peds *ps, unsigned long serial);
 
@@ -324,6 +357,12 @@ int gta_peds_set_remap(gta_peds *ps, unsigned long serial, int remap);
 
 /* SET_PED_SPEED - see gta_ped.send_speed. 1 when there was such a ped. */
 int gta_peds_set_speed(gta_peds *ps, unsigned long serial, int speed);
+/* The script's PED_POLICE, PED_WEAPON and IS_PED_STUNNED (221). Each returns
+ * 0 when there is no such person. Stunned = lying on the ground alive (the
+ * original's state 0x2b), not a corpse. */
+int gta_peds_set_uniform(gta_peds *ps, unsigned long serial);
+int gta_peds_set_weapon(gta_peds *ps, unsigned long serial, int weapon);
+int gta_peds_stunned(const gta_peds *ps, unsigned long serial);
 
 /* WAIT_FOR_PED: is he within `tol_px` of (x,y) yet? */
 int gta_peds_at(const gta_peds *ps, unsigned long serial, long x, long y,
@@ -405,6 +444,9 @@ int gta_peds_spawn_cop(gta_peds *ps, long x, long y, int layer, int angle);
 
 /* 1 once when a cop has caught the player; the flag is cleared. */
 int gta_peds_cop_event(gta_peds *ps);
+/* How far into pulling the player out of his car a cop is: 0 = nobody is,
+ * else ticks since the door started to open. The car is held while it runs. */
+int gta_peds_cop_pulling(const gta_peds *ps);
 
 /* Every cop on foot is taken off the street - the pursuit is over. */
 void gta_peds_clear_cops(gta_peds *ps);

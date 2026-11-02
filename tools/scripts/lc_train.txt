@@ -1,0 +1,19 @@
+# lc_train.txt - THE EL RUNS (240, the research notes). LC1 (startlevel 0).
+# Expected at load: "gta: trains - 1 loop, 662 nodes, 5 stations, 3 trains".
+# The player stands below station 0 at (120,49) - a train spawns there
+# and leaves once station 1 is free; frames show it pulling out.
+wait 100
+goto 121 51
+wait 50
+film 1
+wait 300
+film 1
+wait 300
+film 1
+wait 300
+film 1
+wait 300
+film 1
+wait 300
+film 1
+dump

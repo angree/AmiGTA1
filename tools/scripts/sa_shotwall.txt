@@ -1,0 +1,16 @@
+# SHOTS STOP AT A FLAT FACE (230, the research notes 1.4, 3.3).
+# San Andreas 1 (startlevel.txt 2). The bomb shop's garage (240,207) has a
+# solid N face, tile 142, which is not in style 2's see-through list. The
+# player stands two blocks north of it, faces south and fires the pistol.
+# Pass: "shot N stopped by a flat face" near y = 207*32 = 6624, and no
+# "bullet N hit a wall" further south.
+wait 100
+goto 240 205
+wait 50
+face 128
+weapon 1 20
+wait 20
+fire 40
+wait 60
+film 1
+dump

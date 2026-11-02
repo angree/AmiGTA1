@@ -1,0 +1,38 @@
+# car_bust2.txt - THE COP TAKES HIM AT HIS DOOR (231, POLICE.md 0xd4-0xda).
+# Wanted by three run-overs, then carried in the car to a quiet street
+# (61,52) and stopped there. The original's chain, which the log shows:
+#   "the cop gets out"            - his car stopped beside the player
+#   (36 ticks of getting out of the police car)
+#   "the cop opens his door"      - at the driver's door, car stopped
+#   "pulled out of the car after 44 ticks" - door open 20 + six pull states
+#   "BUSTED"
+# The old port said BUSTED the tick the cop touched the bodywork.
+park 0 0 -40 0
+wait 20
+enter
+wait 150
+ped 0 -110 128
+ped 6 -150 128
+ped -6 -190 128
+wait 5
+run 150 1 0 0 0
+run 45 0 1 0 0
+wait 10
+goto 61 52
+wait 20
+dump
+wait 600
+wait 45
+film 1
+wait 45
+film 1
+wait 45
+film 1
+wait 45
+film 1
+wait 45
+film 1
+wait 45
+film 1
+wait 300
+dump

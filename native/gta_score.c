@@ -23,15 +23,34 @@ void gta_score_init(gta_score *s)
 
 /* ---- the wanted level --------------------------------------------------- */
 
+/* THE CITY'S THRESHOLDS (221): heat at which 1..4 heads begin - Liberty
+ * City 151/251/351/501, San Andreas 101/201/251/376, Vice City
+ * 101/176/251/351 (WANTED.md A.2; INC_HEADS's table is these plus one). */
+static const int city_thr[3][5] = {
+    { 0, 151, 251, 351, 501 },
+    { 0, 101, 201, 251, 376 },
+    { 0, 101, 176, 251, 351 },
+};
+static int score_city;                  /* 0 Liberty, 1 San Andreas, 2 Vice */
+
+void gta_score_set_city(int style)
+{
+    score_city = (style >= 1 && style <= 3) ? style - 1 : 0;
+}
+
+int gta_score_threshold(int level)
+{
+    if (level < 0) level = 0;
+    if (level > 4) level = 4;
+    return city_thr[score_city][level];
+}
+
 int gta_score_level_of(int heat)
 {
-    /* Liberty City. San Andreas is 101/201/251/376 and Vice City
-     * 101/176/251/351; they arrive with their maps. */
-    if (heat < 151) return 0;
-    if (heat < 251) return 1;
-    if (heat < 351) return 2;
-    if (heat < 501) return 3;
-    return 4;
+    int l = 0;
+    while (l < 4 && heat >= city_thr[score_city][l + 1])
+        l++;
+    return l;
 }
 
 /* What each report is worth, in the original's own numbers. */
@@ -69,12 +88,11 @@ int gta_score_crime(gta_score *s, int crime)
 
 void gta_score_force_level(gta_score *s, int level)
 {
-    static const int thr[5] = { 0, 151, 251, 351, 501 };
     int before = s->level;
     if (level < 0) level = 0;
     if (level > 4) level = 4;
-    if (s->heat < thr[level])
-        s->heat = thr[level];
+    if (s->heat < gta_score_threshold(level))
+        s->heat = gta_score_threshold(level);
     s->level = gta_score_level_of(s->heat);
     if (s->level != before) {
         printf("gta: wanted level %d -> %d (forced, heat %d)\n",

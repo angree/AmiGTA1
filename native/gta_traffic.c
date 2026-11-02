@@ -1,3 +1,4 @@
+#include <stdlib.h>
 /* Parked cars in Liberty City. Read gta_traffic.h first - it carries the
  * reasoning, including why a car's facing constant is the player's and how
  * that was established without being able to read car art.
@@ -9,6 +10,54 @@
 #include "gta_traffic.h"
 #include "gta_style.h"
 #include "gta_trig.h"
+
+/* THE LONG ROUTE's buffers (see gta_traffic.mfield_x): 64 KB + 32 KB,
+ * allocated by the first SENDTO and kept for the run. */
+#define MFIELD_SLOTS 3
+static unsigned char  *g_mf[MFIELD_SLOTS];
+static short g_mf_x[MFIELD_SLOTS] = { -1, -1, -1 };
+static short g_mf_y[MFIELD_SLOTS], g_mf_z[MFIELD_SLOTS];
+static unsigned long g_mf_used[MFIELD_SLOTS], g_mf_clock;
+static unsigned short *g_mfield_q;
+
+/* THE FIELD FOR (x,y) ON LAYER z - one of three kept (a SENDTO car, an
+ * ambulance and a fire engine each going somewhere different must not
+ * rebuild one another's field every reroute), the least recently used one
+ * rebuilt when a fourth is asked for. `build` 0 only looks. */
+static const unsigned char *mfield_for(const gta_traffic *tr, int x, int y,
+                                       int z, int build)
+{
+    int i, pick = -1;
+    for (i = 0; i < MFIELD_SLOTS; i++)
+        if (g_mf[i] && g_mf_x[i] == x && g_mf_y[i] == y && g_mf_z[i] == z) {
+            g_mf_used[i] = ++g_mf_clock;
+            return g_mf[i];
+        }
+    if (!build || !tr->nav)
+        return 0;
+    if (!g_mfield_q) {
+        g_mfield_q = (unsigned short *)malloc(GTA_ROUTE_FIELD_Q *
+                                              sizeof(unsigned short));
+        if (!g_mfield_q) return 0;
+    }
+    for (i = 0; i < MFIELD_SLOTS; i++)
+        if (pick < 0 || !g_mf[i] || g_mf_x[i] < 0 ||
+            (g_mf[pick] && g_mf_x[pick] >= 0 && g_mf_used[i] < g_mf_used[pick]))
+            pick = i;
+    if (!g_mf[pick]) {
+        g_mf[pick] = (unsigned char *)malloc(256 * 256);
+        if (!g_mf[pick]) return 0;
+    }
+    {
+        long reach = gta_route_field_build(tr->nav, z, x, y, g_mf[pick],
+                                           g_mfield_q);
+        printf("gta: mission - long route field to (%d,%d) L%d: %ld blocks"
+               " reach it (slot %d)\n", x, y, z, reach, pick);
+    }
+    g_mf_x[pick] = (short)x; g_mf_y[pick] = (short)y; g_mf_z[pick] = (short)z;
+    g_mf_used[pick] = ++g_mf_clock;
+    return g_mf[pick];
+}
 
 #define FP 16
 
@@ -304,6 +353,10 @@ long gta_join_why[6];
 void gta_traffic_init(gta_traffic *tr, const gta_tiles *t, unsigned long seed)
 {
     memset(tr, 0, sizeof *tr);
+    {   /* the long-route fields (file statics) belong to the last map */
+        int i_;
+        for (i_ = 0; i_ < MFIELD_SLOTS; i_++) g_mf_x[i_] = -1;
+    }
     tr->tiles = t;
     /* THE THREE JUNCTION SWITCHES, AND WHY THEY ARE SET THE WAY THEY ARE.
      * All three were measured on 2026-08-24 over three sites and three seeds;
@@ -456,6 +509,11 @@ void gta_traffic_set_view_blocks(gta_traffic *tr, int blocks)
  * keep a gap; it cannot open one. */
 static int drivable(const gta_map *m, int bx, int by, int z);
 static int in_view(const gta_traffic *tr, int bx, int by);
+static int headon_yield(const gta_traffic *tr, int idx);
+static int escape_jump(gta_traffic *tr, const gta_map *m, int idx, int bx, int by);
+static int escape_swap(gta_traffic *tr, int idx, int bx, int by);
+static void escape_place(gta_car *c, int nx, int ny, int ang);
+static int escape_hop(gta_traffic *tr, const gta_map *m, int idx, int bx, int by);
 
 /* IS THERE ANYWHERE TO BACK INTO? The original's stuck handler, state 1.
  *
@@ -1177,8 +1235,25 @@ static int park_band(gta_traffic *tr, const gta_map *m,
     for (i0 = 0; i0 < tr->n; i0++)
         if (!tr->cars[i0].done && !tr->cars[i0].abandoned)
             driven++;
-    if (want > tr->fleet_cap - driven)
-        want = tr->fleet_cap - driven;
+    {
+        /* AND FEWER WHEN THE POLICE ARE OUT - the original's the original's routine
+         * stops at 7 cars by the view, 6 / 4 / 3 / 2 as the wanted level
+         * rises (TRAFFIC_SPEC.md 9). The player's limit stands for the 7;
+         * the rest scale with it, and the police cars come on top. */
+        static const unsigned char share[5] = { 7, 6, 4, 3, 2 };
+        int lv = tr->wanted < 0 ? 0 : tr->wanted > 4 ? 4 : tr->wanted;
+        int cap = tr->fleet_cap * share[lv] / 7;
+        if (lv > 0) {
+            int cops = 0;
+            for (i0 = 0; i0 < tr->n; i0++)
+                if (!tr->cars[i0].done && tr->cars[i0].cop)
+                    cops++;
+            cap += cops;
+        }
+        if (cap < 2) cap = 2;
+        if (want > cap - driven)
+            want = cap - driven;
+    }
     if (want <= 0)
         return 0;
 
@@ -1368,6 +1443,21 @@ static int park_band(gta_traffic *tr, const gta_map *m,
 
                 car = &tr->cars[tr->n++];
                 car->honk = 0;
+                car->invuln = 0;
+                /* and the script's fields (222-224): the slot is reused, so
+                 * an old hunter's `hunt` made new traffic cars kamikazes */
+                car->locked = 0;
+                car->mdest_on = 0;
+                car->arrived = 0;
+                car->hunt = 0;
+                car->hunt_fuse = 0;
+                /* ...and three older marks the list above never covered: a
+                 * stale `mission` is a traffic car the sweep never retires,
+                 * a stale `cop` a patrol car nobody sent, `driver` a parked
+                 * car's man (224). */
+                car->mission = 0;
+                car->cop = 0;
+                car->driver = 0;
                 car->honk_pat = 0;
                 car->serial = ++tr->next_serial;
                 car->convoy = car->serial;
@@ -4780,7 +4870,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * moved off the block it was routed to, at most every GTA_COP_REROUTE
      * ticks; and a man on foot is not run over - it stops short of him,
      * which is where the foot cop (5(d)) gets out. */
-    if (c->cop == 2 && tr->pl_active) {
+    if ((c->cop == 2 || c->hunt) && tr->pl_active) {
         int px = (int)(tr->pl_x >> (FP + 5));
         int py = (int)(tr->pl_y >> (FP + 5));
         int ddx = px - bx, ddy = py - by;
@@ -4857,7 +4947,9 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
                             ddx <= GTA_COP_STOP_BLOCKS &&
                             ddy <= GTA_COP_STOP_BLOCKS;
             }
-            if (near_) {
+            /* A HUNTER (HUNTON, MODEL_HUNT) shares the chase but not this:
+             * it has no cop to put out, it is there to ram him. */
+            if (near_ && c->cop == 2) {
                 c->speed = 0;
                 c->hold = GTA_HOLD_QUEUE;
                 if (++c->cop_wait >= GTA_COP_OUT_TICKS && !tr->cop_out_req) {
@@ -4919,12 +5011,62 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      *
      * And half a minute without covering one block means the car is not
      * queueing but trapped - see GTA_TRAFFIC_ABANDON. */
+    /* A SCRIPT DRIVER THAT IS ABOUT TO MISS ITS ROUTE, OUT OF SIGHT. The long
+     * route can ask for a sidestep inside a crossing (Vice City (76,99) ->
+     * (76,100)) that the driver will not make, and missing it is a 250-block
+     * loop. Off screen the car is put on the next block of the field, facing
+     * the way the field leaves it - the original's escapes move cars out of
+     * view the same way. */
+    if (c->mdest_on && bx >= 0 && bx < 256 && by >= 0 && by < 256 &&
+        mfield_for(tr, c->mf_x, c->mf_y, c->layer, 0)) {
+        const unsigned char *g_mfield = mfield_for(tr, c->mf_x, c->mf_y,
+                                                   c->layer, 0);
+        static const signed char fdx[4] = { 0, 0, -1, 1 }, fdy[4] = { -1, 1, 0, 0 };
+        static const int fang[4] = { 0, 128, 192, 64 };
+        int f = g_mfield[(by << 8) | bx];
+        if (f >= 1 && f <= 4) {
+            int d = (fang[f - 1] - c->angle) & 255;
+            if ((d == 64 || d == 192) && !in_view(tr, bx, by)) {
+                int nx = bx + fdx[f - 1], ny = by + fdy[f - 1];
+                int g = g_mfield[(ny << 8) | nx];
+                int ang = (g >= 1 && g <= 4) ? fang[g - 1] : fang[f - 1];
+                long px = ((long)nx * 32 + GTA_LANE_TARGET) << FP;
+                long py = ((long)ny * 32 + GTA_LANE_TARGET) << FP;
+                if (!in_view(tr, nx, ny) && car_free_at(tr, idx, px, py, ang)) {
+                    escape_place(c, nx, ny, ang);
+                    printf("gta: mission - car %d put on its route at (%d,%d)\n",
+                           idx, nx, ny);
+                    DPROF(0);
+                    return;
+                }
+            }
+        }
+    }
     from_bx = c->last_bx;
     from_by = c->last_by;
     if (bx != c->last_bx || by != c->last_by) {
         c->last_bx = bx;
         c->last_by = by;
         c->wait = 0;
+    } else if (c->wait > GTA_TRAFFIC_HEADON && c->reverse == 0 &&
+               c->cop != 2 && headon_yield(tr, idx) &&
+               back_out_clear(tr, m, idx, bx, by)) {
+        /* A: NOSE TO NOSE - the newer car gives way. */
+        c->reverse = GTA_TRAFFIC_REVERSE;
+        c->wait = 0;
+        c->turn = 0;
+        c->hold = GTA_HOLD_STUCK;
+        tr->stat_headon++;
+        DPROF(0);
+        return;
+    } else if (c->wait > GTA_TRAFFIC_ESCAPE && c->cop != 2 &&
+               !c->abandoned && !in_view(tr, bx, by) &&
+               (escape_jump(tr, m, idx, bx, by) ||
+                escape_swap(tr, idx, bx, by) ||
+                escape_hop(tr, m, idx, bx, by))) {
+        /* B: OUT OF SIGHT, THE ORIGINAL'S ESCAPES. */
+        DPROF(0);
+        return;
     } else if (c->wait > (c->cop == 2 ? GTA_TRAFFIC_STUCK : GTA_TRAFFIC_ABANDON) &&
                (c->cop == 2 || in_view(tr, bx, by)) &&
                c->reverse == 0 && back_out_clear(tr, m, idx, bx, by)) {
@@ -5704,7 +5846,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * had overshot drove to the next crossover, and the next, and the
      * next - out/cs*.png has one thirty blocks east of the man. The
      * original does this too: A* only beyond fourteen blocks. */
-    if (c->cop == 2 && tr->pl_active) {
+    if ((c->cop == 2 || c->hunt) && tr->pl_active) {
         int px = (int)(tr->pl_x >> (FP + 5)), py = (int)(tr->pl_y >> (FP + 5));
         int ddx = px - bx, ddy = py - by;
         if (ddx < 0) ddx = -ddx;
@@ -6200,7 +6342,13 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
             /* AND ONLY FROM ORDINARY ROAD. See gta_car.allow_turn: a car
              * already standing on a junction block has used up its turn for
              * that crossing and carries straight on through it. */
-            if (ready && tr->opt_cross_lock && !c->allow_turn) {
+            /* ...EXCEPT FOR A SCRIPT DRIVER ON ITS ROUTE: the long route can
+             * ask for a lane change inside a crossing (Vice City (76,99) ->
+             * (76,100), to reach the turn at x = 72), and refusing it sent
+             * the SENDTO car round the same 250-block loop for ever. A
+             * handful of cars a level; the lock is a fleet-wide fix. */
+            if (ready && tr->opt_cross_lock && !c->allow_turn &&
+                !(c->mdest_on && c->path_i < c->path_n)) {
                 ready = 0;
                 tr->stat_turn_refused_cross++;
             }
@@ -6244,7 +6392,11 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
              * in flight leaves the car off its line, and the share of
              * crossings left on the correct line fell from 99% to 87% when it
              * was done that way. */
-            if (ready && tr->opt_arrows) {
+            /* (Not for a script driver on its long route either - the map
+             * lets a lane be crossed only inside the crossing, and the
+             * route's sidestep there IS this turn: Vice City (76,99).) */
+            if (ready && tr->opt_arrows &&
+                !(c->mdest_on && c->path_i < c->path_n)) {
                 int sdx, sdy;
                 int d3 = (want_dir - c->angle) & 255;
                 int side = (c->angle + ((d3 == 64) ? GTA_TURN_QUARTER
@@ -6294,8 +6446,17 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
                  * escape, so an exit that never clears cannot hold the
                  * approach for ever. */
                 if (tr->opt_keepclear && exit_busy &&
-                    c->wait <= GTA_SWEEP_PATIENCE)
+                    c->wait <= GTA_SWEEP_PATIENCE) {
                     ready = 0;
+                    /* A CAR ON A LONG ROUTE WAITS FOR ITS CORNER rather than
+                     * sailing on past it: for a SENDTO car, an ambulance or
+                     * a fire engine a missed corner is a lap of the district
+                     * (PROGRESS 243 - two laps at (72,58) before the exit
+                     * cleared). The give-way brake stops it at the line,
+                     * rate-limited, like the original's look-ahead. */
+                    if (c->mdest_on && c->path_i < c->path_n)
+                        give_way = 1;
+                }
             }
 
             /* THE BOOKED BEND IS TAKEN, FULL STOP. The overlay caught a car
@@ -6532,6 +6693,7 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
      * answer: it is an emergency brake, not a following distance. */
     gap = gap_ahead(tr, idx, &lead, &lead_i);
     /* Remembered for the lane change - see gta_car.lead_kind. */
+    c->lead_idx = (gap >= 0 && lead_i >= 0 && lead_i < tr->n) ? lead_i : -1;
     if (gap < 0)                 c->lead_kind = 0;
     else if (lead_i < 0)         c->lead_kind = lead == 0 ? 1 : 3;
     else if (lead_i < tr->n && tr->cars[lead_i].speed == 0
@@ -7283,6 +7445,20 @@ static void drive_one(gta_traffic *tr, const gta_map *m, int idx)
 DPROF(7);
 }
 
+/* A SENDTO car at its destination: stopped, parked, driver still in it. */
+static void mission_arrive(gta_car *c)
+{
+    c->abandoned = 1;
+    c->driver = 1;
+    c->speed = 0;
+    c->mdest_on = 0;
+    c->arrived = 1;
+    c->want_route = 0;
+    printf("gta: script - car %lu arrived at (%d,%d)\n", c->serial,
+           (int)(c->x >> (FP + 5)), (int)(c->y >> (FP + 5)));
+    fflush(stdout);
+}
+
 /* Give ONE car that wants a route a destination and a path to it.
  *
  * The destination is a road block a dozen or two away, picked at random - the
@@ -7322,18 +7498,32 @@ static void route_tick(gta_traffic *tr)
          * road" and "can be got to" are very different questions and only the
          * search can answer the second. One BFS answers both. */
         c->path_n = 0;
-        if (c->cop == 2 && tr->pl_active) {
+        if (c->mdest_on && !c->abandoned) {
+            /* SENDTO: THERE ALREADY? Within a block of where it was sent,
+             * it stops and parks with its driver in it - the original's
+             * unit hands the car back the same way when its path runs out. */
+            int ax = bx - c->mdest_x, ay = by - c->mdest_y;
+            if (ax < 0) ax = -ax;
+            if (ay < 0) ay = -ay;
+            if (ax <= 1 && ay <= 1) {
+                mission_arrive(c);
+                return;
+            }
+        }
+        if (((c->cop == 2 || c->hunt) && tr->pl_active) || c->mdest_on) {
             /* TO THE PLAYER. The route is asked for the block he is on; if
              * that is not reachable inside the window (he is on a pavement,
              * a roof, or forty blocks away) the search fails and the car
              * falls back to wandering, which at least keeps it moving, and
              * it asks again in GTA_COP_REROUTE ticks. */
-            int px = (int)(tr->pl_x >> (FP + 5));
-            int py = (int)(tr->pl_y >> (FP + 5));
+            int px = c->mdest_on ? c->mdest_x : (int)(tr->pl_x >> (FP + 5));
+            int py = c->mdest_on ? c->mdest_y : (int)(tr->pl_y >> (FP + 5));
             int gx = px, gy = py;
-            c->cop_dest_x = px;
-            c->cop_dest_y = py;
-            c->cop_re = GTA_COP_REROUTE;
+            if (!c->mdest_on) {
+                c->cop_dest_x = px;
+                c->cop_dest_y = py;
+                c->cop_re = GTA_COP_REROUTE;
+            }
             /* BEYOND THE WINDOW the search cannot see him, so the target
              * is a road block twenty blocks along the way, and the car asks
              * again from there - the original's one-path-at-a-time A* did
@@ -7383,17 +7573,64 @@ static void route_tick(gta_traffic *tr)
                     if (!found) { gx = px; gy = py; }
                 }
             }
-            if (!(gx == bx && gy == by)) {
+            if (c->mdest_on && gx == bx && gy == by) {
+                /* the road block nearest an off-road destination */
+                mission_arrive(c);
+                return;
+            }
+            /* THE SCRIPT'S DRIVERS - AND THE SERVICES' - TAKE THE LONG
+             * ROUTE: the field from their destination, built once, followed
+             * block by block. */
+            if (c->mdest_on && tr->nav) {
+                int fx = c->mdest_x, fy = c->mdest_y;
+                const unsigned char *fld;
+                /* the destination itself, snapped as above but not cut
+                 * down to a waypoint */
+                if (!gta_nav_dirs(gta_nav_at(tr->nav, fx, fy, c->layer))) {
+                    int k, ok = 0;
+                    for (k = 1; k <= 3 && !ok; k++) {
+                        int ex, ey;
+                        for (ey = -k; ey <= k && !ok; ey++)
+                            for (ex = -k; ex <= k && !ok; ex++)
+                                if (gta_nav_dirs(gta_nav_at(tr->nav, fx + ex,
+                                                 fy + ey, c->layer))) {
+                                    fx += ex; fy += ey; ok = 1;
+                                }
+                    }
+                }
+                c->mf_x = (short)fx; c->mf_y = (short)fy;
+                fld = mfield_for(tr, fx, fy, c->layer, 1);
+                if (fld) {
+                    if (bx == fx && by == fy) {
+                        mission_arrive(c);
+                        return;
+                    }
+                    c->path_n = gta_route_field_follow(fld, bx, by,
+                                                       c->path, GTA_ROUTE_MAX);
+                    printf("gta: mission - car %d at (%d,%d) L%d face %d: long"
+                           " route, %d blocks ahead:", idx, bx, by, c->layer,
+                           c->angle, c->path_n);
+                    {
+                        int q_;
+                        for (q_ = 0; q_ < c->path_n && q_ < 10; q_++)
+                            printf(" (%d,%d)", c->path[q_].x, c->path[q_].y);
+                        printf("\n");
+                    }
+                }
+            }
+            if (c->path_n <= 0 && !(gx == bx && gy == by)) {
                 c->path_n = gta_route_find_chase(tr->nav, bx, by, c->layer, gx, gy,
                                            (c->angle + 128) & 255,
                                            c->path, GTA_ROUTE_MAX);
                 if (c->path_n <= 0) {
-                    printf("gta: police - car %d at (%d,%d) L%d: no route to"
-                           " (%d,%d) L%d, reason %d\n", idx, bx, by, c->layer,
+                    printf("gta: %s - car %d at (%d,%d) L%d: no route to"
+                           " (%d,%d) L%d, reason %d\n",
+                           c->mdest_on ? "mission" : c->hunt ? "hunter" : "police", idx, bx, by, c->layer,
                            gx, gy, tr->pl_layer, gta_route_last_fail());
                 } else {
-                    printf("gta: police - car %d at (%d,%d): route to (%d,%d),"
-                           " %d blocks\n", idx, bx, by, gx, gy, c->path_n);
+                    printf("gta: %s - car %d at (%d,%d): route to (%d,%d),"
+                           " %d blocks\n", c->mdest_on ? "mission" : c->hunt ? "hunter" : "police",
+                           idx, bx, by, gx, gy, c->path_n);
                 }
             }
         }
@@ -7505,6 +7742,172 @@ static int in_view(const gta_traffic *tr, int bx, int by)
     int r = gta_traffic_despawn_blocks(tr->view_blocks);
     return bx - tr->cam_bx < r && tr->cam_bx - bx < r &&
            by - tr->cam_by < r && tr->cam_by - by < r;
+}
+
+/* ---- A + B: the head-on lock and the original's off-screen escapes ---- */
+
+/* Is car idx in a head-on lock it should give way in? Each the other's lead,
+ * facing within 32 of opposite ways, both stood; the newer car yields - or
+ * the older one, once the newer has had twice as long and not managed it. */
+static int headon_yield(const gta_traffic *tr, int idx)
+{
+    const gta_car *c = &tr->cars[idx], *o;
+    int d;
+    if (c->lead_idx < 0 || c->lead_idx >= tr->n)
+        return 0;
+    o = &tr->cars[c->lead_idx];
+    if (o->done || o->layer != c->layer || o->lead_idx != idx)
+        return 0;
+    d = (c->face - o->face) & 255;
+    if (d < 96 || d > 160)
+        return 0;
+    if (c->serial > o->serial)
+        return 1;
+    return o->wait > 2 * GTA_TRAFFIC_HEADON;
+}
+
+static int dir_bit(const gta_map *m, int bx, int by, int z, int ang)
+{
+    gta_block b;
+    if (bx < 0 || bx >= GTA_MAP_DIM || by < 0 || by >= GTA_MAP_DIM)
+        return 0;
+    if (!gta_map_block(m, bx, by, z, &b))
+        return 0;
+    switch (ang) {
+    case 0:   return gta_block_dir_north(&b);
+    case 64:  return gta_block_dir_east(&b);
+    case 128: return gta_block_dir_south(&b);
+    default:  return gta_block_dir_west(&b);
+    }
+}
+
+static void escape_place(gta_car *c, int nx, int ny, int ang)
+{
+    c->x = ((long)nx * 32 + GTA_LANE_TARGET) << FP;
+    c->y = ((long)ny * 32 + GTA_LANE_TARGET) << FP;
+    c->angle = ang;
+    c->face = ang;
+    c->turn = 0;
+    c->turn_lock = 0;
+    c->path_n = 0;
+    c->path_i = 0;
+    c->want_route = 1;
+    c->wait = 0;
+    c->last_bx = nx;
+    c->last_by = ny;
+}
+
+/* the original's routine: up to ten blocks forward along the road it is on, the
+ * farthest block that is road, still runs this way, is out of every view and
+ * has room for the car; cruise speed restored. */
+static int escape_jump(gta_traffic *tr, const gta_map *m, int idx, int bx, int by)
+{
+    gta_car *c = &tr->cars[idx];
+    int ang = ((c->face + 32) & 255) & 0xc0;
+    int dx, dy, k, best = 0;
+    heading_step(ang, &dx, &dy);
+    for (k = 1; k <= GTA_TRAFFIC_JUMP_MAX; k++) {
+        int nx = bx + dx * k, ny = by + dy * k;
+        long px, py;
+        if (!drivable(m, nx, ny, c->layer))
+            break;
+        if (k < 2 || !dir_bit(m, nx, ny, c->layer, ang) || in_view(tr, nx, ny))
+            continue;
+        px = ((long)nx * 32 + GTA_LANE_TARGET) << FP;
+        py = ((long)ny * 32 + GTA_LANE_TARGET) << FP;
+        if (car_free_at(tr, idx, px, py, ang))
+            best = k;
+    }
+    if (!best)
+        return 0;
+    escape_place(c, bx + dx * best, by + dy * best, ang);
+    c->speed = c->top;
+    tr->stat_jumped++;
+    return 1;
+}
+
+/* the original's routine's spiral, used as the last escape: the nearest block within
+ * eight rings that carries one arrow and has at least six blocks of road
+ * ahead of it along that arrow - so a car in a dead-end pocket (Vice City's
+ * driveway at (109..110,92..98), arrows north into a wall) comes out onto a
+ * street and not into the next pocket. Out of view only, both ends. */
+static int escape_hop(gta_traffic *tr, const gta_map *m, int idx, int bx, int by)
+{
+    gta_car *c = &tr->cars[idx];
+    static const int angs[4] = { 0, 64, 128, 192 };
+    int r, dx, dy, k, a;
+    for (r = 1; r <= 8; r++)
+        for (dy = -r; dy <= r; dy++)
+            for (dx = -r; dx <= r; dx++) {
+                int nx = bx + dx, ny = by + dy;
+                if (dx > -r && dx < r && dy > -r && dy < r)
+                    continue;
+                if (!drivable(m, nx, ny, c->layer) || in_view(tr, nx, ny))
+                    continue;
+                for (a = 0; a < 4; a++) {
+                    int sx, sy;
+                    long px, py;
+                    if (!dir_bit(m, nx, ny, c->layer, angs[a]))
+                        continue;
+                    heading_step(angs[a], &sx, &sy);
+                    for (k = 1; k <= 6; k++)
+                        if (!drivable(m, nx + sx * k, ny + sy * k, c->layer))
+                            break;
+                    if (k <= 6)
+                        continue;
+                    px = ((long)nx * 32 + GTA_LANE_TARGET) << FP;
+                    py = ((long)ny * 32 + GTA_LANE_TARGET) << FP;
+                    if (!car_free_at(tr, idx, px, py, angs[a]))
+                        continue;
+                    escape_place(c, nx, ny, angs[a]);
+                    c->speed = 0;
+                    tr->stat_jumped++;
+                    printf("gta: traffic - car %d out of a dead end at (%d,%d)"
+                           " to (%d,%d)\n", idx, bx, by, nx, ny);
+                    return 1;
+                }
+            }
+    return 0;
+}
+
+/* the original's routine: swap places with the car that blocks it, each keeping its
+ * own heading - which is exactly what undoes a head-on pair - and undone if
+ * either then sits on a third car. Neither may be seen, chasing, or the
+ * script's. */
+static int escape_swap(gta_traffic *tr, int idx, int bx, int by)
+{
+    gta_car *c = &tr->cars[idx], *o;
+    long cx, cy, ox, oy;
+    unsigned char cd, od;
+    int ok;
+    if (c->lead_idx < 0 || c->lead_idx >= tr->n)
+        return 0;
+    o = &tr->cars[c->lead_idx];
+    if (o->done || o->layer != c->layer || o->cop || o->mission ||
+        o->abandoned || in_view(tr, (int)(o->x >> (FP + 5)),
+                                (int)(o->y >> (FP + 5))))
+        return 0;
+    (void)bx; (void)by;
+    cx = c->x; cy = c->y; ox = o->x; oy = o->y;
+    c->x = ox; c->y = oy; o->x = cx; o->y = cy;
+    /* each tested with the other out of the way */
+    cd = c->done; od = o->done;
+    o->done = 1;
+    ok = car_free_at(tr, idx, c->x, c->y, c->face);
+    o->done = od; c->done = 1;
+    ok = ok && car_free_at(tr, (int)(o - tr->cars), o->x, o->y, o->face);
+    c->done = cd;
+    if (!ok) {
+        c->x = cx; c->y = cy; o->x = ox; o->y = oy;
+        return 0;
+    }
+    c->wait = 0; o->wait = 0;
+    c->path_n = c->path_i = 0; c->want_route = 1;
+    o->path_n = o->path_i = 0; o->want_route = 1;
+    c->last_bx = (int)(c->x >> (FP + 5)); c->last_by = (int)(c->y >> (FP + 5));
+    o->last_bx = (int)(o->x >> (FP + 5)); o->last_by = (int)(o->y >> (FP + 5));
+    tr->stat_swapped++;
+    return 1;
 }
 
 /* PUT AN OFF-ROAD CAR BACK ON THE ROAD - the original's road snap.
@@ -7883,6 +8286,31 @@ void gta_traffic_tick(gta_traffic *tr, const gta_map *m, long cam_x, long cam_y)
         if (c->still && !c->done)
             tr->stat_still++;
     }
+
+    /* THE KAMIKAZE (HUNTON mode 3, MODEL_HUNT): once on the player's block
+     * its fuse runs, and it does not stop running when he gets away. */
+    if (tr->pl_active)
+        for (i = 0; i < tr->n; i++) {
+            gta_car *c = &tr->cars[i];
+            if (c->hunt != 3 || c->done || c->wrecked)
+                continue;
+            /* ON HIS BLOCK in the original; here within one, because this
+             * fleet brakes for a man in the road and stops a block short of
+             * him - the first run had the bomb car parked in front of the
+             * player for twenty seconds, fuse never lit. */
+            long kdx = (c->x >> (FP + 5)) - (tr->pl_x >> (FP + 5));
+            long kdy = (c->y >> (FP + 5)) - (tr->pl_y >> (FP + 5));
+            if (kdx < 0) kdx = -kdx;
+            if (kdy < 0) kdy = -kdy;
+            if (c->hunt_fuse > 0 || (kdx <= 1 && kdy <= 1))
+                if (++c->hunt_fuse >= 60 && c->damage < GTA_CAR_WRECKED) {
+                    c->damage = GTA_CAR_WRECKED;
+                    c->hunt = 0;
+                    printf("gta: script - kamikaze car %lu goes off\n",
+                           c->serial);
+                    fflush(stdout);
+                }
+        }
 
     cop_dispatch(tr, m);
     roadblock_tick(tr, m);
@@ -8891,7 +9319,7 @@ int gta_traffic_ram(gta_traffic *tr, long px, long py, int pface,
             if (dmg_p < 1) dmg_p = 1;
             if (dmg_o > 100) dmg_o = 100;
             if (dmg_p > 100) dmg_p = 100;
-            o->damage += (int)dmg_o;
+            if (!o->invuln) o->damage += (int)dmg_o;
             tr->pl_damage += (int)dmg_p;
             /* ...and it dents the panel the other body was against, which is
              * what the player sees: a car rammed in the tail carries a
@@ -8933,7 +9361,7 @@ static int car_place(gta_traffic *tr, int model, long x, long y, int face,
         int i;
         for (i = 0; i < tr->n; i++) {
             long dx, dy, d;
-            if (tr->cars[i].abandoned)
+            if (tr->cars[i].abandoned || tr->cars[i].mission)
                 continue;
             dx = tr->cars[i].x - x; if (dx < 0) dx = -dx;
             dy = tr->cars[i].y - y; if (dy < 0) dy = -dy;
@@ -9000,6 +9428,195 @@ static int car_place(gta_traffic *tr, int model, long x, long y, int face,
     c->lane_target = GTA_LANE_TARGET;
     c->hold = GTA_HOLD_NONE;
     return slot;
+}
+
+int gta_traffic_write_off(gta_traffic *tr, unsigned long serial)
+{
+    int i;
+    if (!serial) return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial && !tr->cars[i].done) {
+            if (!tr->cars[i].wrecked && tr->cars[i].damage < GTA_CAR_WRECKED)
+                tr->cars[i].damage = GTA_CAR_WRECKED;
+            return 1;
+        }
+    return 0;
+}
+
+/* ---- BATCH B: the script's own drivers (222, MISSIONS_CMDS_B.md) ---- */
+
+static gta_car *car_of_serial(gta_traffic *tr, unsigned long serial)
+{
+    int i;
+    if (!serial) return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial && !tr->cars[i].done)
+            return &tr->cars[i];
+    return 0;
+}
+
+int gta_traffic_set_locked(gta_traffic *tr, unsigned long serial, int on)
+{
+    gta_car *c = car_of_serial(tr, serial);
+    if (!c) return 0;
+    c->locked = (unsigned char)(on ? 1 : 0);
+    return 1;
+}
+
+/* WAKE A PARKED CAR. It is turned to the road direction of its block nearest
+ * the way it faces (a parked car stands any way round, a lane does not) and
+ * asks for a route like any traffic car. */
+static void car_wake(gta_traffic *tr, const gta_map *m, gta_car *c)
+{
+    static const int dirs[4] = { 0, 64, 128, 192 };
+    static const int bits[4] = { GTA_NAV_N, GTA_NAV_E, GTA_NAV_S, GTA_NAV_W };
+    int bx = (int)(c->x >> (FP + 5)), by = (int)(c->y >> (FP + 5));
+    int k, best = -1, bd = 999;
+    int nv = tr->nav ? gta_nav_dirs(gta_nav_at(tr->nav, bx, by, c->layer)) : 0;
+    for (k = 0; k < 4; k++) {
+        int d;
+        if (!(nv & bits[k])) continue;
+        d = (dirs[k] - c->face) & 255;
+        if (d > 128) d = 256 - d;
+        if (d < bd) { bd = d; best = dirs[k]; }
+    }
+    if (best < 0) best = (c->face + 32) & 192;
+    c->face = best;
+    c->angle = best;
+    c->face16 = (long)best << 16;
+    c->turn_from = best;
+    c->abandoned = 0;
+    c->driver = 1;
+    c->arrived = 0;
+    c->speed = 0;
+    c->want_route = 1;
+    c->route_cool = 0;
+    c->path_n = c->path_i = 0;
+    line_from_block(m, c, bx, by, best);
+}
+
+int gta_traffic_hunt(gta_traffic *tr, const gta_map *m, unsigned long serial,
+                     int mode)
+{
+    gta_car *c = car_of_serial(tr, serial);
+    if (!c || c->wrecked) return 0;
+    if (mode) {
+        const gta_car_info *info = &tr->tiles->cars[c->model];
+        if (c->abandoned) car_wake(tr, m, c);
+        c->mdest_on = 0;
+        c->hunt = (unsigned char)mode;
+        c->hunt_fuse = 0;
+        c->cop_re = 0;
+        c->cop_dest_x = c->cop_dest_y = -1;
+        c->top = (long)info->max_speed * SPEED_UNIT;
+        printf("gta: hunter %lu at (%d,%d) L%d facing %d, top %ld\n",
+               c->serial, (int)(c->x >> (FP + 5)), (int)(c->y >> (FP + 5)),
+               c->layer, c->face, c->top);
+        fflush(stdout);
+    } else {
+        c->hunt = 0;
+    }
+    c->want_route = 1;
+    c->path_n = c->path_i = 0;
+    return 1;
+}
+
+int gta_traffic_wake(gta_traffic *tr, const gta_map *m, unsigned long serial)
+{
+    gta_car *c = car_of_serial(tr, serial);
+    if (!c || c->wrecked) return 0;
+    c->mdest_on = 0;
+    if (c->abandoned) car_wake(tr, m, c);
+    return 1;
+}
+
+int gta_traffic_send_to(gta_traffic *tr, const gta_map *m, unsigned long serial,
+                        int bx, int by)
+{
+    gta_car *c = car_of_serial(tr, serial);
+    if (!c || c->wrecked) return 0;
+    if (c->abandoned) {
+        car_wake(tr, m, c);
+    } else {
+        c->want_route = 1;
+        c->route_cool = 0;
+        c->path_n = c->path_i = 0;
+    }
+    c->mdest_on = 1;
+    c->mdest_x = (short)bx;
+    c->mdest_y = (short)by;
+    c->arrived = 0;
+    return 1;
+}
+
+int gta_traffic_set_service(gta_traffic *tr, unsigned long serial, int kind)
+{
+    gta_car *c = car_of_serial(tr, serial);
+    if (!c) return 0;
+    c->svc = (unsigned char)kind;
+    return 1;
+}
+
+int gta_traffic_arrived(const gta_traffic *tr, unsigned long serial)
+{
+    int i;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial && !tr->cars[i].done)
+            return tr->cars[i].arrived;
+    return 0;
+}
+
+int gta_traffic_car_in_view(const gta_traffic *tr, unsigned long serial)
+{
+    int i;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial && !tr->cars[i].done)
+            return in_view(tr, (int)(tr->cars[i].x >> (FP + 5)),
+                           (int)(tr->cars[i].y >> (FP + 5)));
+    return 0;
+}
+
+int gta_traffic_has_driver(const gta_traffic *tr, unsigned long serial)
+{
+    int i;
+    if (!serial) return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial && !tr->cars[i].done)
+            return !tr->cars[i].wrecked &&
+                   (!tr->cars[i].abandoned || tr->cars[i].driver);
+    return 0;
+}
+
+int gta_traffic_driver_out(gta_traffic *tr, unsigned long serial,
+                           long *x, long *y, int *layer, int *face)
+{
+    gta_car *c = car_of_serial(tr, serial);
+    long off = 14L << FP;
+    int lf;
+    if (!c || c->wrecked || !(!c->abandoned || c->driver)) return -1;
+    lf = (c->face - 64) & 255;          /* the driver's door, on the left */
+    *x = c->x + UMUL_S(gta_sin(lf), off);
+    *y = c->y - UMUL_S(gta_cos(lf), off);
+    *layer = c->layer;
+    *face = lf;
+    c->abandoned = 1;
+    c->driver = 0;
+    c->speed = 0;
+    c->mdest_on = 0;
+    c->want_route = 0;
+    return 1;
+}
+
+int gta_traffic_set_invuln(gta_traffic *tr, unsigned long serial, int on)
+{
+    int i;
+    if (!serial) return 0;
+    for (i = 0; i < tr->n; i++)
+        if (tr->cars[i].serial == serial) {
+            tr->cars[i].invuln = (unsigned char)(on ? 1 : 0);
+            return 1;
+        }
+    return 0;
 }
 
 int gta_traffic_set_driver(gta_traffic *tr, unsigned long serial, int on)
@@ -9679,7 +10296,7 @@ int gta_traffic_grab_car(gta_traffic *tr, long x, long y, int layer,
 
         /* A BURNT-OUT WRECK IS NOT A CAR YOU CAN GET INTO. It is still
          * solid and still in the way; it just has no seats left. */
-        if (c->done || c->wrecked || c->layer != layer)
+        if (c->done || c->wrecked || c->locked || c->layer != layer)
             continue;
         dx = c->x - x; if (dx < 0) dx = -dx;
         dy = c->y - y; if (dy < 0) dy = -dy;
@@ -9942,7 +10559,7 @@ void gta_traffic_draw(gta_traffic *tr, gta_view *v)
              * (15 and 16, the ambulance has them too); a dispatched car
              * shows them turn about, ten ticks each. */
             unsigned long bits = c->dmg_bits;
-            if (c->cop >= 2)
+            if (c->cop >= 2 || c->svc == 2)
                 bits |= 1UL << (GTA_DELTA_LIGHT0 + ((tr->tick / 10) & 1));
             if (c->cop == 4) {
                 /* the barrier (object 0x18) in the next lane over */

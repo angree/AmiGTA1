@@ -64,7 +64,37 @@
 #define GTA_DECL_PHONE_TOGG 39
 #define GTA_DECL_DUM_MISSION_TRIG 42
 #define GTA_DECL_POWERUP    50
+#define GTA_DECL_BLOCK_INFO 51      /* data only: (x,y,z) blocks, a, b - CHANGE_BLOCK/TYPE */
 #define GTA_DECL_GUN_TRIG   57
+/* THE WATCH TRIGGERS (222, the research notes): each watches a
+ * car, a ped or the player's car rather than the player's position alone,
+ * and starts nothing until ENABLE arms it. */
+#define GTA_DECL_MOVING_TRIG        32
+/* THE GATES (226, MISSIONS_DECLS_D.md 0.4) - doors in all but name, kept in
+ * the DOOR state, SHUT until a script opens them. The port has no door
+ * graphic or collision yet; PARK and the log read the state. */
+#define GTA_DECL_BARRIER            17
+#define GTA_DECL_MODEL_BARRIER      31
+#define GTA_DECL_SPECIFIC_BARR      33
+#define GTA_DECL_SPECIFIC_DOOR      40
+#define GTA_DECL_BASIC_BARRIER      70
+/* ...and three that are data: a parked car at a pixel spot, the bomb
+ * shop's price, the escape helicopter's destination */
+#define GTA_DECL_BOMBSHOP_COST      38
+#define GTA_DECL_PARKED_PIXELS      64
+#define GTA_DECL_CHOPPER_ENDPOINT   65
+#define GTA_DECL_CORRECT_MOD_TRIG   43
+#define GTA_DECL_CORRECT_CAR_TRIG   44
+#define GTA_DECL_MOVING_TRIG_HIRED  53
+#define GTA_DECL_CARBOMB_TRIG       55
+#define GTA_DECL_DAMAGE_TRIG        56
+#define GTA_DECL_GUN_SCREEN_TRIG    58
+#define GTA_DECL_CARDESTROY_TRIG    59
+#define GTA_DECL_CARWAIT_TRIG       60
+#define GTA_DECL_PEDCAR_TRIG        61
+#define GTA_DECL_DUM_PED_BLOCK_TRIG 63
+#define GTA_DECL_CARSTUCK_TRIG      69
+#define GTA_DECL_ALT_DAMAGE_TRIG    71
 
 /* Ours, for the names the original keeps elsewhere - they are declarations in
  * the file all the same and the port has to carry them. Numbered from 200 so
@@ -91,20 +121,31 @@
  * DOOR_ON", as the original has it. */
 #define GTA_DOOR_SHUT     5
 #define GTA_DOOR_OPEN     6
+#define GTA_DOOR_OP_OFF   0
+#define GTA_DOOR_OP_ON    1
+#define GTA_DOOR_OP_OPEN  2
+#define GTA_DOOR_OP_CLOSE 3
 
 typedef struct {
-    short line;                 /* the line number, and the handle */
+    long line;                  /* the line number, and the handle */
     unsigned char type;         /* GTA_DECL_* */
     unsigned char flag;         /* 0 temporary, 1 permanent, 2 frenzy car */
     short x, y, z;              /* as written - blocks or pixels, see below */
     short a, b, c, d;           /* the numbers after the name, 0 if absent */
-    unsigned char n_num;        /* how many of a..d the line actually had */
+    short e;                    /* the fifth - SPECIFIC_DOOR/BARR's remap.
+                                 * It used to land on top of d, which made
+                                 * every mission-car garage open for anyone. */
+    unsigned char n_num;        /* how many of a..e the line actually had */
     unsigned char state;        /* GTA_TRIG_*, triggers only */
     short counter;              /* COUNTER declarations only - the running
                                  * value. The original keeps it in the
                                  * object's handle field and starts it at the
                                  * declaration's first number: COUNTER 0 0 is
                                  * zero, MISSION_COUNTER 4 0 is four. */
+    /* SET_KILLTRIG (224): when this trigger fires, the process in slot
+     * `kill_slot` of `KICKSTART kill_parent` is ended. 0 = none. */
+    long kill_parent;
+    signed char kill_slot;
     unsigned long handle;       /* what the world made of this declaration -
                                  * for a car, the fleet serial. 0 = nothing
                                  * has been made yet. */
@@ -117,7 +158,7 @@ typedef struct {
  * join them. */
 typedef struct {
     long x, y;                  /* 16.16 world pixels, the block centre */
-    short line;                 /* the declaration it came from */
+    long line;                  /* the declaration it came from */
     /* THE SPRITE, for the objects whose is not one fixed number. A telephone
      * is always map object 0x28 and the script resolves that once; a drop-off
      * wears whatever model its own declaration names. -1 = use the phone's. */
@@ -136,11 +177,11 @@ typedef struct {
 } gta_placed;
 
 #define GTA_MAX_PHONES 160
-#define GTA_MAX_MCARS   16
+#define GTA_MAX_MCARS   32
 /* A DROP-OFF. DROP_ON puts a map object down at a declaration's block and
  * GOTO_DROPOFF is the player getting to it in time; KILL_DROP takes it away
  * again. Liberty City uses one at a time, so four is generous. */
-#define GTA_MAX_DROPS    4
+#define GTA_MAX_DROPS   16      /* DROP_ON and MAKEOBJ (221) */
 
 /* A MISSION CAR - one the script PARKS somewhere in the city.
  *
@@ -152,7 +193,7 @@ typedef struct {
  * keeps them itself and hands one over when the player comes near, once. */
 typedef struct {
     long x, y;
-    short line;                 /* the declaration, and the handle */
+    long line;                  /* the declaration, and the handle */
     short model;                /* the port's car-table RECORD, not the
                                  * original's model id */
     unsigned char layer, angle;
@@ -177,9 +218,9 @@ typedef struct {
  * PER TICK at 25 Hz - not one per frame and not the whole block at once,
  * which is what makes SURVIVE and the side processes work at all.
  */
-#define GTA_MAX_CMDS   2400
+#define GTA_MAX_CMDS   5000     /* Vice City 2 has 4863 (220) */
 #define GTA_MAX_PROC     32
-#define GTA_MAX_CNAMES   96
+#define GTA_MAX_CNAMES  128
 
 /* The commands this port acts on. The numbers are the original's opcodes -
  * the index of the name in its command table - so the original's own
@@ -246,6 +287,9 @@ typedef struct {
  * leave him; otherwise take him away" - so answering YES by default means
  * the job's four gunmen are never cleaned up. */
 #define GTA_CMD_GENERAL_ONSCREEN 106
+#define GTA_CMD_PLAYER_ARE_BOTH_ONSCREEN 150
+#define GTA_CMD_IS_PLAYER_ON_TRAIN 151
+#define GTA_CMD_WRECK_A_TRAIN 152
 #define GTA_CMD_CHANGE_PED_TYPE   69
 #define GTA_CMD_HELL_ON          121
 #define GTA_CMD_DROP_WANTED      119
@@ -289,7 +333,59 @@ typedef struct {
 #define GTA_CMD_KF_CANCEL_BRIEFING 138
 #define GTA_CMD_KF_BRIEF_GENERAL 139
 #define GTA_CMD_KF_CANCEL_GENERAL 140
+/* BATCH A, the other levels (221, the research notes) */
+#define GTA_CMD_MAKEOBJ        11
+#define GTA_CMD_EXPLODE_CAR    46
+#define GTA_CMD_CHANGE_BLOCK   66
+#define GTA_CMD_CHANGE_TYPE    67
+#define GTA_CMD_EXPL_PED       87
+#define GTA_CMD_SET_NO_COLLIDE 113
+#define GTA_CMD_SET_COLLIDE    131
+#define GTA_CMD_PED_WEAPON     114
+#define GTA_CMD_PED_POLICE     118
+#define GTA_CMD_ADD_A_LIFE     136
+#define GTA_CMD_INC_HEADS      148
+#define GTA_CMD_IS_PED_STUNNED 149
+/* BATCH B (222, the research notes) */
+#define GTA_CMD_DUMMYON          8
+#define GTA_CMD_SENDTO           9
+#define GTA_CMD_GOTO            21
+#define GTA_CMD_LOCK_DOOR       27
+#define GTA_CMD_UNLOCK_DOOR     28
+#define GTA_CMD_PED_OUT_OF_CAR  75
+#define GTA_CMD_GET_DRIVER_INFO 78
+#define GTA_CMD_DUMMY_DRIVE_ON  83
+#define GTA_CMD_GET_CAR_INFO   107
+#define GTA_CMD_LOCATE         109
+#define GTA_CMD_PIXEL_CAR_ON   112
+#define GTA_CMD_PARKED_PIXELS_ON 117
+/* BATCH C, part 1 (224, the research notes) */
+#define GTA_CMD_HUNTON           5
+#define GTA_CMD_HUNTOFF          6
+#define GTA_CMD_OBTAIN          13
+#define GTA_CMD_THROW           14
+#define GTA_CMD_SETUP_REPO      41
+#define GTA_CMD_DO_REPO         42
+#define GTA_CMD_MODEL_HUNT      58
+#define GTA_CMD_NEXT_KICK       97
+#define GTA_CMD_SET_KILLTRIG    99
+#define GTA_CMD_FREEUP_CAR     115
+/* BATCH C, part 2 (225): the remote-controlled bomb car */
+#define GTA_CMD_START_MODEL     47
+#define GTA_CMD_DO_MODEL        48
+#define GTA_CMD_RETURN_CONTROL  49
+/* ...and the session's state, as the world reports it */
+#define GTA_RC_NONE   0
+#define GTA_RC_ALIVE  1         /* he is driving the model car */
+#define GTA_RC_DEAD   2         /* it went off; he is back in his own car */
+#define GTA_RC_CANCEL 3         /* he got out of it */
 #define GTA_CMD_UNKNOWN_CHECK    253
+
+/* A DRIVER STILL IN HIS CAR. GET_DRIVER_INFO names a car's driver as a
+ * mission ped, and the port has no person sitting in a driven car - so the
+ * declaration's handle is the CAR's, with this bit set, until PED_OUT_OF_CAR
+ * puts a real one on the pavement and the handle becomes his. */
+#define GTA_IN_CAR 0x80000000UL
 
 /* HELL_ON's own car. The original does not use the model the declaration
  * carries - it always makes this one and puts a driver in it. */
@@ -318,17 +414,19 @@ typedef struct {
 #define GTA_CMD_NONE     255
 
 typedef struct {
-    short line;                 /* the label, and the jump target */
+    long line;                  /* the label, and the jump target - LONG: San
+                                 * Andreas numbers its lines up to 36260 (220) */
+    long p1, p2, p3, p4, p5;
     unsigned char op;           /* GTA_CMD_* */
     unsigned char name;         /* index into the script's name table */
-    long p1, p2, p3, p4, p5;
+    short pad;                  /* 28 bytes, every long on a long boundary */
 } gta_cmd;
 
 /* A PROCESS. `cmd` is the command index it is about to run; `state` is the
  * original's "fresh" flag, which a timed command uses as its counter. */
 typedef struct {
     short cmd;                  /* -1 when the slot is free */
-    short trigger;              /* the declaration line that started it */
+    long trigger;               /* the declaration line that started it */
     long  count;                /* SURVIVE and friends */
     /* A SECOND COUNTER. ANSWER needs two - how many ring cycles are left and
      * how far through the current one it is - and the original keeps the
@@ -338,9 +436,12 @@ typedef struct {
     /* THE KICKSTART THAT MADE THIS ONE, by line, so KILL_SIDE_PROC can
      * name it: `60 KILL_SIDE_PROC 32001` stops the child that
      * `32001 KICKSTART 13` started. -1 for a process a trigger started. */
-    short parent;
+    long parent;
     /* KEEP_THIS_PROC: RESET leaves it alone. */
     unsigned char keep;
+    /* Which child of its KICKSTART this is: 1 the KICKSTART's own, 2.. the
+     * NEXT_KICKs' (SET_KILLTRIG names one by this). */
+    unsigned char kick_slot;
 } gta_proc;
 
 /* WHAT THE INTERPRETER IS ALLOWED TO TOUCH.
@@ -501,6 +602,64 @@ typedef struct {
      * player+0x194 (the original's routine), KF_BRIEF_GENERAL / KF_CANCEL_GENERAL
      * player+0x196 (the original's routine): `ticks` at 25 a second, -1 = off. */
     void (*kf_timer)(void *ctx, int which, long ticks);
+    /* BATCH A (221). Cars and peds by handle; the player has his own. */
+    void (*car_explode)(void *ctx, unsigned long h);      /* EXPLODE_CAR: written off */
+    void (*car_invuln)(void *ctx, unsigned long h, int on); /* SET_(NO_)COLLIDE */
+    void (*ped_explode)(void *ctx, unsigned long h);      /* EXPL_PED; 0 = the player */
+    void (*ped_weapon)(void *ctx, unsigned long h, int weapon);
+    void (*ped_police)(void *ctx, unsigned long h);
+    int  (*ped_stunned)(void *ctx, unsigned long h);
+    void (*add_life)(void *ctx);
+    void (*inc_heads)(void *ctx, int n);
+    void (*map_type)(void *ctx, int bx, int by, int bz, long v);
+    void (*map_face)(void *ctx, int bx, int by, int bz, int face, int tile);
+    /* BATCH B (222). LOCK_DOOR / UNLOCK_DOOR; DUMMYON (a driver, and off it
+     * goes as traffic); SENDTO, to a point by road; is anybody in it;
+     * PED_OUT_OF_CAR - the new ped's handle, 0 not yet, -1 nobody in it;
+     * DUMMY_DRIVE_ON - a mission ped beside the car climbs in and drives
+     * off: his handle, -1 when it already had a driver, 0 not yet;
+     * PIXEL_CAR_ON / PARKED_PIXELS_ON, a car at a pixel spot. */
+    void (*car_lock)(void *ctx, unsigned long h, int on);
+    void (*car_wake)(void *ctx, unsigned long h);
+    void (*car_sendto)(void *ctx, unsigned long h, long wx, long wy);
+    int  (*car_has_driver)(void *ctx, unsigned long h);
+    long (*driver_out)(void *ctx, unsigned long h);
+    long (*car_board)(void *ctx, unsigned long h);
+    unsigned long (*car_on_px)(void *ctx, int line, int model_id, long wx,
+                               long wy, int angle, int remap, int driven);
+    /* THE WATCH TRIGGERS (222). car_still: 0 moving or off screen, 1
+     * stopped on screen, 2 the same and off the road (CARWAIT / CARSTUCK).
+     * player_firing: on foot with a gun, the trigger held (GUN_SCREEN).
+     * car_bomb: the bomb type fitted to that car, 0 none (CARBOMB).
+     * ped_board: mission ped `ped` is beside car `car` - he gets in as its
+     * driver, 1, or 0 not yet (PEDCAR). */
+    int  (*car_still)(void *ctx, unsigned long h);
+    int  (*player_firing)(void *ctx);
+    int  (*car_bomb)(void *ctx, unsigned long h);
+    int  (*ped_board)(void *ctx, unsigned long ped, unsigned long car);
+    /* HUNTON / HUNTOFF / MODEL_HUNT (224): car `h` chases the player in
+     * `mode` (1 ram, 3 kamikaze), 0 = stop. */
+    void (*car_hunt)(void *ctx, unsigned long h, int mode);
+    /* THE MODEL CAR (225, MISSIONS_CMDS_C.md): model_start parks the car he
+     * is driving (locked, undamageable) and puts him in a model-47 bomb car
+     * beside it - 1 done, 0 not now (on foot, or one already out);
+     * model_state is GTA_RC_*; model_return gives him his own car back. */
+    int  (*model_start)(void *ctx);
+    int  (*model_state)(void *ctx);
+    void (*model_return)(void *ctx);
+    /* THE BOMB SHOP (228, the research notes): he has driven into one.
+     * 1 a bomb fitted (kind 1, armed by FIRE), 0 refused (no money, the
+     * wrong car, a bomb already), -1 not in a car. `cost` 0 = the
+     * original's default, 5000. */
+    int  (*bombshop)(void *ctx, int cost);
+    /* THE DOORS (229): DOOR_ON switches the automatic door on (it opens
+     * for a qualifying car), DOOR_OFF off, OPEN_DOOR / CLOSE_DOOR force it.
+     * Without this callback DOOR_ON simply marks the door open. */
+    void (*door)(void *ctx, int line, int op);
+    /* THE TRAINS (240): the train the player rides, -1 for none; and wreck
+     * train `t` (IS_PLAYER_ON_TRAIN, WRECK_A_TRAIN - TRAINS.md 8). */
+    int  (*player_train)(void *ctx);
+    void (*wreck_train)(void *ctx, int t);
 } gta_script_world;
 
 typedef struct {
@@ -553,6 +712,9 @@ typedef struct {
     long px, py;                /* the player, as of this tick */
     int  on_foot;
     int spr_phone;              /* map object type 0x28, or -1 */
+    /* BOMBSHOP_COST and CHOPPER_ENDPOINT (226): section-wide values. */
+    int  bomb_cost;
+    long chopper_x, chopper_y;  /* 16.16 world pixels, 0 = none */
 } gta_script;
 
 /* Read section `level` of a mission.ini. Returns 0 on success; the script is

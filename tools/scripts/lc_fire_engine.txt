@@ -1,0 +1,21 @@
+# lc_fire_engine.txt - THE FIRE ENGINE (243, the research notes 4). LC1
+# (startlevel 0). A rocket into the wall east of (64,64) leaves three fires;
+# an engine comes from the nearest of the first four fire stations, stops,
+# swings its cannon, the fire goes out, it sprays 261 frames and leaves.
+# Pass: "fire engine N from station", "fire engine N: fire out".
+wait 100
+goto 64 64
+wait 20
+face 64
+weapon 3 5
+wait 10
+fire 1
+wait 1200
+film 1
+wait 2400
+film 1
+wait 2400
+film 1
+wait 2400
+film 1
+dump

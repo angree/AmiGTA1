@@ -114,6 +114,7 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
 {
     p->x = x; p->y = y; p->layer = layer;
     p->angle = angle & 255;
+    p->svc_q = 0;
     p->frame = (int)(rng_next(ps) & 7);
     p->frame_tick = 0;
     p->remap = remap >= 0 ? remap
@@ -145,6 +146,8 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->panic = 0;
     p->burn = p->burn_frame = p->burn_tick = 0;
     p->cop = 0;
+    p->uniform = 0;
+    p->weapon = 0;
     p->arrest = 0;
     p->cop_cool = 0;
     p->shoot_req = 0;
@@ -195,6 +198,7 @@ static int free_slot(gta_peds *ps)
      * the one that has been out of sight longest. */
     for (i = 0; i < GTA_MAX_PEDS; i++)
         if (ps->p[i].corpse && !ps->p[i].mission &&
+            ps->p[i].svc_q != 2 &&      /* an ambulance is on its way to it */
             ps->p[i].offscreen > oldest_off) {
             oldest = i; oldest_off = ps->p[i].offscreen;
         }
@@ -883,8 +887,10 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 int under = 0;
                 long d = dist_to_player_body(ps, p, &under);
                 p->mode = GTA_PED_MODE_COP;
+                if (!ps->pl_in_car)
+                    p->pulling = 0;
                 if (p->arrest_wait > 0) p->arrest_wait--;
-                if (under) {
+                if (under && !p->pulling) {
                     /* UNDER THE CAR - he got out of a police car that had
                      * stopped against the player's. Out first, and no
                      * arrest from in there. */
@@ -896,6 +902,14 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                 }
                 if (p->post && d > 192) {
                     /* AT HIS POST: stands, faces the way he was put. */
+                    p->speed = 0;
+                    p->arrest = 0;
+                    corner_ahead = 0;
+                    continue;
+                }
+                if (p->exit_wait > 0) {
+                    /* STILL GETTING OUT of the police car. */
+                    p->exit_wait--;
                     p->speed = 0;
                     p->arrest = 0;
                     corner_ahead = 0;
@@ -918,6 +932,51 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                     }
                     if (ps->cop_shoot >= 2 && d <= GTA_COP_ARREST_PX)
                         p->execute = 1;
+                } else
+                if (ps->pl_in_car && ps->pl_layer == p->layer) {
+                    /* A PLAYER IN A CAR IS TAKEN AT HIS DOOR (0xd4): the
+                     * cop walks to the driver's door, and only when the
+                     * car is all but stopped does he open it and pull him
+                     * out. BUSTED is the END of the pull, not the touch. */
+                    long ex = (ps->pl_door_x - p->x) >> 16;
+                    long ey = (ps->pl_door_y - p->y) >> 16;
+                    long de;
+                    if (ex < 0) ex = -ex;
+                    if (ey < 0) ey = -ey;
+                    de = ex > ey ? ex : ey;
+                    if (p->pulling > 0) {
+                        p->x = ps->pl_door_x;
+                        p->y = ps->pl_door_y;
+                        p->angle = angle_to(p->x, p->y, ps->pl_x, ps->pl_y);
+                        p->speed = 0;
+                        if (++p->pulling >= GTA_COP_PULL_TICKS && !p->arrest) {
+                            p->arrest = 1;
+                            printf("gta: police - pulled out of the car after"
+                                   " %d ticks\n", p->pulling);
+                            fflush(stdout);
+                        }
+                    } else if (de <= GTA_COP_DOOR_PX && ps->pl_slow &&
+                               p->arrest_wait == 0) {
+                        p->pulling = 1;
+                        p->x = ps->pl_door_x;
+                        p->y = ps->pl_door_y;
+                        p->speed = 0;
+                        printf("gta: police - the cop opens his door\n");
+                        fflush(stdout);
+                    } else {
+                        p->angle = angle_to(p->x, p->y, ps->pl_door_x,
+                                            ps->pl_door_y);
+                        p->speed = de > 96 ? 3 : 2;
+                        if (de <= GTA_COP_DOOR_PX) {
+                            /* AT THE DOOR, waiting for the car to stop:
+                             * he stands on the door point, which is outside
+                             * the body by more than a run-over's margin. */
+                            p->x = ps->pl_door_x;
+                            p->y = ps->pl_door_y;
+                            p->speed = 0;
+                        }
+                        p->arrest = 0;
+                    }
                 } else
                 if (ps->pl_layer == p->layer && d <= GTA_COP_ARREST_PX &&
                     p->arrest_wait == 0) {
@@ -1264,6 +1323,11 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                     ny = p->y - (((long)gta_cos(p->angle) * v) >> 6);
                 }
                 there = ground_at(ps, nx, ny, p->layer);
+                /* a fence or a shut door is a building to a man on foot
+                 * (229, the research notes 4) */
+                if (ps->nav && gta_nav_wall_cross(ps->nav, p->layer, p->x, p->y,
+                                                  nx, ny))
+                    there = GTA_GROUND_BUILDING;
                 if (there == GTA_GROUND_BUILDING || there == GTA_GROUND_AIR
                     || there == GTA_GROUND_WATER)
                     blocked = 1;
@@ -1359,6 +1423,9 @@ int gta_peds_ram(gta_peds *ps, long px, long py, int pface, int phl, int phw,
 
         if (!p->alive || p->corpse || p->pull >= 0 || p->layer != layer)
             continue;
+        /* THE COP AT YOUR DOOR holds the car (0xd4); it cannot run him over. */
+        if (p->pulling > 0)
+            continue;
         dx = (p->x - px) >> 16;
         dy = (p->y - py) >> 16;
         if (dx > 64 || dx < -64 || dy > 64 || dy < -64)
@@ -1376,6 +1443,12 @@ int gta_peds_ram(gta_peds *ps, long px, long py, int pface, int phl, int phw,
         if (p->down && (along > phl - 2 || side > phw - 2))
             continue;
         if (along <= phl + 3 && side <= phw + 3) {
+            if (fast && p->cop) {
+                printf("gta: police - cop run over: exit %d pulling %d,"
+                       " along %ld side %ld, car speed %ld\n", p->exit_wait,
+                       p->pulling, along, side, speed >> 15);
+                fflush(stdout);
+            }
             if (fast) {
                 /* KILLED WHERE HE STANDS - the original's 0x2d: no
                  * displacement, the body stays. Blood and the crime report
@@ -1443,7 +1516,7 @@ void gta_peds_draw(gta_peds *ps, gta_view *v)
          * the second set, 189 sprites on, not painted over the first. He
          * used to be the first set with remap 0, which is the player's own
          * yellow shirt (developer, 2026-09-25). */
-        if (p->cop && f + GTA_PED_COP_SET < ps->ped_count)
+        if ((p->cop || p->uniform) && f + GTA_PED_COP_SET < ps->ped_count)
             f += GTA_PED_COP_SET;
         gta_render_add_sprite_r(v, p->x, p->y, p->layer, p->layer,
                               ps->ped_base + f,
@@ -1756,6 +1829,8 @@ int gta_peds_spawn_cop(gta_peds *ps, long x, long y, int layer, int angle)
     ped_reset(ps, &ps->p[i], x, y, layer, angle, 0);
     ps->p[i].cop = 1;
     ps->p[i].arrest_wait = GTA_COP_ARREST_WAIT;
+    ps->p[i].exit_wait = GTA_COP_EXIT_TICKS;
+    ps->p[i].pulling = 0;
     ps->p[i].mode = GTA_PED_MODE_COP;
     ps->p[i].speed = 2;
     ps->stat_spawned++;
@@ -1814,6 +1889,45 @@ int gta_peds_cop_execute(gta_peds *ps)
     return hit;
 }
 
+static gta_ped *by_serial(gta_peds *ps, unsigned long serial)
+{
+    int i;
+    if (!serial) return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++)
+        if (ps->p[i].alive && ps->p[i].serial == serial)
+            return &ps->p[i];
+    return 0;
+}
+
+int gta_peds_set_uniform(gta_peds *ps, unsigned long serial)
+{
+    gta_ped *p = by_serial(ps, serial);
+    if (!p) return 0;
+    p->uniform = 1;
+    p->remap = 0;
+    return 1;
+}
+
+int gta_peds_set_weapon(gta_peds *ps, unsigned long serial, int weapon)
+{
+    gta_ped *p = by_serial(ps, serial);
+    if (!p) return 0;
+    p->weapon = (unsigned char)(weapon < 0 ? 0 : weapon > 4 ? 4 : weapon);
+    return 1;
+}
+
+int gta_peds_stunned(const gta_peds *ps, unsigned long serial)
+{
+    int i;
+    if (!serial) return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        const gta_ped *p = &ps->p[i];
+        if (p->alive && p->serial == serial)
+            return p->down > 0 && !p->corpse;
+    }
+    return 0;
+}
+
 void gta_peds_make_cop(gta_peds *ps, int i)
 {
     gta_ped *p;
@@ -1826,6 +1940,17 @@ void gta_peds_make_cop(gta_peds *ps, int i)
     ps->stat_cops_out++;
 }
 
+int gta_peds_cop_pulling(const gta_peds *ps)
+{
+    int i, best = 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        const gta_ped *p = &ps->p[i];
+        if (p->alive && p->cop && !p->corpse && p->pulling > best)
+            best = p->pulling;
+    }
+    return best;
+}
+
 int gta_peds_cop_event(gta_peds *ps)
 {
     int i, hit = 0;
@@ -1833,6 +1958,8 @@ int gta_peds_cop_event(gta_peds *ps)
         gta_ped *p = &ps->p[i];
         if (p->alive && p->cop && !p->corpse && p->arrest) {
             p->arrest = 0;
+            p->pulling = 0;     /* the pull is over: he is out */
+            p->arrest_wait = GTA_COP_ARREST_WAIT;
             hit = 1;
         }
     }
@@ -1873,4 +2000,23 @@ void gta_peds_kill(gta_peds *ps, int i)
     p->shot = 0;
     p->tx = p->ty = 0;
     ps->stat_killed++;
+}
+
+void gta_peds_revive(gta_peds *ps, int i)
+{
+    gta_ped *p;
+    if (i < 0 || i >= GTA_MAX_PEDS)
+        return;
+    p = &ps->p[i];
+    if (!p->alive || !p->corpse)
+        return;
+    p->corpse = 0;
+    p->down = 0;
+    p->fall = 0;
+    p->shot = 0;
+    p->burn = 0;
+    p->svc_q = 0;
+    p->mode = GTA_PED_MODE_IDLE;
+    p->speed = 1;
+    p->timer = 0;
 }

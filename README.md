@@ -1,13 +1,21 @@
 # AmiGTA
 
-A native AmigaOS 68k port of **Grand Theft Auto (1997)**, targeting *classic*
-hardware — 68020 and up, AGA or RTG. Not PiStorm, not Vampire, not Emu68.
+A native Amiga port of **Grand Theft Auto (1997)**, targeting *classic*
+hardware — 68020 and up, AGA or RTG — plus **AROS 68k** and **MorphOS**
+(the 68k build runs there too, and there is a native PowerPC build).
+Not PiStorm, not Vampire, not Emu68.
 
 **This is a reimplementation of the engine, not a wrapper and not an emulator.**
 It contains no game code and no game data. You supply your own copy of GTA and
 the port converts it on your own machine.
 
-Current release: **v0.4.0 — the missions work.** The game opens on its own
+Current release: **v0.7.0 — all six levels, trains, ambulances and fire
+engines, the original's arrest, AROS and MorphOS.** Two archives:
+`AmiGTA-v0.7.0-68k` (AmigaOS 3.1+, AROS 68k) and `AmiGTA-v0.7.0-MorphOS`
+(native PPC). The notes below are from v0.4.0 and still hold; the release
+page and the README inside the archive list what is new.
+
+v0.4.0 — the missions work. The game opens on its own
 title screen; the level starts where the script says; the South Park phones
 ring; answering one gives you a job, an arrow and a car to steal, and
 delivering it pays. Liberty City's first two missions play from the phone to
@@ -58,11 +66,9 @@ gtaprefs SCREEN=640x480    the size the game opens at
 gtaprefs AUDIO=AHI
 ```
 
-**On MorphOS, set Graphics to Window** (`gtaprefs GFX=WB`). The port otherwise
-opens a screen of its own, cannot get an 8-bit mode, falls back to the planar +
-c2p path that needs the real Amiga chipset, and draws the city as colour noise.
-Sound does not play yet on any machine; the setting is recorded for when it
-does.
+**On MorphOS nothing needs setting** since v0.7.0: the game detects it, opens
+a full 640x480 32-bit screen of its own and plays sound through AHI. On AROS
+it runs as on AmigaOS. Sound plays through Paula or AHI.
 
 You need a 68020 or better (no FPU is required and none is used), about 8 MB of
 fast RAM, and your own copy of GTA (1997) for the PC. The DOS 8-bit release is

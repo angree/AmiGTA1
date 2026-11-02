@@ -8,6 +8,7 @@
 #include "gta_audio.h"
 #include "gta_prefs.h"
 #include "amiga_audio.h"
+#include <proto/exec.h>     /* FindResident - is this MorphOS? */
 #include "amiga_uclock.h"
 #include "amiga_adpcm.h"
 #include "gta_iff.h"        /* GTA_IFF_RATE - what an 8SVX defaults to */
@@ -112,24 +113,38 @@ int gta_audio_open(const gta_sfx *bank, int enabled)
      * than by quietly using Paula instead: a machine where the player picked
      * AHI is usually one where Paula is not reachable at all (MorphOS), and
      * banging audio.device there is reported to hang it. */
-    if (enabled == GTA_AUDIO_AHI) {
-        printf("gta: audio - AHI was chosen and is not written yet; silent\n");
-        fflush(stdout);
-        return 0;
-    }
     if (!bank || bank->count <= 0 || !bank->data) {
         printf("gta: audio - no sound bank loaded; silent\n");
         fflush(stdout);
         return 0;
     }
-    if (!AmigaAudio_Open()) {
-        printf("gta: audio - audio.device would not open; silent\n");
-        fflush(stdout);
-        return 0;
+    /* AHI ON MORPHOS, ALWAYS, and wherever the settings ask for it: there
+     * audio.device is an emulation whose aborted writes never come back
+     * (40-MorphOS-zgodnosc-68k.md, "Na MorphOS uzywaj AHI"). Without AHI an
+     * Amiga falls back to Paula; MorphOS plays silent. */
+    {
+        int mos = FindResident((CONST_STRPTR)"MorphOS") != NULL;
+        int ahi = mos || enabled == GTA_AUDIO_AHI;
+        int ok;
+        AmigaAudio_SetBackend(ahi);
+        ok = AmigaAudio_Open();
+        if (!ok && ahi && !mos) {
+            printf("gta: audio - ahi.device would not open; trying Paula\n");
+            AmigaAudio_SetBackend(0);
+            ok = AmigaAudio_Open();
+        }
+        if (!ok) {
+            printf("gta: audio - %s would not open; silent\n",
+                   ahi ? "ahi.device" : "audio.device");
+            fflush(stdout);
+            return 0;
+        }
+        au_ok = 1;
+        printf("gta: audio ON - %s, 4 channels, %d sounds, cache %ld KB%s\n",
+               AmigaAudio_IsAHI() ? "sound through ahi.device" : "Paula",
+               bank->count, (long)(GTA_AUDIO_CHIP / 1024),
+               mos ? " (MorphOS)" : "");
     }
-    au_ok = 1;
-    printf("gta: audio ON - Paula, 4 channels, %d sounds, cache %ld KB\n",
-           bank->count, (long)(GTA_AUDIO_CHIP / 1024));
     /* The bank's own pointers and one entry, so that a play which later
      * reads nonsense out of the same table can be told apart from one that
      * never had a table: if these are sane here and garbage there, something

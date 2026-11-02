@@ -1,0 +1,23 @@
+# A CAR STOPS AT A POST (230, the research notes 2.3). Liberty City 1
+# (startlevel.txt 0). The first post nav lists is the W edge of (59,2),
+# layer 2: an 8x8 px square at x = 59*32 = 1888, y = 2*32+16 = 80, on the
+# pavement. The car is carried to (57,2) - centre (1840,80), exactly on the
+# post's line - pointed east and driven at it.
+# Pass: the HUD's block x stays at 58 with the nose short of x = 1888; a
+# frame of the car standing against the post. Without the post it would roll
+# on along the pavement to 60 and beyond.
+wait 100
+park 1 0 24 64
+wait 20
+enter
+wait 120
+goto 57 2
+wait 30
+film 1
+run 150 1 0 0 0
+wait 20
+film 1
+run 100 1 0 0 0
+wait 20
+film 1
+dump

@@ -673,6 +673,28 @@ static int veh_body_blocked(const gta_nav *nav, int layer, long cx, long cy,
         }
         return 1;
     }
+
+    /* AND THE THIN WALLS (229, the research notes 2.2): the outline's
+     * ten points taken round the perimeter, each side tested against the
+     * solid flat faces - a fence, a garage's back wall, a shut door. The
+     * ground test above cannot see them: a garage is field ground. */
+    if (nav->walls) {
+        static const unsigned char ring[11] = { 0, 1, 2, 4, 6, 9, 8, 7, 5, 3, 0 };
+        long qx[10], qy[10];
+        for (i = 0; i < 10; i++) {
+            long al = (long)hl * veh_wall_samp[i][0] / 1000;
+            long si = (long)hw * veh_wall_samp[i][1] / 1000;
+            qx[i] = cx + (fx * al + rx * si) * 4;
+            qy[i] = cy + (fy * al + ry * si) * 4;
+        }
+        for (i = 0; i < 10; i++)
+            if (gta_nav_wall_cross(nav, layer, qx[ring[i]], qy[ring[i]],
+                                   qx[ring[i + 1]], qy[ring[i + 1]]))
+                return 1;
+    }
+    /* AND THE POSTS, which only a car meets (WALLS_DOORS.md 2.3). */
+    if (gta_nav_post_hit(nav, layer, cx, cy, fx, fy, rx, ry, hl, hw))
+        return 1;
     return 0;
 }
 

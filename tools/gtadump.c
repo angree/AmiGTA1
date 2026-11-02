@@ -4686,11 +4686,13 @@ static int cmd_scriptrun(const char *iniPath, int line, int ticks)
 {
     static gta_script sc;
     static gta_script_world w;
-    int t, k;
+    int t, k, sec_;
     const char *step = getenv("GTA_SCRIPTRUN_SCORE_STEP");
 
-    if (gta_script_load(&sc, iniPath, 1) != 0 ||
-        gta_script_load_cmds(&sc, iniPath, 1) != 0) {
+    /* GTA_SECTION: another level's section of mission.ini (220) */
+    sec_ = getenv("GTA_SECTION") ? atoi(getenv("GTA_SECTION")) : 1;
+    if (gta_script_load(&sc, iniPath, sec_) != 0 ||
+        gta_script_load_cmds(&sc, iniPath, sec_) != 0) {
         fprintf(stderr, "scriptrun: cannot read %s\n", iniPath);
         return 1;
     }
