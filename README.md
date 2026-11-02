@@ -15,6 +15,11 @@ engines, the original's arrest, AROS and MorphOS.** Two archives:
 (native PPC). The notes below are from v0.4.0 and still hold; the release
 page and the README inside the archive list what is new.
 
+Thanks to **stefkos** for the first native MorphOS/PowerPC build (v0.6.1,
+pull request #2); its sources stay in the tree as `native/morphos_gfx.c`,
+`native/morphos_audio.c`, `makefile.morphos` and `morphos/`. v0.7.0's
+MorphOS build is made from the common sources by `tools/bin/build-morphos.sh`.
+
 v0.4.0 — the missions work. The game opens on its own
 title screen; the level starts where the script says; the South Park phones
 ring; answering one gives you a job, an arrow and a car to steal, and
