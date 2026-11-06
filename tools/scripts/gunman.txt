@@ -1,0 +1,8 @@
+# gunman.txt - a person put 120 px north becomes a running gunman (CHANGE_PED_TYPE 0x18,
+# role 0x1c, GANGS.md) against the player standing still. Pass: 'a gunman',
+# 'gunman N (running, miss 8) fires', 'player hit - bullets'; a frame.
+wait 150
+gunman 24 0 -120
+wait 400
+dump
+wait 20

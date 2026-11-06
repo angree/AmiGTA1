@@ -1,4 +1,4 @@
-config_description=Amiga GTA - THE test machine: 68020 core, max speed, JIT off, throttle -50%
+config_description=Amiga GTA - THE test machine: 68020 core, max speed, JIT off, throttle -74%
 ; THIS IS THE ONLY MACHINE WE TEST AND MEASURE ON. Decided 2026-08-21, closed.
 ; Do not add variants, do not reopen the calibration argument.
 ;
@@ -31,7 +31,7 @@ fpu_model=0
 cpu_compatible=true
 cpu_24bit_addressing=false
 cpu_speed=max
-cpu_throttle=-500.0
+cpu_throttle=-740.0
 cachesize=0
 
 chipset=aga

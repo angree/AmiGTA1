@@ -1,0 +1,3 @@
+# radioincars.txt - RADIO back to IN CARS (the default).
+menukeys down down down ret down down down ret down down ret up up up ret
+wait 20

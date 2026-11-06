@@ -1,0 +1,12 @@
+# landsparks.txt - jump.txt filmed: the car comes down off the (91,108) ramp and a
+# spark (0x0d, five frames) shows at each corner. Pass: 'LANDED', and the live
+# frames after it show four sparks round the car.
+wait 100
+park 0 0 -26 0
+enter
+wait 150
+goto 91 112
+wait 20
+run 50 1 0 0 0
+film 40
+wait 20

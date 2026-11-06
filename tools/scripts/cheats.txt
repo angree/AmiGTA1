@@ -1,0 +1,8 @@
+# cheats.txt - five cheat names typed on the title's PLAYER line, the built-in
+# name back, START. Pass: 'cheats - 0x...: no police endless lives x10 score
+# weapons', the HUD shows 999999999, x10 and three boxes for the lives.
+menukeys down ret t:hate_machine ret ret t:iamthelaw ret ret t:6031769 ret
+menukeys ret t:suckmyrocket ret ret t:itcouldbeyou ret ret ret up ret
+wait 100
+dump
+wait 20

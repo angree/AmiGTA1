@@ -1,0 +1,6 @@
+# playermenu.txt - the title's PLAYER line: next slot, rename, a cheat name, the
+# built-in name back, the slot back, START. Pass: log 'player N is now Bob',
+# 'a cheat (0x80)', menu0..5.raw show each step.
+menukeys dump down right dump ret t:Bob dump ret dump ret t:hate_machine ret dump
+menukeys ret ret left dump up ret
+wait 50

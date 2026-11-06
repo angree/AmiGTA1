@@ -135,6 +135,9 @@ void gta_audio_music_stop(void);
 void gta_audio_music_tick(void);
 int  gta_audio_music_playing(void);
 void gta_audio_music_volume(int vol);
+/* The options screen's SOUND, 0..64: every effect, the speech and the engine
+ * are scaled by it. 64 (the start) leaves them as asked. */
+void gta_audio_sfx_master(int vol);
 
 /* ---- THE CAR RADIO ------------------------------------------------------
  *

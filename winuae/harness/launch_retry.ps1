@@ -15,6 +15,12 @@ for ($t = 1; $t -le $Tries; $t++) {
   & (Join-Path $PSScriptRoot "kill_ours.ps1") | Out-Null   # ONLY ours - never Stop-Process -Name winuae
   Start-Sleep 6
   Remove-Item $hb -ErrorAction SilentlyContinue
+# THE DEVELOPER'S RULE (2026-11-05): never weaker than -70% CPU, JIT or not.
+$thr = [regex]::Match((Get-Content -LiteralPath $Config -Raw), '(?m)^cpu_throttle=(-?[\d.]+)')
+if (-not $thr.Success -or [double]::Parse($thr.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt -700) {
+  Write-Output "REFUSED: $Config must have cpu_throttle=-700 or lower"
+  exit 4
+}
   Start-Process -FilePath $exe -ArgumentList '-f', $Config -WorkingDirectory $wd
   $deadline = (Get-Date).AddSeconds($BootTimeoutSec)
   while ((Get-Date) -lt $deadline) {

@@ -1,0 +1,12 @@
+# skidroad.txt - wheel smoke needs a road (ground 2): take the car to a long
+# northbound street (see car_street.txt) and slide on the handbrake in it.
+park 0 0 -18 0
+wait 30
+enter
+wait 150
+goto 62 74 face 0
+wait 10
+run 60 1 0 0 0
+run 14 1 0 1 1
+dump
+wait 280

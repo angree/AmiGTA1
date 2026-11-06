@@ -15,6 +15,34 @@
 #include "gta_render.h"
 #include "gta_traffic.h"
 
+/* ROW COPIES ARE OURS, NOT THE LIBRARY'S. libnix's memcpy goes through
+ * exec's CopyMem in ROM: a library call, a dispatch on the alignments, and -
+ * on a real Amiga - a fetch from slow ROM for every instruction of it. The
+ * profile put 10.8% of the game there (PROGRESS 251), for rows 32 bytes long.
+ * Unaligned longwords are fine on 68020 and up and on the PowerPC. */
+typedef unsigned long gta_row_long __attribute__((__may_alias__));
+
+static __inline__ void row_copy(unsigned char *d, const unsigned char *s, int n)
+{
+    while (n >= 4) {
+        *(gta_row_long *)(void *)d = *(const gta_row_long *)(const void *)s;
+        d += 4; s += 4; n -= 4;
+    }
+    while (n > 0) { *d++ = *s++; n--; }
+}
+
+static __inline__ void row_fill(unsigned char *d, int c, long n)
+{
+    unsigned long v = (unsigned char)c;
+    v |= v << 8; v |= v << 16;
+    while (n > 0 && ((unsigned long)d & 3)) { *d++ = (unsigned char)c; n--; }
+    while (n >= 4) {
+        *(gta_row_long *)(void *)d = (gta_row_long)v;
+        d += 4; n -= 4;
+    }
+    while (n > 0) { *d++ = (unsigned char)c; n--; }
+}
+
 #define TILE  GTA_TILE_DIM      /* 32 */
 #define FP    16
 
@@ -332,7 +360,7 @@ static void blit_lid(gta_view *v, const unsigned char *tile,
         cx1 == x0 + TILE && cy1 == y0 + TILE) {
         unsigned char *d = v->dst + (long)y0 * v->dst_pitch + x0;
         for (y = 0; y < TILE; y++) {
-            memcpy(d, tile, TILE);
+            row_copy(d, tile, TILE);
             d += v->dst_pitch;
             tile += TILE;
         }
@@ -402,7 +430,7 @@ static void blit_copy(gta_view *v, const unsigned char *src, int src_pitch,
     s = src + (long)(cy0 - y0) * src_pitch + (cx0 - x0);
     d = v->dst + (long)cy0 * v->dst_pitch + cx0;
     for (y = cy0; y < cy1; y++) {
-        memcpy(d, s, (size_t)run);
+        row_copy(d, s, run);
         s += src_pitch;
         d += v->dst_pitch;
     }
@@ -552,7 +580,7 @@ static void blit_vscale(gta_view *v, const unsigned char *tile,
     if (v->lc_vrow_ok[lg]) {
         const unsigned char *vr = v->lc_vrow[lg] + (cy0 - y0);
         for (y = cy0; y < cy1; y++) {
-            memcpy(dst, tile + ((long)*vr++ << 5) + sx, (size_t)run);
+            row_copy(dst, tile + ((long)*vr++ << 5) + sx, run);
             dst += pitch;
         }
     } else {
@@ -561,7 +589,7 @@ static void blit_vscale(gta_view *v, const unsigned char *tile,
         for (y = cy0; y < cy1; y++) {
             int sy = (int)(acc >> FP);
             if (sy > TILE - 1) sy = TILE - 1;
-            memcpy(dst, tile + (long)sy * TILE + sx, (size_t)run);
+            row_copy(dst, tile + (long)sy * TILE + sx, run);
             dst += pitch;
             acc += inc;
         }
@@ -1137,7 +1165,7 @@ void gta_render_expand(const unsigned char *src, int sw, int sh, int spitch,
         unsigned char *d = dst + (long)(y * sy) * dpitch;
 
         if (sx == 1) {
-            memcpy(d, s, (size_t)sw);
+            row_copy(d, s, sw);
         } else if (((long)(d - (unsigned char *)0) & 3L) != 0) {
             /* A destination row that is not longword aligned. The 68020 will
              * do a misaligned longword store, slowly; a 68000 would take an
@@ -1167,7 +1195,7 @@ void gta_render_expand(const unsigned char *src, int sw, int sh, int spitch,
         }
 
         if (sy == 2)
-            memcpy(d + dpitch, d, (size_t)(sw * sx));
+            row_copy(d + dpitch, d, sw * sx);
     }
 }
 
@@ -1859,12 +1887,12 @@ void gta_render_frame(gta_view *v)
      *
      * The full-width case is still a single memset, so nothing pays for this. */
     if (v->dst_pitch == v->dst_w) {
-        memset(v->dst, v->clear_index, (size_t)v->dst_pitch * v->dst_h);
+        row_fill(v->dst, v->clear_index, (long)v->dst_pitch * v->dst_h);
     } else {
         int cy;
         for (cy = 0; cy < v->dst_h; cy++)
-            memset(v->dst + (long)cy * v->dst_pitch, v->clear_index,
-                   (size_t)v->dst_w);
+            row_fill(v->dst + (long)cy * v->dst_pitch, v->clear_index,
+                     (long)v->dst_w);
     }
 
     /* How far out to look. Grid 0 has the smallest step, so it is the level

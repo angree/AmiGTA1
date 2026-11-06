@@ -1,0 +1,9 @@
+# carname.txt - getting into a car shows its english.fxt name ("car%d" by the
+# model, the original's routine) on the HUD plaque, top middle, for 45 original ticks.
+# Pass: 'car name - car0 "Beast GTS"' and the name on the dumped frame.
+wait 100
+park 0 0 -26 0
+enter
+wait 85
+dump
+wait 10

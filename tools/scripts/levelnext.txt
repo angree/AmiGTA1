@@ -1,0 +1,10 @@
+# levelnext.txt - the end screen's RETURN after a pass loads the next level.
+# Run with -WaitFor 'LIBERTY CITY 2'. NOTE the script is still in Work: when the
+# next level starts, so it passes that one too and walks on through the six:
+# harmless on the test machine (it unlocks them all), but stop it with the
+# next remote-test.
+wait 300
+levelend 1
+wait 10
+endkey 0
+wait 100

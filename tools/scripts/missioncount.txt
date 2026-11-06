@@ -1,0 +1,41 @@
+# missioncount.txt - threejobs.txt, then the level ends: the end screen must read
+# MISSIONS PASSED 2 of 11 (two MISSION_ENDs, each after DECCOUNT 552).
+wait 500
+goto 122 136      phone 68
+wait 250
+goto 167 97       car 189
+enter
+wait 160
+goto 115 104      the garage trigger at Dulli's
+wait 260
+enter
+wait 100
+goto 109 121      phone 72 - it rings you back
+wait 800
+goto 77 216       car 253
+enter
+wait 160
+goto 128 141      the passenger
+wait 260
+goto 173 80       door 254
+wait 320
+enter
+wait 120
+goto 123 136      phone 69 - the SECOND job
+wait 300
+goto 55 34        the ambush and the hell cars
+enter
+wait 150
+goto 110 7        the garage
+wait 220
+enter
+wait 120
+goto 81 56        phone 105
+wait 1500
+goto 105 41       the drop-off
+wait 2600
+
+levelend 2
+wait 10
+dump
+wait 30

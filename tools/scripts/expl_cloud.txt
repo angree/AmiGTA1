@@ -1,0 +1,16 @@
+# expl_cloud.txt - object 0x33, the black cloud at frame 10 of an explosion
+# (gta_marks.c). LC1. A rocket into a car parked 40 px north. The explosion is
+# 12 frames x 4 ticks; the cloud starts at about 36 ticks and lasts 48.
+# Pass: the dump shows a dark cloud at the wreck, over the end of the fireball.
+wait 100
+goto 64 64
+wait 20
+park 1 0 -40 0
+wait 20
+face 0
+weapon 3 5
+wait 10
+fire 1
+wait 60
+dump
+wait 100

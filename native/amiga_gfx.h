@@ -98,6 +98,7 @@ int amigagfx_backend(void);
  * open DEEP - see amigagfx_set_rtg_deep(). Nothing that touches the custom
  * chips, CIAs or the VBR may run when this is non-zero. */
 int amigagfx_is_morphos(void);
+const char *amigagfx_system(int *exec_ver);
 /* Lines the title bar of a new screen will take, asked of the default public
  * screen; safe before amigagfx_open(). */
 int amigagfx_title_bar_guess(void);

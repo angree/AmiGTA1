@@ -187,7 +187,7 @@
  * which is lost in the noise beside 2700 map lookups. A hundred pedestrians
  * would want a bucket per layer instead, and that is the change to make when
  * there are a hundred pedestrians - not before. */
-#define GTA_MAX_SPRITES 128
+#define GTA_MAX_SPRITES 176
 
 /* One sprite queued for this frame.
  *

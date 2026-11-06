@@ -1,0 +1,9 @@
+# splat.txt - the big splat 0x40, laid by a pool at the first tick of its fifth
+# frame (4 x 24 original ticks = 192 port ticks). No traffic needed: the final
+# dump of the script comes after the wait. The game's dump at "autodrive done"
+# OVERWRITES frame_live: the frame to look at must be the last one in a script.
+wait 200
+goto 62 74
+wait 100
+pool 30 0
+wait 620

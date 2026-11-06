@@ -72,7 +72,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.7.0
+TEXT = """AmiGTA v0.7.1
 A native Amiga port of Grand Theft Auto (1997) - AmigaOS 3.x and AROS on
 68k, and MorphOS (PowerPC)
 
@@ -80,11 +80,11 @@ A native Amiga port of Grand Theft Auto (1997) - AmigaOS 3.x and AROS on
 WHICH ARCHIVE
 ===========================================================================
 
-  AmiGTA-v0.7.0-68k      AmigaOS 3.1 and later, and AROS 68k. AmiGTA is a
+  AmiGTA-v0.7.1-68k      AmigaOS 3.1 and later, and AROS 68k. AmiGTA is a
                          68020 program; the same file also runs under
                          MorphOS's 68k emulation.
 
-  AmiGTA-v0.7.0-MorphOS  MorphOS on PowerPC. AmiGTA is a native PPC build
+  AmiGTA-v0.7.1-MorphOS  MorphOS on PowerPC. AmiGTA is a native PPC build
                          (its title bar says "AmiGTA PPC"); gtaprefs,
                          gtabake and gtaiff are the 68k tools, which
                          MorphOS runs as they are.
@@ -284,15 +284,20 @@ CONTROLS
                     The five are handed to you at the start only
                     because the crates that hold them are not built
                     yet - in the original you begin with your fists.
+    TAB             shout, as in the original.
 
   In a car
     Up / Down       throttle / reverse
     Left / Right    steer
     Space           handbrake
     Enter           get out. The car stays where you left it.
+    TAB             the horn, for as long as you hold it. In a police car
+                    the first press puts the siren on; hold TAB after that
+                    for the yelp.
 
   Any time
-    TAB             free camera (fly around without the player)
+    HELP            free camera (fly around without the player). This was
+                    TAB before v0.7.1, which gives TAB back to the horn.
     F1 / F2         full or half render resolution
     F3              Workbench title bar on/off
     F4              render width
@@ -302,6 +307,7 @@ CONTROLS
     - / =           zoom out / in
     SPACE           on foot with no car ahead: write the framebuffer to
                     frame.raw, beside the game
+    P               pause, and P again to play on
     ESC             pause and ask QUIT GAME? - Y or Return quits,
                     N or ESC plays on
 
@@ -368,6 +374,56 @@ pointer at all:
 Settings are written to gta.prefs beside the game, which is plain text you
 can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
+
+===========================================================================
+NEW IN v0.7.1
+===========================================================================
+
+  TYRE MARKS AND WHEEL SMOKE. A sliding car leaves marks on road, pavement
+  and grass and smokes on the road, by the original's rules and limits.
+
+  PAUSE on P: the world holds, the sound stops, as in the original.
+
+  WATER. Walk off a quay or land a jump short in the river and you drown.
+
+  BLOOD. A body leaves a pool and a splat that stay as long as it lies there,
+  a body shot along the ground leaves a trail, and a car sliding through blood
+  leaves red marks. An explosion ends in a black cloud, a fire smokes on the
+  road. Explosions and fire run at the original's pace: they were twice too
+  fast.
+
+  YOUR CAREER IS SAVED, in the original's own file Work:player_a.dat (made
+  on the first start if it is not there). A level opens when you pass the one
+  before it. At the end of a level - passed, failed, out of lives or quit -
+  the end screen shows your criminal record, the Public Enemies table and your
+  best scores; RETURN plays on, ESC goes back to the title. Out of lives is
+  GAME OVER now, not a free restart. Your lives are shown beside the score,
+  as in the original.
+
+  PLAYER on the title screen: left/right picks one of the eight players,
+  RETURN types a new name, R starts that player again from the first level.
+  The original's cheat names work as they did.
+
+  OPTIONS on the title: sound and music volume, the text speed and whether
+  the music plays only in cars or all the time, kept in player_a.dat like
+  the original, and the number of cars.
+
+  A wall blown up by a job leaves rubble, and a car coming down from a jump
+  throws sparks from its four corners.
+
+  GANG GUNMEN. People a job turns against you now shoot: some stand their
+  ground and fire in pairs, others run at you. Mostly they miss by a little
+  until they are close; at a car they aim straight.
+
+  THE HORN on TAB, the original's key: a horn in a car, the siren in a
+  police car, a shout on foot. The free camera moved to HELP.
+
+  The name of the car you get into is shown at the top, as in the original.
+
+  The renderer copies its rows of pixels itself instead of calling the
+  library's memcpy and memset, which went through the ROM.
+
+  This README now has the licence and credits section that v0.7.0's lacked.
 
 ===========================================================================
 NEW IN v0.7.0
@@ -561,18 +617,15 @@ than the WAVs they came from, but they are still roughly 1.3 MB a
 minute. You do not have to convert all of them.
 
 ===========================================================================
-WHAT IS NOT IN v0.7.0
+WHAT IS NOT IN v0.7.1
 ===========================================================================
 
   * Not every job has been played through - the first of each level
     has. What the game reaches is in its own log.
-  * Tyre marks, blood and oil are not drawn.
+  * Only your own car leaves tyre marks.
   * Trams stand still - as they do in the original, DOS and Windows.
   * Speed: a plain 68020 is not enough for the full city; an 030/040
     or faster with fast RAM is what it wants.
-  * There is no engine note. The original does not have one either -
-    its own code has nothing that holds a sound channel open - so this
-    is not a missing feature so much as a thing that was never there.
 
 ===========================================================================
 IF IT DOES NOT START
@@ -618,6 +671,46 @@ IF IT DOES NOT START
 
   A black screen with the machine still alive
       Try F3 to toggle the title bar, which reopens the screen.
+
+===========================================================================
+LICENCE AND CREDITS
+===========================================================================
+
+AmiGTA is MIT licensed, (c) 2026 angree, except for the following.
+
+The 68k AmiGTA contains the chunky-to-planar routines c2p1x1_6_c5_bm_040 and
+c2p_rect, (c) Mikael Kalms, used under their own terms. Their source, with
+his headers, is in the public repository.
+
+The reading of the game's data formats follows DMA Design's CityScape Data
+Structure specification and Carnage3D, whose licence requires this notice:
+
+    Copyright (c) 2019 jericho
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Thanks to stefkos for the first native MorphOS build.
+
+Grand Theft Auto is (c) DMA Design / BMG Interactive / Take-Two Interactive.
+This project is not affiliated with any of them and ships none of their
+files. You supply your own copy of the game.
 """
 
 data = (DATANOTE if MODE == "datanote" else TEXT).replace("\n", "\r\n")

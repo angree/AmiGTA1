@@ -77,7 +77,9 @@ typedef struct {
 
     int  heat;              /* 0..GTA_HEAT_CAP, never decays */
     int  level;             /* 0..4, recomputed from heat at every change */
+    int  no_police;         /* the iamthelaw cheat: the level reads 0, the heat keeps */
     long crimes[GTA_CRIME_COUNT]; /* this life's counters, by GTA_CRIME_* */
+    long total[GTA_CRIME_COUNT];  /* the level's: the end screen's Criminal Record */
 } gta_score;
 
 void gta_score_init(gta_score *s);

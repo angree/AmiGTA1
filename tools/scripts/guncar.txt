@@ -1,0 +1,12 @@
+# guncar.txt - the player sits in a parked car; a running gunman (type 0x18) put
+# 150 px west (car 0 parks east of him and soaks up shots from the north) shoots the CAR's centre with no scatter (GANGS.md section 3) and
+# stops 48 px away (1.5 blocks). Pass: 'fires at N px, the car', 'on the car 1'.
+wait 150
+park 0 0 -40 0
+wait 20
+enter
+wait 100
+gunman 24 -150 0
+wait 500
+dump
+wait 20

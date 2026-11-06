@@ -1,0 +1,11 @@
+# gameover.txt - no lives left and drowned: GAME OVER, the level ends with result 3
+# (m22dead) and the end screen. Pass: "GAME OVER", "result 3", frame = end screen.
+wait 100
+lives 0
+goto 91 109
+wait 30
+face 192
+run 40 1 0 0 0
+wait 300
+dump
+wait 30

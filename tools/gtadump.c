@@ -28,6 +28,7 @@
 #include "../native/gta_font.h"
 #include "../native/gta_text.h"
 #include "../native/gta_peds.h"
+#include "../native/gta_career.h"
 
 static void put_u32le(unsigned char *p, unsigned long v)
 {
@@ -5988,6 +5989,49 @@ static int cmd_voicecheck(const char *path)
     return bad != 0;
 }
 
+/* career <player_a.dat> [record <level 0..5> <score> <result>] [cheat <name>]
+ * [slot <n>] ... : load (or seed), apply the actions in order, save, and print
+ * every slot's bests and every public table. */
+static int cmd_career(int argc, char **argv)
+{
+    gta_career c;
+    int i, s, l, r = gta_career_load(&c, argv[0]);
+    printf("career: %s %s\n", argv[0], r == 0 ? "read" : r == 1 ? "seeded" : "FAILED");
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "record") == 0 && i + 3 < argc) {
+            gta_career_record_level(&c, atoi(argv[i + 1]), atol(argv[i + 2]),
+                                    atoi(argv[i + 3]));
+            printf("record level %s score %s result %s: new best %d, new row %d\n",
+                   argv[i + 1], argv[i + 2], argv[i + 3], c.new_best, c.new_row);
+            i += 3;
+        } else if (strcmp(argv[i], "cheat") == 0 && i + 1 < argc) {
+            printf("cheat [%s]: 0x%x\n", argv[i + 1],
+                   gta_career_cheat(&c, gta_career_slot(&c), argv[i + 1]));
+            i++;
+        } else if (strcmp(argv[i], "slot") == 0 && i + 1 < argc) {
+            gta_career_set_slot(&c, atoi(argv[++i]));
+        } else if (strcmp(argv[i], "reset") == 0) {
+            gta_career_reset_slot(&c, gta_career_slot(&c));
+        }
+    }
+    if (gta_career_save(&c, argv[0]) != 0)
+        printf("career: could not write %s\n", argv[0]);
+    printf("current slot %d\n", gta_career_slot(&c));
+    for (s = 0; s < GTA_CAREER_SLOTS; s++) {
+        printf("  slot %d %-14s", s, gta_career_name(&c, s));
+        for (l = 0; l < GTA_CAREER_LEVELS; l++)
+            printf(" %9ld", gta_career_best(&c, s, l));
+        printf("\n");
+    }
+    for (l = 0; l < GTA_CAREER_LEVELS; l++) {
+        printf("  table %d:", l);
+        for (i = 2; i >= 0; i--)
+            printf("  %s %ld", gta_career_hs_name(&c, l, i), gta_career_hs_score(&c, l, i));
+        printf("\n");
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 4 && strcmp(argv[1], "stats") == 0)
@@ -6144,6 +6188,8 @@ int main(int argc, char **argv)
         return cmd_carinfo(argv[2], argc >= 4 && strcmp(argv[3], "-v") == 0);
     if (argc >= 3 && strcmp(argv[1], "objinfo") == 0)
         return cmd_objinfo(argv[2]);
+    if (argc >= 3 && strcmp(argv[1], "career") == 0)
+        return cmd_career(argc - 2, argv + 2);
 
     if (argc >= 10 && strcmp(argv[1], "mode") == 0)
         return cmd_mode(argv[2], argv[3], atoi(argv[4]), atoi(argv[5]), argv[6],

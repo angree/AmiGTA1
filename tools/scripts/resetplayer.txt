@@ -1,0 +1,4 @@
+# resetplayer.txt - R on the title's PLAYER line: cancel once, then reset player 3.
+# Pass: one 'player 3 reset' line, menu0 shows RESET Katie? NO, menu1 YES.
+menukeys down right t:r dump esc t:r down dump ret dump left up ret
+wait 20

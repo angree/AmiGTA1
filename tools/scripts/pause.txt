@@ -1,0 +1,9 @@
+# pause.txt - P holds the world. As the last line the pause is real, so the next
+# remote-test must still reload the game: the poll runs under the pause too.
+# Pass: the final frame shows the text, "gta: paused" in the log, and a second
+# remote-test run comes up.
+wait 100
+pause
+wait 10
+dump
+wait 20

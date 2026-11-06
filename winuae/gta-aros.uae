@@ -29,8 +29,8 @@ fpu_model=0
 cpu_compatible=false
 cpu_24bit_addressing=false
 cpu_speed=max
-cpu_throttle=0.0
-cachesize=8192
+cpu_throttle=-740.0
+cachesize=0
 
 ; --- Chipset: A4000 AGA ---
 chipset=aga

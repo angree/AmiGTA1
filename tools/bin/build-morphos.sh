@@ -31,7 +31,7 @@ OPT="-O2 -fno-strict-aliasing -fwrapv -fsigned-char -noixemul"
 CF="$OPT -I$N -w"
 
 SRC="gta_style.c gta_tiles.c gta_render.c gta_hud.c gta_trig.c gta_player.c
-gta_car.c gta_nav.c gta_vehphys.c gta_peds.c gta_score.c gta_weapon.c
+gta_car.c gta_nav.c gta_vehphys.c gta_peds.c gta_score.c gta_weapon.c gta_marks.c gta_career.c
 gta_pickup.c gta_script.c gta_script_run.c gta_front.c gta_font.c gta_text.c
 gta_route.c gta_traffic.c gta_train.c gta_service.c gta_map.c gta_prefs.c
 gta_sfx.c gta_iff.c gta_audio.c amiga_adpcm.c amiga_audio.c amiga_gfx.c

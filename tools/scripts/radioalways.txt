@@ -1,0 +1,5 @@
+# radioalways.txt - OPTIONS, RADIO to ALWAYS, START: the music starts on foot.
+# Pass: 'options - radio always', a radio line before any 'enter'; menu0 shows
+# the page. Run radioincars.txt afterwards to put it back.
+menukeys down down down ret down down down ret dump down down ret up up up ret
+wait 150

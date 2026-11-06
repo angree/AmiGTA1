@@ -1,0 +1,4 @@
+# nocheats.txt - forget the session's cheats (Work:cheats.txt), as the title's QUIT
+# does, and start. Run before cheats.txt.
+menukeys nocheat ret
+wait 20

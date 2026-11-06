@@ -1,0 +1,20 @@
+# bloodyskid.txt - the bloody mark, object 0x0c (gta_marks.c). As skidroad.txt,
+# with pools laid (fixture `pool dx dy`, from the car's centre) where the slide
+# starts. Pass: part of the two lines is red, not black.
+park 0 0 -18 0
+wait 30
+enter
+wait 150
+goto 62 74 face 0
+wait 10
+run 60 1 0 0 0
+pool 5 -10
+pool -5 -10
+pool 5 -20
+pool -5 -20
+pool 5 -30
+pool -5 -30
+run 14 1 0 1 1
+wait 12
+dump
+wait 280

@@ -1,0 +1,12 @@
+# skidmarks.txt - get in, speed up, then a handbrake turn on the road.
+park 0 0 -18 0
+wait 30
+enter
+wait 150
+run 70 1 0 0 0
+run 18 1 0 1 1
+wait 1
+dump
+wait 3
+wait 20
+wait 300

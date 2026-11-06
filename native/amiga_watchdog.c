@@ -5,6 +5,7 @@
 #include <exec/types.h>
 #include <exec/tasks.h>
 #include <exec/execbase.h>
+#include <exec/memory.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <proto/exec.h>
@@ -48,10 +49,11 @@ static void wd_report(int stale)
     /* The saved registers at tc_SPReg: d0-d7/a0-a6 (60 bytes), then the
      * interrupt frame Exec's dispatcher left there - SR, PC, format. */
     if (sp && ((unsigned long)sp & 1) == 0) {
-        sr  = ((unsigned long)sp[60] << 8) | sp[61];
-        pc  = ((unsigned long)sp[62] << 24) | ((unsigned long)sp[63] << 16)
-            | ((unsigned long)sp[64] << 8)  |  sp[65];
-        fmt = ((unsigned long)sp[66] << 8) | sp[67];
+        /* PC, SR, then d0-a6: measured with `pcprof 2`, 2026-11-05. */
+        sr  = ((unsigned long)sp[4] << 8) | sp[5];
+        pc  = ((unsigned long)sp[0] << 24) | ((unsigned long)sp[1] << 16)
+            | ((unsigned long)sp[2] << 8)  |  sp[3];
+        fmt = 0;
     }
 
     n += snprintf(buf + n, sizeof buf - n,
@@ -77,7 +79,7 @@ static void wd_report(int stale)
             n += snprintf(buf + n, sizeof buf - n, " %08lx", st[i]);
         n += snprintf(buf + n, sizeof buf - n, "\n");
         /* The stack proper, above the frame: return addresses. */
-        st = (const unsigned long *)(sp + 68);
+        st = (const unsigned long *)(sp + 66);
         for (i = 0; i < 48 && n < (int)sizeof buf - 12; i++) {
             if ((i & 7) == 0)
                 n += snprintf(buf + n, sizeof buf - n, "%s  usp+%03x:",
@@ -101,14 +103,101 @@ static void wd_report(int stale)
     }
 }
 
+/* The profiler - see amiga_watchdog.h. */
+#define PCPROF_MAX 16384
+static int s_prof_on;
+static unsigned long *s_prof;
+static unsigned long s_prof_n;
+
+void amiga_watchdog_set_profile(int on) { s_prof_on = on; }
+
+static void prof_sample(void)
+{
+    const unsigned long *sp;
+    unsigned long pc, ra = 0;
+    unsigned long lo = (unsigned long)(void *)amiga_watchdog_start - 0x100000UL;
+    unsigned long hi = (unsigned long)(void *)amiga_watchdog_start + 0x100000UL;
+    int i;
+
+    if (!s_prof || s_prof_n >= PCPROF_MAX)
+        return;
+    /* READY only: then its registers are on its stack. WAIT is a sleep in the
+     * OS - the frame cap, the disk - and is counted with pc 0. */
+    if (s_main->tc_State != TS_READY) {
+        s_prof[s_prof_n * 3] = 0;
+        s_prof[s_prof_n * 3 + 1] = 0;
+        s_prof[s_prof_n * 3 + 2] = (unsigned long)amiga_wd_phase;
+        s_prof_n++;
+        return;
+    }
+    sp = (const unsigned long *)s_main->tc_SPReg;
+    if (!sp || ((unsigned long)sp & 1))
+        return;
+    /* `pcprof 2`: the raw top of the stack, to find the frame's layout. */
+    if (s_prof_on == 2) {
+        if (s_prof_n + 8 < PCPROF_MAX) {
+            const unsigned short *w = (const unsigned short *)sp;
+            for (i = 0; i < 48; i++)
+                s_prof[s_prof_n * 3 + i / 2] = (i & 1)
+                    ? (s_prof[s_prof_n * 3 + i / 2] << 16) | w[i]
+                    : w[i];
+            s_prof_n += 8;
+        }
+        return;
+    }
+    pc = sp[0];              /* the layout, found with `pcprof 2`: PC, SR, d0-a6 */
+    /* A PC in the ROM or a library says little: the first return address
+     * above the frame that lies in our own code says who called it. */
+    sp = (const unsigned long *)((const char *)sp + 66);
+    for (i = 0; i < 32; i++) {
+        if (sp[i] >= lo && sp[i] < hi && !(sp[i] & 1)) {
+            ra = sp[i];
+            break;
+        }
+    }
+    s_prof[s_prof_n * 3] = pc;
+    s_prof[s_prof_n * 3 + 1] = ra;
+    s_prof[s_prof_n * 3 + 2] = (unsigned long)amiga_wd_phase;
+    s_prof_n++;
+}
+
+static void prof_write(void)
+{
+    BPTR fh;
+    unsigned long head[3];
+    if (!s_prof)
+        return;
+    head[0] = 0x50435046UL;
+    head[1] = (unsigned long)(void *)amiga_watchdog_start;
+    head[2] = s_prof_n;
+    fh = Open((CONST_STRPTR)"pcprof.bin", MODE_NEWFILE);
+    if (fh) {
+        Write(fh, head, sizeof head);
+        Write(fh, s_prof, s_prof_n * 12);
+        Close(fh);
+    }
+    FreeMem(s_prof, PCPROF_MAX * 12);
+    s_prof = NULL;
+}
+
 static void wd_entry(void)
 {
     unsigned long last = amiga_wd_beat;
     int stale = 0;
     int reported = 0;
+    int slice = 0;
 
     while (!s_stop) {
-        Delay(50);                              /* one second */
+        if (s_prof) {
+            /* The same one-second heartbeat, from fifty sleeps of one tick. */
+            Delay(1);
+            prof_sample();
+            if (++slice < 50)
+                continue;
+            slice = 0;
+        } else {
+            Delay(50);                          /* one second */
+        }
         if (amiga_wd_beat != last) {
             last = amiga_wd_beat;
             stale = 0;
@@ -125,6 +214,7 @@ static void wd_entry(void)
         }
     }
     (void)reported;
+    prof_write();
     s_done = 1;
 }
 
@@ -137,6 +227,9 @@ int amiga_watchdog_start(void)
     s_done = 0;
     amiga_wd_beat = 0;
     amiga_wd_phase = 0;
+    s_prof_n = 0;
+    if (s_prof_on)
+        s_prof = (unsigned long *)AllocMem(PCPROF_MAX * 12, MEMF_ANY);
 
     /* The report goes beside the game, whatever the watchdog's own current
      * directory would have been. NP_CurrentDir takes the lock. */
@@ -167,7 +260,7 @@ void amiga_watchdog_stop(void)
         return;
     s_stop = 1;
     /* It wakes once a second; give it two. */
-    for (i = 0; i < 40 && !s_done; i++)
+    for (i = 0; i < 200 && !s_done; i++)   /* the profile file takes longer */
         Delay(5);
     s_proc = NULL;
 }

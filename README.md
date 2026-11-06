@@ -244,7 +244,9 @@ mine, and what is deliberately absent, is set out in
 * **DMA Design** — Grand Theft Auto, and the CityScape Data Structure
   specification they published.
 * **[Carnage3D](https://github.com/codenamecpp/carnage3d)** (MIT, © 2019
-  jericho) — the reading of the data formats.
+  jericho) — the reading of the data formats. Notice in
+  [THIRD-PARTY.md](THIRD-PARTY.md).
+* **stefkos** — the first native MorphOS/PowerPC build.
 
 Grand Theft Auto is © DMA Design / BMG Interactive / Take-Two Interactive.
 This project is not affiliated with any of them, and it ships nothing of theirs.

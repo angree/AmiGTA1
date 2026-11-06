@@ -50,4 +50,14 @@ extern volatile int amiga_wd_phase;
 int  amiga_watchdog_start(void);
 void amiga_watchdog_stop(void);
 
+/* THE PROFILER: `pcprof 1` in opts.txt. Call before amiga_watchdog_start. The
+ * same process then samples the main task's saved PC 50 times a second and
+ * amiga_watchdog_stop writes pcprof.bin beside the game, big-endian longs: a
+ * header (magic 'PCPF', the address of amiga_watchdog_start, the count), then
+ * pc, the first return address on the stack, the phase, for each sample.
+ * tools/bin/pcprof.py maps them to functions. A sampled PC tells the whole
+ * frame's story without a clock in every section, and costs next to nothing.
+ * 68k only: the saved frame's layout is exec's. */
+void amiga_watchdog_set_profile(int on);
+
 #endif /* AMIGA_WATCHDOG_H */

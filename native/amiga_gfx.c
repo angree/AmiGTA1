@@ -49,6 +49,7 @@
 #include <graphics/gfxbase.h>
 #include <graphics/displayinfo.h>
 #include <exec/memory.h>
+#include <exec/execbase.h>
 #include <exec/io.h>
 #include <devices/input.h>
 #include <devices/inputevent.h>
@@ -327,6 +328,16 @@ static int is_morphos(void)
 }
 
 int amigagfx_is_morphos(void) { return is_morphos(); }
+
+/* For the log: which system the one 68k binary found itself on. AROS has
+ * aros.library in its ROM, AmigaOS has not. */
+const char *amigagfx_system(int *exec_ver)
+{
+    *exec_ver = SysBase->LibNode.lib_Version;
+    if (is_morphos()) return "MorphOS";
+    if (FindResident((CONST_STRPTR)"aros.library")) return "AROS";
+    return "AmigaOS";
+}
 
 /* The lines a screen's title bar will take (BarHeight + 1), read off the
  * default public screen before ours exists: our screen opens with the same

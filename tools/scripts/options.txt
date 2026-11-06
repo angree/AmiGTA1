@@ -1,0 +1,7 @@
+# options.txt - the title's OPTIONS page: sound down, music up, text to fast, a
+# frame, then all three back to the defaults (7, 6, normal), BACK, START.
+# Pass: four 'options -' lines ending 'sound 7, music 6, text 2'; menu0 shows
+# SOUND 6 MUSIC 7 TEXT FAST.
+menukeys down down down ret left down right down ret dump
+menukeys up up right down left down left dump down down ret up up up ret
+wait 20

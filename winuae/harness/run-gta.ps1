@@ -61,6 +61,14 @@ $log = Join-Path $WorkDir "gta.log"
 if (-not (Test-Path $exe)) { Write-Output "ERROR: WinUAE not found at $exe"; exit 1 }
 if (-not (Test-Path $Config)) { Write-Output "ERROR: config not found: $Config"; exit 1 }
 
+# THE DEVELOPER'S RULE (2026-11-05): no WinUAE of ours ever runs weaker than -70%
+# CPU, JIT or not. This machine is shared; a guest at full power gets closed.
+$cfgText = Get-Content -LiteralPath $Config -Raw
+$thr = [regex]::Match($cfgText, '(?m)^cpu_throttle=(-?[\d.]+)')
+if (-not $thr.Success -or [double]::Parse($thr.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt -700) {
+  Write-Output "REFUSED: $Config must have cpu_throttle=-700 or lower"
+  exit 4
+}
 # NOTHING IS KILLED ON THE WAY IN - not even this config's own instance.
 # 2026-09-16: this line used to be `kill_ours.ps1 -Config $cfgName`, and it
 # shot down the developer's own game on gta-aga.uae while he was checking a

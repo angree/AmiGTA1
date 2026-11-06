@@ -1,0 +1,10 @@
+# drown.txt - a man walks off the quay at (91,109), the water is west of it, one
+# layer of air down. Pass: "in the water", then "WASTED" about 70 ticks later, the
+# splash 0x36 in the frame, and a respawn at a hospital.
+wait 100
+goto 91 109
+wait 20
+face 192
+run 40 1 0 0 0
+dump
+wait 200

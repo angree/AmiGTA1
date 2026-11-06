@@ -139,6 +139,7 @@ static void ped_reset(gta_peds *ps, gta_ped *p, long x, long y, int layer,
     p->flee_aim = 0;
     p->down = 0;
     p->corpse = 0;
+    p->bled = 0;
     p->pull = -1;
     p->pull_tick = 0;
     p->shot = p->shot_step = p->shot_tick = p->shot_dir = 0;
@@ -802,6 +803,7 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
             }
             if (--p->burn == 0) {
                 p->corpse = 1;
+                p->bled = 1;
                 if (p->cop) ps->stat_cops_killed++;
                 p->speed = 0;
                 p->tx = p->ty = 0;
@@ -1036,6 +1038,63 @@ void gta_peds_tick(gta_peds *ps, const gta_map *m, long cam_x, long cam_y)
                         p->mode = GTA_PED_MODE_MISSION;
                         p->speed = 0;
                         p->tx = p->ty = 0;
+                    }
+                } else if (p->gang && p->hunt_pl) {
+                    /* A GUNMAN (GANGS.md). The original's clock is 25 Hz,
+                     * this one 50, so every count is doubled. */
+                    long sdx = (ps->pl_x - p->x) >> 16, sdy = (ps->pl_y - p->y) >> 16;
+                    int on_screen = sdx > -190 && sdx < 190 && sdy > -120 && sdy < 120
+                                    && ps->pl_layer == p->layer;
+                    int near_ = d < (ps->pl_in_car ? 48 : 16);   /* 0x60 / 0x20 halved */
+                    if (p->gang == 1)
+                        p->speed = 0;                   /* mode 3: never moves */
+                    else
+                        p->speed = near_ || p->gang_burst ? 0 : 3;
+                    if (p->gang_cool > 0) p->gang_cool--;
+                    if (!on_screen) {
+                        /* off the view: no fire; mode 3 fires the moment he
+                         * shows, mode 4 waits 50 of the original's ticks */
+                        p->gang_cool = p->gang == 1 ? 0 : 100;
+                        p->gang_burst = 0;
+                    } else if (p->gang_cool == 0) {
+                        /* THE AIM: exact into a car, otherwise off to one
+                         * side unless the shared counter has run past its
+                         * limit (the original's routine) */
+                        /* The original moves the aim POINT r px sideways; a
+                         * heading here has only 256 steps (2.5 px at 100 px),
+                         * so the same miss is turned into whole steps,
+                         * rounded UP so that it really passes him by r. */
+                        int lim = p->gang_miss == 8 ? 10 : 5, turn = 0;
+                        if (!ps->pl_in_car && p->gang_miss) {
+                            if (ps->gang_aim > lim) {
+                                ps->gang_aim = 0;
+                            } else {
+                                long r = d > 32 ? p->gang_miss : (d > 16 ? p->gang_miss / 2 : 0);
+                                if (r > 0 && d > 0)
+                                    turn = (int)((r * 41 + d - 1) / d);   /* 256/2pi */
+                                if (ps->gang_side) turn = -turn;
+                                ps->gang_aim++;
+                            }
+                            ps->gang_side ^= 1;
+                        }
+                        p->shoot_req = 1;
+                        p->shoot_angle = (angle_to(p->x, p->y, ps->pl_x, ps->pl_y) + turn) & 255;
+                        p->angle = p->shoot_angle;
+                        if (++ps->stat_gang_shots <= 12) {
+                            printf("gta: gunman %d (%s, miss %d) fires at %ld px%s\n",
+                                   i, p->gang == 1 ? "standing" : "running",
+                                   p->gang_miss, d, ps->pl_in_car ? ", the car" : "");
+                            fflush(stdout);
+                        }
+                        if (p->gang == 1) {
+                            /* two shots 15 ticks apart every 65 */
+                            if (!p->gang_burst) { p->gang_burst = 1; p->gang_cool = 30; }
+                            else                { p->gang_burst = 0; p->gang_cool = 100; }
+                        } else {
+                            /* close in about every 16 ticks, at range 215 */
+                            p->gang_cool = near_ ? 32 : 430;
+                            p->gang_burst = 0;
+                        }
                     }
                 } else {
                     /* HE CHASES, AND HE DOES NOT SHOOT. The first version
@@ -1744,6 +1803,36 @@ int gta_peds_find(const gta_peds *ps, unsigned long serial,
     return 0;
 }
 
+int gta_peds_set_gang(gta_peds *ps, unsigned long serial, int type)
+{
+    int i, kind, miss;
+    /* GANGS.md section 1: type -> role -> mode and the aim scatter */
+    switch (type) {
+    case 1: case 0x15: kind = 1; miss = 8; break;      /* 0x18 */
+    case 0x16:         kind = 1; miss = 4; break;      /* 0x1a */
+    case 0x17:         kind = 1; miss = 0; break;      /* 0x1b */
+    case 8: case 0x18: kind = 2; miss = 8; break;      /* 0x1c */
+    case 0x19:         kind = 2; miss = 4; break;      /* 0x1d */
+    case 0x1a:         kind = 2; miss = 0; break;      /* 0x1e */
+    default:
+        if (type >= 0x1b && type <= 0x28) { kind = 2; miss = 8; break; } /* 0x1c kept */
+        return 0;
+    }
+    if (!serial)
+        return 0;
+    for (i = 0; i < GTA_MAX_PEDS; i++) {
+        gta_ped *p = &ps->p[i];
+        if (p->serial != serial || !p->alive || p->corpse)
+            continue;
+        p->gang = (unsigned char)kind;
+        p->gang_miss = (unsigned char)miss;
+        p->gang_cool = 0;
+        p->gang_burst = 0;
+        return 1;
+    }
+    return 0;
+}
+
 int gta_peds_mission_ai(gta_peds *ps, unsigned long serial, int mode,
                         long tx, long ty, int on_player)
 {
@@ -2011,6 +2100,7 @@ void gta_peds_revive(gta_peds *ps, int i)
     if (!p->alive || !p->corpse)
         return;
     p->corpse = 0;
+    p->bled = 0;
     p->down = 0;
     p->fall = 0;
     p->shot = 0;

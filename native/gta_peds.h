@@ -145,6 +145,13 @@ typedef struct {
     /* HUNT: the target is the PLAYER declaration, so it is not a point that
      * can be resolved once - it has to be re-read every tick. */
     unsigned char hunt_pl;
+    /* A GUNMAN (the research notes): roles 0x18, 0x1a..0x1e. gang 0 = not
+     * one; 1 stands and shoots (mode 3), 2 runs at the target and shoots
+     * (mode 4). gang_miss is the sideways miss in pixels here (the
+     * original's 16/8/0 halved), gang_cool the port ticks to the next
+     * shot, gang_burst the second shot of a standing gunman's pair. */
+    unsigned char gang, gang_miss, gang_burst;
+    short gang_cool;
     /* SET_PED_SPEED: the pace PED_SENDTO walks him at (the original's
      * ped+8); 0 = the default 2, a brisk walk. 3 jogs, 4 runs. */
     unsigned char send_speed;
@@ -176,6 +183,7 @@ typedef struct {
      * corpse: dead for good, lies until GTA_CORPSE_TICKS off-screen. */
     int  down;
     int  corpse;
+    int  bled;                 /* his blood has been laid: gta_marks.c */
 
     /* BEING PULLED OUT OF A CAR - the original's states 0x93..0x98
      * (LEFTOFF.md "THE CARJACK VICTIM"). -1 = not; 0..5 = the state, each
@@ -237,9 +245,9 @@ typedef struct {
 
 /* A hundred of the original's ticks, one health point each. */
 #define GTA_BURN_TICKS      100
-/* The fire object's own run of frames, three ticks each. */
-#define GTA_FIRE_FRAMES       7
-#define GTA_FIRE_FRAME_TICKS  3
+/* The fire object 0x2e's own run: 8 frames of 3 original ticks, 6 of the port's. */
+#define GTA_FIRE_FRAMES       8
+#define GTA_FIRE_FRAME_TICKS  6
 
 #define GTA_SHOT_STATES     4
 #define GTA_SHOT_STATE_TICKS 4
@@ -322,6 +330,10 @@ typedef struct {
      * 4). Set by the game every tick. */
     int  cop_shoot;
     long stat_cop_shots;
+    /* the gunmen's aim (GANGS.md section 3): ONE counter and one side flag
+     * shared by all of them, as the original's table/6 are */
+    int gang_aim, gang_side;
+    long stat_gang_shots;
 } gta_peds;
 
 void gta_peds_init(gta_peds *ps, const gta_tiles *t, unsigned long seed);
@@ -349,6 +361,11 @@ int gta_peds_take_mission(gta_peds *ps, unsigned long serial);
  * last is "stand still again"); (tx,ty) is the target in 16.16 world pixels
  * and `on_player` makes it follow the player instead. 1 when there was such
  * a person. */
+/* CHANGE_PED_TYPE's gunmen: script type 1, 8, 0x15..0x28 make him one of
+ * the six gang roles, armed with a pistol (the original's routine). Returns 1 if the
+ * type is a gunman. */
+int gta_peds_set_gang(gta_peds *ps, unsigned long serial, int type);
+
 int gta_peds_mission_ai(gta_peds *ps, unsigned long serial, int mode,
                         long tx, long ty, int on_player);
 

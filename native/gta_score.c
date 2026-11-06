@@ -9,6 +9,9 @@
 
 void gta_score_init(gta_score *s)
 {
+    int i;
+    for (i = 0; i < GTA_CRIME_COUNT; i++)
+        s->total[i] = 0;
     s->score = 0;
     s->multiplier = 1;
     s->streak_type = -1;
@@ -18,6 +21,7 @@ void gta_score_init(gta_score *s)
     s->kills = 0;
     s->heat = 0;
     s->level = 0;
+    s->no_police = 0;
     gta_score_new_life(s);
 }
 
@@ -72,12 +76,15 @@ static int crime_heat(int crime)
 int gta_score_crime(gta_score *s, int crime)
 {
     int before = s->level;
-    if (crime >= 0 && crime < GTA_CRIME_COUNT)
+    if (crime >= 0 && crime < GTA_CRIME_COUNT) {
         s->crimes[crime]++;
+        s->total[crime]++;
+    }
     s->heat += crime_heat(crime);
     if (s->heat > GTA_HEAT_CAP)
         s->heat = GTA_HEAT_CAP;
-    s->level = gta_score_level_of(s->heat);
+    /* the original's table, "Police Deactivated": the level is forced to 0 */
+    s->level = s->no_police ? 0 : gta_score_level_of(s->heat);
     if (s->level != before) {
         printf("gta: wanted level %d -> %d (heat %d, crime %d)\n",
                before, s->level, s->heat, crime);
@@ -93,7 +100,7 @@ void gta_score_force_level(gta_score *s, int level)
     if (level > 4) level = 4;
     if (s->heat < gta_score_threshold(level))
         s->heat = gta_score_threshold(level);
-    s->level = gta_score_level_of(s->heat);
+    s->level = s->no_police ? 0 : gta_score_level_of(s->heat);
     if (s->level != before) {
         printf("gta: wanted level %d -> %d (forced, heat %d)\n",
                before, s->level, s->heat);

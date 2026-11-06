@@ -44,6 +44,8 @@
 #include "gta_vehphys.h"
 #include "gta_peds.h"
 #include "gta_weapon.h"
+#include "gta_marks.h"
+#include "gta_career.h"
 #include "gta_score.h"
 #include "gta_pickup.h"
 #include "gta_script.h"
@@ -218,13 +220,19 @@ static char tiles_path[64], map_path[64], sfx_path[64];
 #define KEY_NUMPLUS  0x5E
 #define KEY_LSHIFT 0x60
 #define KEY_RSHIFT 0x61
-#define KEY_TAB    0x42     /* switch between walking and free camera */
+#define KEY_TAB    0x42     /* the original's special key: horn / siren / shout */
+#define KEY_HELP   0x5F     /* switch between walking and free camera */
 #define KEY_RETURN 0x44     /* enter / leave the nearest car */
 #define KEY_CTRL   0x63     /* fire - the original's Left Ctrl, a latch */
 #define KEY_X      0x32     /* next weapon */
 #define KEY_Z      0x31     /* previous weapon */
 #define KEY_Y      0x15     /* QUIT GAME? - yes */
 #define KEY_N      0x36     /* QUIT GAME? - no */
+#define KEY_P      0x19     /* pause */
+#define KEY_BACKSPACE 0x41  /* the name entry */
+#define KEY_DEL    0x46
+#define KEY_NUMSTAR 0x5D    /* the callmenigel cheat */
+#define KEY_R      0x13     /* the title: reset the player */
 
 /* Function keys. F1..F10 are 0x50..0x59 on the Amiga keyboard. */
 #define KEY_F1     0x50
@@ -506,6 +514,7 @@ static int opt_screen2x = 0;
  * So it is opt-in. `deploy.sh` writes `selftest 1` into the emulator's
  * opts.txt, so every unattended run still exercises it and the regression
  * cover is unchanged; a shipped archive has no opts.txt and skips it. */
+static int opt_mips = 0;
 static int opt_selftest = 0;
 static int opt_bench = 0;       /* `bench 1`: the startup benchmark (218: ours, not the player's) */
 /* -1 = leave gta.prefs alone; 0 = silent; 1 = on. See the opts.txt parser. */
@@ -589,8 +598,21 @@ static char brief_text[400];
 static int  brief_ticks, brief_kind;
 static char pager_line[400];
 static int  pager_ticks, pager_px, pager_secs, pager_led;
+/* THE TEXT SPEED (options, player_a.dat byte 2): 1 slow, 2 normal, 3 fast.
+ * the original's routine turns it into the brief's divisor 1/2/4 and the pager's
+ * 1/2/3 px an original tick - at 640 wide, so half that here. */
+static int  g_text_speed = 2, pager_frac;
 static char big_text[80];
 static int  big_ticks;
+/* THE CAR'S NAME as he gets in: the original's routine (the player takes a car) ->
+ * the original's routine, which looks up english.fxt's "car%d" by the model
+ * (car+0x22) and queues it as message kind 200 (the original's routine: 45 ticks, an
+ * older name of the same kind is dropped first). the original's routine draws kind 200
+ * as HUD sprite +2 centred at the top with the text centred three rows into
+ * it. 45 of the original's ticks are 90 here (the countdown, the original's routine,
+ * is taken to run once an original tick - inferred). */
+static char carname_text[64];
+static int  carname_ticks;
 
 /* The window in the pager device the text shows through, measured off the
  * sprite: the dark panel runs from x=9 to x=71 and y=7 to y=18 of the 80x30
@@ -633,7 +655,8 @@ static void brief_show(int kind, const char *s)
         return;                         /* the important one keeps the box */
     text_copy(brief_text, (int)sizeof brief_text, s);
     brief_kind = kind;
-    brief_ticks = (text_len(s) + 24) * 2;
+    brief_ticks = (text_len(s) + 24)
+                * (g_text_speed == 1 ? 4 : g_text_speed == 3 ? 1 : 2);
 }
 
 /* (c) - the big card. */
@@ -842,7 +865,7 @@ static void script_arrow(void *ctx, int on, long wx, long wy)
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.7.0"
+#define GTA_VERSION "v0.7.1"
 /* The native MorphOS build says so on its title bar; the 68k build is the
  * same program on AmigaOS, AROS and MorphOS's 68k emulation. */
 #ifdef __MORPHOS__
@@ -1404,18 +1427,141 @@ static gta_font  menu_font;
 static int       have_menu_font;
 static unsigned char front_ink;         /* brightest entry of f_pal */
 
-#define MENU_ITEMS 4
+#define MENU_ITEMS 5
 static const char *const menu_item[MENU_ITEMS] = {
-    "START GAME", "LEVEL", "AMIGA OPTIONS", "QUIT"
+    "START GAME", "PLAYER", "LEVEL", "OPTIONS", "QUIT"
 };
-#define MENU_LEVEL   1
-#define MENU_OPTIONS 2
-#define MENU_QUIT    3
+#define MENU_PLAYER  1
+#define MENU_LEVEL   2
+#define MENU_OPTIONS 3
+#define MENU_QUIT    4
+
+static gta_career career;      /* see level_over() */
+/* GTA_CHEAT_* typed this session. The original keeps them in RAM until it
+ * exits; this port leaves and restarts between levels, so they are carried
+ * in Work:cheats.txt, which the title's QUIT removes. */
+static int g_cheats;
+static int cheats_at_load;       /* what this level was started with */
+
+/* THE OPTIONS live in the career file (CAREER.md section 1): byte 0 the
+ * sound 0..7, byte 1 the music 0..7, byte 2 the text speed 1..3. */
+static int opt_sound(void) { int v = career.b[0]; return v > 7 ? 7 : v; }
+static int opt_music(void) { int v = career.b[1]; return v > 7 ? 7 : v; }
+static int opt_text(void)  { int v = career.b[2]; return v < 1 ? 1 : (v > 3 ? 3 : v); }
+static int music_vol(void) { return opt_music() * 8; }   /* the default 6 is 48 */
+/* byte 3, the music mode (the original's routine -> the original's table): 0 the radio - the
+ * car's station, stopped on foot - and otherwise CONSTANT, the music playing
+ * whether he is in a car or not (the original's routine then skips the car). */
+static int opt_constant(void) { return career.b[3] != 0; }
+static void options_apply(void)
+{
+    gta_audio_sfx_master(opt_sound() * 64 / 7);
+    gta_audio_music_volume(music_vol());
+    g_text_speed = opt_text();
+}
+#define CHEATS_PATH GTA_DIR "cheats.txt"
+
+/* THE KEYBOARD AS TEXT, for the name entry: Amiga raw codes, the US layout
+ * (the original's own table is the PC's; only letters, digits and the
+ * space can make a cheat). */
+static char raw_to_char(int code, int shift)
+{
+    static const char row0[] = "`1234567890-=";     /* 0x00..0x0c */
+    static const char row1[] = "qwertyuiop[]";      /* 0x10..0x1b */
+    static const char row2[] = "asdfghjkl;'";       /* 0x20..0x2a */
+    static const char row3[] = "zxcvbnm,./";        /* 0x31..0x3a */
+    char c = 0;
+    if (code >= 0 && code <= 0x0c) c = row0[code];
+    else if (code >= 0x10 && code <= 0x1b) c = row1[code - 0x10];
+    else if (code >= 0x20 && code <= 0x2a) c = row2[code - 0x20];
+    else if (code >= 0x31 && code <= 0x3a) c = row3[code - 0x31];
+    else if (code == 0x40) c = ' ';
+    if (shift && c >= 'a' && c <= 'z') c = (char)(c - 32);
+    return c;
+}
+
+/* ...and back, for the test fixture below: 0x100 marks a shifted key. */
+static int char_to_raw(char c)
+{
+    int k, up = 0;
+    if (c >= 'A' && c <= 'Z') { c = (char)(c + 32); up = 0x100; }
+    for (k = 0; k <= 0x40; k++)
+        if (raw_to_char(k, 0) == c)
+            return k | up;
+    return -1;
+}
+
+/* TEST FIXTURE `menukeys <keys>` in autodrive.txt: the title screen is shown
+ * even though a script is driving, and these keys are pressed on it, one
+ * every six frames - up down left right ret esc bs, t:word types the word
+ * ('_' a space, capitals with shift), dump writes menuN.raw. The menu was the
+ * one part of the port a script could not reach. */
+static char menu_script[320];
+static int  menu_script_pos, menu_type_pos, menu_dump_req, menu_dump_n;
+
+static int menu_script_poll(AmigaGfxEvent *ev, long frame)
+{
+    static long last = -1;
+    const char *s;
+    int L = 0, code = -1;
+    if (frame == last || (frame % 6) != 0)
+        return 0;
+    last = frame;
+    while (menu_script[menu_script_pos] == ' ')
+        menu_script_pos++;
+    s = menu_script + menu_script_pos;
+    if (!*s)
+        return 0;
+    while (s[L] && s[L] != ' ')
+        L++;
+    if (L > 2 && s[0] == 't' && s[1] == ':') {
+        if (menu_type_pos < 2) menu_type_pos = 2;
+        code = char_to_raw(s[menu_type_pos] == '_' ? ' ' : s[menu_type_pos]);
+        if (++menu_type_pos < L)
+            L = 0;                      /* more of the word to come */
+        else
+            menu_type_pos = 0;
+    } else if (L == 4 && strncmp(s, "dump", 4) == 0) menu_dump_req = 1;
+    else if (L == 7 && strncmp(s, "nocheat", 7) == 0) {
+        /* the session's cheats forgotten, as the title's QUIT does */
+        g_cheats = cheats_at_load = 0;
+        remove(CHEATS_PATH);
+    }
+    else if (L == 2 && strncmp(s, "up", 2) == 0)    code = KEY_UP;
+    else if (L == 4 && strncmp(s, "down", 4) == 0)  code = KEY_DOWN;
+    else if (L == 4 && strncmp(s, "left", 4) == 0)  code = KEY_LEFT;
+    else if (L == 5 && strncmp(s, "right", 5) == 0) code = KEY_RIGHT;
+    else if (L == 3 && strncmp(s, "ret", 3) == 0)   code = KEY_RETURN;
+    else if (L == 3 && strncmp(s, "esc", 3) == 0)   code = KEY_ESC;
+    else if (L == 2 && strncmp(s, "bs", 2) == 0)    code = KEY_BACKSPACE;
+    menu_script_pos += L;
+    if (code < 0)
+        return 0;
+    ev->type = AMIGAGFX_EV_KEY;
+    ev->x = ev->y = 0;
+    ev->code = code;
+    return 1;
+}
+
+/* What the menu font can draw: a font without the lower case gets the name
+ * in capitals rather than holes. */
+static const char *menu_caps(const char *s, char *buf, int n)
+{
+    int i;
+    if (have_menu_font && menu_font.n_chars >= 'z' - '!' + 1)
+        return s;
+    for (i = 0; s[i] && i < n - 1; i++)
+        buf[i] = (char)(s[i] >= 'a' && s[i] <= 'z' ? s[i] - 32 : s[i]);
+    buf[i] = 0;
+    return buf;
+}
 
 /* Leave the game to come back as level `lv` (0..GTA_LEVELS-1): it becomes
  * the title screen's level in gta.prefs, startlevel.txt says "straight into
  * it", and code 5 has the `run` script start the game again. */
 static gta_prefs g_prefs;
+#define CAREER_PATH GTA_DIR "player_a.dat"
+static int g_endscreen;          /* the level is over and its screen is up */
 static void level_switch(int lv)
 {
     FILE *f = fopen(GTA_DIR "startlevel.txt", "w");
@@ -1696,6 +1842,14 @@ static int front_menu(unsigned char *chunky, int pitch)
      * gta.prefs at once (gtaprefs.c edits the rest of that file) */
     int page = 0, osel = 0;
     int sel_level = g_level;            /* the LEVEL line, shown and chosen */
+    /* THE NAME ENTRY (the original's state 0xc): RETURN or BACKSPACE on the
+     * PLAYER line starts it empty, RETURN keeps it (empty = the built-in
+     * name back), ESC drops it. A name on the cheat list is a cheat. */
+    int naming = 0, shift_held = 0;
+    char nbuf[GTA_CAREER_NAME];
+    /* THE RESET (state 0xe): R on the PLAYER line; up/down between Cancel
+     * and Reset, RETURN or SPACE takes it, ESC cancels. 0 = not asked. */
+    int resetting = 0;
     unsigned long cap_t0, menu_t0;
     long menu_frames = 0;
     AmigaGfxEvent ev;
@@ -1720,29 +1874,54 @@ static int front_menu(unsigned char *chunky, int pitch)
         if (page == 0) {
             for (i = 0; i < MENU_ITEMS; i++)
             {
-                char ml[40];
+                char ml[40], cb[40];
                 const char *s = menu_item[i];
                 if (i == MENU_LEVEL) {
                     snprintf(ml, sizeof ml, "%s", levels[sel_level].name);
                     s = ml;
                 }
-                /* 19 px apart and 8 higher: four lines at the old 22 put
-                 * QUIT on top of the version number (220) */
-                menu_line(chunky, pitch, y0 - 8 + i * 19, s, i == sel);
+                if (i == MENU_PLAYER) {
+                    if (resetting)
+                        snprintf(ml, sizeof ml, "RESET %s? %s",
+                                 gta_career_name(&career, gta_career_slot(&career)),
+                                 resetting == 2 ? "YES" : "NO");
+                    else if (naming)
+                        snprintf(ml, sizeof ml, "NAME: %s%s", nbuf,
+                                 (frame & 8) ? "_" : " ");
+                    else
+                        snprintf(ml, sizeof ml, "PLAYER: %s",
+                                 gta_career_name(&career, gta_career_slot(&career)));
+                    s = menu_caps(ml, cb, sizeof cb);
+                }
+                /* 16 px apart and 14 higher: five lines must clear the
+                 * version number (174), and the font is 14 px tall */
+                menu_line(chunky, pitch, y0 - 14 + i * 16, s, i == sel);
             }
         } else {
-            menu_line(chunky, pitch, y0 - 4, "AMIGA OPTIONS", 0);
-            {
-                char cl[24];
-                snprintf(cl, sizeof cl, "CARS: %d", g_prefs.cars);
-                menu_line(chunky, pitch, y0 + 20, cl, osel == 0);
-            }
-            menu_line(chunky, pitch, y0 + 42, "BACK", osel == 1);
+            /* THE OPTIONS: the original's three (the original's routine, rows 1..3)
+             * and the Amiga's own CARS, five lines like the main page */
+            static const char *const tname[4] = { "", "SLOW", "NORMAL", "FAST" };
+            char cl[6][24];
+            snprintf(cl[0], 24, "SOUND: %d", opt_sound());
+            snprintf(cl[1], 24, "MUSIC: %d", opt_music());
+            snprintf(cl[2], 24, "TEXT: %s", tname[opt_text()]);
+            snprintf(cl[3], 24, "RADIO: %s", opt_constant() ? "ALWAYS" : "IN CARS");
+            snprintf(cl[4], 24, "CARS: %d", g_prefs.cars);
+            snprintf(cl[5], 24, "BACK");
+            /* six lines 14 apart: the version number is at 174 */
+            for (i = 0; i < 6; i++)
+                menu_line(chunky, pitch, y0 - 18 + i * 14, cl[i], osel == i);
         }
         /* The version, clear of the bottom edge - the menu font is fourteen
          * pixels tall and at SCREEN_H - 12 the last two rows were cut. */
         menu_line(chunky, pitch, SCREEN_H - 26, GTA_VERSION, 0);
         amigagfx_blit(0, 0, SCREEN_W, SCREEN_H);
+        if (menu_dump_req) {
+            char fn[48];
+            snprintf(fn, sizeof fn, GTA_DIR "menu%d.raw", menu_dump_n++);
+            dump_frame(fn, chunky, pitch, SCREEN_W, SCREEN_H, front.pal);
+            menu_dump_req = 0;
+        }
 
         /* ONE PICTURE OF THE TITLE SCREEN, without anybody having to press
          * anything: the menu is the one part of this port a script cannot
@@ -1769,29 +1948,109 @@ static int front_menu(unsigned char *chunky, int pitch)
          * once a frame simply stops. */
         gta_audio_music_tick();
 
-        while (amigagfx_poll(&ev)) {
+        while (amigagfx_poll(&ev) || menu_script_poll(&ev, menu_frames)) {
             if (ev.type == AMIGAGFX_EV_QUIT) { quit = 1; done = 1; }
+            if (ev.type == AMIGAGFX_EV_KEY
+                && ((ev.code & 0x7F) == KEY_LSHIFT || (ev.code & 0x7F) == KEY_RSHIFT))
+                shift_held = !(ev.code & 0x80);
             if (ev.type != AMIGAGFX_EV_KEY || (ev.code & 0x80))
                 continue;
+            if (resetting) {
+                int k = ev.code & 0x7F;
+                if (k == KEY_UP || k == KEY_DOWN || k == KEY_LEFT || k == KEY_RIGHT)
+                    resetting = 3 - resetting;
+                else if (k == KEY_ESC)
+                    resetting = 0;
+                else if (k == KEY_RETURN || k == KEY_SPACE) {
+                    if (resetting == 2) {
+                        int s_ = gta_career_slot(&career);
+                        gta_career_reset_slot(&career, s_);
+                        sel_level = 0;
+                        if (gta_career_save(&career, CAREER_PATH) != 0)
+                            printf("gta: career - could NOT write " CAREER_PATH "\n");
+                        printf("gta: career - player %d reset: %s, level 1 only\n",
+                               s_ + 1, gta_career_name(&career, s_));
+                        fflush(stdout);
+                    }
+                    resetting = 0;
+                }
+                continue;
+            }
+            if (naming) {
+                int k = ev.code & 0x7F, n = (int)strlen(nbuf);
+                int s_ = gta_career_slot(&career);
+                if (k == KEY_RETURN) {
+                    int ch;
+                    if (!nbuf[0])
+                        snprintf(nbuf, sizeof nbuf, "%s", gta_career_builtin_name(s_));
+                    gta_career_set_name(&career, s_, nbuf);
+                    ch = gta_career_cheat(&career, s_, nbuf);
+                    g_cheats |= ch;
+                    if (ch) {
+                        FILE *cf = fopen(CHEATS_PATH, "w");
+                        if (cf) { fprintf(cf, "%x\n", g_cheats); fclose(cf); }
+                    }
+                    if (!gta_career_unlocked(&career, s_, sel_level))
+                        sel_level = 0;
+                    if (gta_career_save(&career, CAREER_PATH) != 0)
+                        printf("gta: career - could NOT write " CAREER_PATH "\n");
+                    printf("gta: career - player %d is now %s", s_ + 1, nbuf);
+                    if (ch) printf(", a cheat (0x%x)", ch);
+                    printf("\n");
+                    fflush(stdout);
+                    naming = 0;
+                } else if (k == KEY_ESC) {
+                    naming = 0;
+                } else if (k == KEY_BACKSPACE || k == KEY_DEL) {
+                    if (n > 0) nbuf[n - 1] = 0;
+                } else if (n < GTA_CAREER_NAME - 1) {
+                    char c = raw_to_char(k, shift_held || (ev.code & 0x100));
+                    if (c) { nbuf[n] = c; nbuf[n + 1] = 0; }
+                }
+                continue;
+            }
             if (page == 1) {
                 /* AMIGA OPTIONS: up/down pick; on CARS left/right step the
                  * limit by 4 and RETURN/SPACE step it up, wrapping 50 -> 6;
                  * ESC or BACK return. The fleet is the CPU on a slow
                  * Amiga, so this is the setting that buys frame rate. */
-                int k = ev.code & 0x7F, step = 0;
+                int k = ev.code & 0x7F, step = 0, d = 0;
                 switch (k) {
-                case KEY_UP:
-                case KEY_DOWN:  osel ^= 1;                            break;
+                case KEY_UP:    osel = (osel + 5) % 6;                break;
+                case KEY_DOWN:  osel = (osel + 1) % 6;                break;
                 case KEY_ESC:   page = 0;                             break;
-                case KEY_LEFT:  if (osel == 0) step = -GTA_CARS_STEP; break;
-                case KEY_RIGHT: if (osel == 0) step =  GTA_CARS_STEP; break;
+                case KEY_LEFT:  d = -1;                               break;
+                case KEY_RIGHT: d = 1;                                break;
                 case KEY_RETURN:
                 case KEY_SPACE:
-                    if (osel == 1) { page = 0; break; }
-                    step = GTA_CARS_STEP;
+                    if (osel == 5) { page = 0; break; }
+                    d = 2;              /* up, wrapping */
                     break;
                 default: break;
                 }
+                if (d && osel <= 2) {
+                    /* sound and music 0..7, text 1..3: the career file's */
+                    int lo = osel == 2 ? 1 : 0, hi = osel == 2 ? 3 : 7;
+                    int v = osel == 0 ? opt_sound() : osel == 1 ? opt_music() : opt_text();
+                    v += d == 2 ? 1 : d;
+                    if (v > hi) v = d == 2 ? lo : hi;
+                    if (v < lo) v = lo;
+                    career.b[osel] = (unsigned char)v;
+                    options_apply();
+                    gta_career_save(&career, CAREER_PATH);
+                    printf("gta: options - sound %d, music %d, text %d, saved\n",
+                           opt_sound(), opt_music(), opt_text());
+                    fflush(stdout);
+                }
+                if (d && osel == 3) {
+                    career.b[3] = (unsigned char)!career.b[3];
+                    gta_career_save(&career, CAREER_PATH);
+                    printf("gta: options - radio %s, saved\n",
+                           opt_constant() ? "always" : "in cars");
+                    fflush(stdout);
+                }
+                if (d && osel == 4)
+                    step = d == 1 || d == 2 ? GTA_CARS_STEP : -GTA_CARS_STEP;
                 if (step) {
                     g_prefs.cars += step;
                     if (g_prefs.cars > GTA_CARS_MAX) g_prefs.cars = GTA_CARS_MIN;
@@ -1807,16 +2066,29 @@ static int front_menu(unsigned char *chunky, int pitch)
             case KEY_UP:   sel = (sel + MENU_ITEMS - 1) % MENU_ITEMS; break;
             case KEY_DOWN: sel = (sel + 1) % MENU_ITEMS;              break;
             case KEY_ESC:  quit = 1; done = 1;                        break;
+            case KEY_BACKSPACE:
+            case KEY_DEL:
+                if (sel == MENU_PLAYER) { naming = 1; nbuf[0] = 0; }
+                break;
+            case KEY_R:
+                if (sel == MENU_PLAYER) resetting = 1;   /* Cancel first */
+                break;
             case KEY_RETURN:
             case KEY_SPACE:
                 if (sel == MENU_OPTIONS) { page = 1; osel = 0; break; }
+                if (sel == MENU_PLAYER) { naming = 1; nbuf[0] = 0; break; }
                 if (sel == MENU_LEVEL) {
-                    sel_level = (sel_level + 1) % GTA_LEVELS;
+                    do sel_level = (sel_level + 1) % GTA_LEVELS;
+                    while (!gta_career_unlocked(&career,
+                               gta_career_slot(&career), sel_level));
                     break;
                 }
-                /* START on a level other than the one loaded: the game
-                 * leaves and comes back as that level */
-                if (sel == 0 && sel_level != g_level) {
+                /* START on a level other than the one loaded, or with a
+                 * cheat typed since it was: the game leaves and comes back
+                 * as that level - the cheats act at a level's start */
+                if (sel == 0 && (sel_level != g_level || g_cheats != cheats_at_load)) {
+                    if (g_cheats != cheats_at_load)
+                        log_line("gta: cheats - the level starts again with them");
                     level_switch(sel_level);
                     quit = 1; done = 1;
                     break;
@@ -1824,9 +2096,25 @@ static int front_menu(unsigned char *chunky, int pitch)
                 quit = (sel == MENU_QUIT); done = 1;                  break;
             case KEY_LEFT:
             case KEY_RIGHT:
+                /* THE PLAYER (state 0xb): eight slots, wrapping; the level
+                 * line falls back to the first if this one has it locked */
+                if (sel == MENU_PLAYER) {
+                    int s_ = (gta_career_slot(&career)
+                              + ((ev.code & 0x7F) == KEY_RIGHT ? 1 : GTA_CAREER_SLOTS - 1))
+                             % GTA_CAREER_SLOTS;
+                    gta_career_set_slot(&career, s_);
+                    if (!gta_career_unlocked(&career, s_, sel_level))
+                        sel_level = 0;
+                    gta_career_save(&career, CAREER_PATH);
+                    printf("gta: career - player %d %s\n", s_ + 1,
+                           gta_career_name(&career, s_));
+                    fflush(stdout);
+                }
                 if (sel == MENU_LEVEL)
-                    sel_level = (sel_level + ((ev.code & 0x7F) == KEY_RIGHT
-                                              ? 1 : GTA_LEVELS - 1)) % GTA_LEVELS;
+                    do sel_level = (sel_level + ((ev.code & 0x7F) == KEY_RIGHT
+                                                 ? 1 : GTA_LEVELS - 1)) % GTA_LEVELS;
+                    while (!gta_career_unlocked(&career,
+                               gta_career_slot(&career), sel_level));
                 break;
             default: break;
             }
@@ -1853,6 +2141,8 @@ static int front_menu(unsigned char *chunky, int pitch)
     }
     gta_audio_music_stop();
     amigagfx_set_palette(tiles.palette, 0, 256);
+    if (quit && !g_reload)
+        remove(CHEATS_PATH);            /* the session is over */
     printf("gta: front end - %s\n", quit ? "quit" : "start");
     fflush(stdout);
     return quit;
@@ -1863,6 +2153,9 @@ static void hud_draw(const gta_view *v, unsigned char *chunky, int pitch)
     unsigned long now = amiga_uclock_us();
     char line[24];
     char *p;
+
+    if (g_endscreen)
+        return;                 /* the end screen covers the play area */
 
     if (++hud_frames >= HUD_SAMPLE) {
         unsigned long us = now - hud_t0;
@@ -1953,6 +2246,225 @@ static int card_kind;
 static const char *const card_text[4] = { "", "BUSTED", "WASTED", "GAME OVER" };
 /* ESC pressed in play: the QUIT GAME? card is up and the world stands still. */
 static int g_quit_ask;
+/* PAUSE. The original (F6 there, the original's routine) holds the world, stops the
+ * sound and shows its text [paused] in the big font until the same key again.
+ * F6 is the frame cap here, so it is P. */
+static int g_paused;
+/* IN THE WATER: ticks since he went in, 0 = not. The original (the original's routine,
+ * state 0x30) takes 3 health an original tick: a second and a half from full.
+ * There is no swimming and the sprites of it are not drawn: he goes under. */
+static int player_drown;
+
+/* THE CAREER (the research notes): Work:player_a.dat, the original's own
+ * file, read at the start and written after every level. */
+static int end_result;           /* 1 passed, 2 failed, 3 lives out, 7 quit */
+static long end_score;
+
+/* the original's routine(0xd): record, unlock, save - once per level. */
+static void level_over(int code)
+{
+    if (g_endscreen)
+        return;
+    end_result = code;
+    end_score = score.score;
+    gta_career_record_level(&career, g_level, end_score, code);
+    printf("gta: career - level %d over, result %d, score %ld; best %ld%s%s;"
+           " next level %s\n", g_level + 1, code, end_score,
+           gta_career_best(&career, gta_career_slot(&career), g_level),
+           career.new_best >= 0 ? " (new)" : "",
+           career.new_row >= 0 ? ", into Public Enemies" : "",
+           g_level + 1 < GTA_LEVELS
+               && gta_career_unlocked(&career, gta_career_slot(&career), g_level + 1)
+               ? "open" : "locked");
+    if (gta_career_save(&career, CAREER_PATH) != 0)
+        printf("gta: career - could NOT write " CAREER_PATH "\n");
+    fflush(stdout);
+    g_endscreen = 1;
+}
+
+static const char *text_or(const char *key, const char *fallback)
+{
+    const char *s = gta_text_get_name(&texts, key);
+    return s ? s : fallback;
+}
+
+/* THE END-OF-LEVEL SCREEN (the original's routine state 0xd), fitted to the play area:
+ * the score, the Criminal Record, Public Enemies, the player's bests and the
+ * result text. The original's is a 640x480 menu screen; the contents are its. */
+static void end_screen_draw(unsigned char *chunky, int pitch,
+                            int x0, int y0, int w, int h)
+{
+    static const char *const ckey[7] = { "crimeRTA", "crimeHAR", "crimeHIJ",
+        "crimeCAR", "crimeSHO", "crimeMUR", "crimeBAN" };
+    static const char *const cname[7] = { "Shunts 'n' Bumps", "Hit 'n' Run",
+        "Hijacking", "Carjacking", "Firearms Offences", "Murder One",
+        "Bank Jobs" };
+    static const int ckind[7] = { 2, 3, 4, 5, 7, 8, 9 };
+    const gta_font *f = &pager_font;
+    static const char *const shortname[6] = { "LIBERTY 1", "LIBERTY 2",
+        "S.ANDREAS 1", "S.ANDREAS 2", "VICE 1", "VICE 2" };
+    int lh, y, k, s = gta_career_slot(&career), xr = x0 + w * 9 / 16;
+    char ln[64];
+    const char *rk;
+    if (!have_pager)
+        return;
+    lh = f->height + 2;
+    for (y = y0; y < y0 + h; y++)
+        memset(chunky + (long)y * pitch + x0, f->shadow, w);
+    y = y0 + 4;
+    snprintf(ln, sizeof ln, "%s   %s %ld", levels[g_level].name,
+             text_or("score", "Score"), end_score);
+    gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H,
+                         x0 + (w - gta_font_width(f, ln)) / 2, y, ln);
+    y += lh + 4;
+    /* the result first, wrapped to the width: it is the news */
+    rk = end_result == 1 ? "m22success" : end_result == 2 ? "m22failed"
+       : end_result == 3 ? "m22dead" : "m22incomplete";
+    {
+        const char *t = text_or(rk, "");
+        while (*t && y < y0 + h - 2 * lh) {
+            int n = 0, cut = 0;
+            char part[96];
+            while (t[n] && n < (int)sizeof part - 1) {
+                part[n] = t[n];
+                part[n + 1] = 0;
+                if (gta_font_width(f, part) > w - 8) break;
+                if (t[n] == ' ') cut = n;
+                n++;
+            }
+            if (t[n] && cut > 0) n = cut;
+            part[n] = 0;
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, x0 + 4, y, part);
+            y += lh;
+            t += n;
+            while (*t == ' ') t++;
+        }
+    }
+    /* MISSIONS PASSED and SECRETS FOUND (the original's routine / the original's routine): the
+     * level script's last MISSION_COUNTER and SECRET_MISSION_COUNTER start
+     * at their first number and DECCOUNT takes one off for each job done,
+     * so done = first number - what is left; the totals are MISSION_TOTAL's
+     * first number and the secret counter's own. */
+    {
+        int k2, mp = 0, mt = 0, sf = 0, st = 0;
+        for (k2 = 0; k2 < script.n; k2++) {
+            const gta_decl *d = &script.d[k2];
+            if (d->type == GTA_DECL_MISSION_COUNTER) mp = d->a - d->counter;
+            else if (d->type == GTA_DECL_MISSION_TOTAL) mt = d->a;
+            else if (d->type == GTA_DECL_SECRET_MISSION_COUNTER) {
+                sf = d->a - d->counter;
+                st = d->a;
+            }
+        }
+        /* ONE LINE where the original has two: the play area is 200 rows,
+         * not 480. The pager font has no '/', so "of" stands for it, and
+         * the labels lose their " :". */
+        if (mt > 0) {
+            char la[32], lb[32];
+            int n2;
+            snprintf(la, sizeof la, "%s", text_or("missions-comp", "Missions Passed :"));
+            snprintf(lb, sizeof lb, "%s", text_or("secrets_found", "Secrets Found :"));
+            for (n2 = (int)strlen(la); n2 > 0 && (la[n2 - 1] == ':' || la[n2 - 1] == ' '); n2--)
+                la[n2 - 1] = 0;
+            for (n2 = (int)strlen(lb); n2 > 0 && (lb[n2 - 1] == ':' || lb[n2 - 1] == ' '); n2--)
+                lb[n2 - 1] = 0;
+            if (st > 0)
+                snprintf(ln, sizeof ln, "%s %d of %d   %s %d of %d", la, mp, mt, lb, sf, st);
+            else
+                snprintf(ln, sizeof ln, "%s %d of %d", la, mp, mt);
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 x0 + (w - gta_font_width(f, ln)) / 2, y, ln);
+            y += lh;
+        }
+    }
+    y += 4;
+    {
+        int yl = y, yr = y;
+        gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, x0 + 4, yl,
+                             text_or("crimes", "Criminal Record"));
+        yl += lh;
+        for (k = 0; k < 7; k++) {
+            if (yl > y0 + h - 2 * lh) break;     /* a long result text: the hint's line */
+            snprintf(ln, sizeof ln, "%ld", score.total[ckind[k]]);
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, x0 + 6, yl,
+                                 text_or(ckey[k], cname[k]));
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 xr - 6 - gta_font_width(f, ln), yl, ln);
+            yl += lh;
+        }
+        gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, xr, yr,
+                             text_or("high-scores", "Public Enemies"));
+        yr += lh;
+        for (k = 2; k >= 0; k--) {
+            long v = gta_career_hs_score(&career, g_level, k);
+            if (v == 0) continue;
+            if (career.new_row == k && (hud_frames & 4)) { yr += lh; continue; }
+            snprintf(ln, sizeof ln, "%ld", v);
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, xr + 4, yr,
+                                 gta_career_hs_name(&career, g_level, k));
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 x0 + w - 4 - gta_font_width(f, ln), yr, ln);
+            yr += lh;
+        }
+        yr += lh / 2;
+        snprintf(ln, sizeof ln, "%s Highest", gta_career_name(&career, s));
+        gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, xr, yr, ln);
+        yr += lh;
+        for (k = 0; k < GTA_LEVELS; k++) {
+            long v = gta_career_best(&career, s, k);
+            if (v == -1) continue;
+            if (yr > y0 + h - 2 * lh) break;     /* the hint's line is below */
+            if (career.new_best == k && (hud_frames & 4)) { yr += lh; continue; }
+            snprintf(ln, sizeof ln, "%ld", v);
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H, xr + 4, yr,
+                                 shortname[k]);
+            gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 x0 + w - 4 - gta_font_width(f, ln), yr, ln);
+            yr += lh;
+        }
+        y = (yl > yr ? yl : yr) + lh / 2;
+    }
+    snprintf(ln, sizeof ln, "RETURN: %s   ESC: TITLE",
+             end_result == 1 && g_level + 1 < GTA_LEVELS ? "NEXT LEVEL" : "PLAY AGAIN");
+    gta_font_draw_shadow(f, chunky, pitch, SCREEN_W, SCREEN_H,
+                         x0 + (w - gta_font_width(f, ln)) / 2, y0 + h - lh - 2, ln);
+}
+
+/* Out of the end screen: RETURN plays on (the next level after a pass, the
+ * same one otherwise), ESC goes to the title with that level selected. */
+static void end_screen_leave(int to_title)
+{
+    int lv = end_result == 1 && g_level + 1 < GTA_LEVELS ? g_level + 1 : g_level;
+    if (to_title) {
+        g_prefs.level = lv;
+        gta_prefs_save(GTA_DIR, &g_prefs);
+        remove(LEVEL_FILE);
+        g_reload = 1;
+        printf("gta: career - to the title, level %d selected\n", lv + 1);
+    } else {
+        level_switch(lv);
+    }
+    fflush(stdout);
+}
+
+/* The layer of the water under this one with only air between, or -1. */
+static int water_below(const gta_map *m, int bx, int by, int z)
+{
+    for (; z >= 0; z--) {
+        int g = gta_map_ground_type(m, bx, by, z);
+        if (g != GTA_GROUND_AIR)
+            return g == GTA_GROUND_WATER ? z : -1;
+    }
+    return -1;
+}
+static void set_paused(int on)
+{
+    g_paused = on;
+    /* the engine stops by itself: its loop is not fed while paused */
+    gta_audio_music_volume(on ? 0 : music_vol());
+    printf("gta: %s\n", on ? "paused" : "playing on");
+    fflush(stdout);
+}
 static unsigned int quit_poll;  /* frames under the card, for the reload poll */
 
 /* THE PLAYER'S LIFE. Health 100, four lives at the start as the original
@@ -2136,7 +2648,9 @@ static void text_displays_tick(void)
         int win = PAGER_WIN_X1 - PAGER_WIN_X0;
         if (++pager_led >= 16) pager_led = 0;
         if (++pager_ticks & 1) {
-            pager_px++;
+            pager_frac += g_text_speed;
+            pager_px += pager_frac >> 1;
+            pager_frac &= 1;
             if (pager_px > win + wide)
                 pager_ticks = 0;        /* scrolled off: gone */
             if (pager_secs > 0 && (pager_ticks % 50) == 0)
@@ -2147,6 +2661,8 @@ static void text_displays_tick(void)
         brief_ticks--;
     if (big_ticks > 0 && big_text[0])
         big_ticks--;
+    if (carname_ticks > 0)
+        carname_ticks--;
 }
 
 static void text_displays(unsigned char *chunky, int pitch)
@@ -2188,6 +2704,22 @@ static void text_displays(unsigned char *chunky, int pitch)
         }
         /* (the scroll, the light and the seconds advance in
          * text_displays_tick(), on the simulation clock) */
+    }
+
+    /* THE CAR'S NAME, top middle on its plaque (see carname_text) */
+    if (carname_ticks > 0 && carname_text[0]) {
+        int sw = hud_icon >= 0 ? gta_hud_sprite_w(&tiles, hud_icon + 2) : 0;
+        int tw = have_pager ? gta_font_width(&pager_font, carname_text)
+                            : gta_hud_width(carname_text);
+        if (hud_icon >= 0)
+            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H,
+                           px + (render_w() - sw) / 2, py, &tiles, hud_icon + 2);
+        if (have_pager)
+            gta_font_draw_shadow(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 px + (render_w() - tw) / 2, py + 3, carname_text);
+        else
+            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                         px + (render_w() - tw) / 2, py + 3, carname_text);
     }
 
     /* (a) THE BRIEF BOX, bottom left: the icon sits ON THE BOTTOM EDGE and
@@ -2319,6 +2851,32 @@ static void hud_score(unsigned char *chunky, int pitch)
     gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
                  right - gta_hud_width(line), top + 2, line);
 
+    /* THE LIVES (the original's routine, the research notes section 7): in the
+     * multiplier's font, on the score's top line, right-aligned against the
+     * score's first digit - the boxed x (glyph 10), then "%02d" with a
+     * leading 0 dropped. 0xff lives would be "::", three boxes. */
+    if (have_mult && have_score_font) {
+        char g[8];
+        int n = 0, sw;
+        char digits[24];
+        int k;
+        for (k = 0; line[k]; k++) digits[k] = (char)(line[k] - '0' + '!');
+        digits[k] = 0;
+        sw = gta_font_width(&score_font, digits);
+        g[n++] = (char)('!' + 10);
+        if (player_lives == 255) {
+            g[n++] = (char)('!' + 10);
+            g[n++] = (char)('!' + 10);
+        } else {
+            if (player_lives >= 10)
+                g[n++] = (char)('!' + (player_lives / 10) % 10);
+            g[n++] = (char)('!' + player_lives % 10);
+        }
+        g[n] = 0;
+        gta_font_draw(&mult_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                      right - sw - gta_font_width(&mult_font, g), top + 1, g);
+    }
+
     /* THE MULTIPLIER, under the score and right-aligned with it. It only
      * ever goes up - a job, or the crate - and it multiplies everything the
      * player earns, so it belongs beside the number it acts on. */
@@ -2370,12 +2928,16 @@ static void hud_score(unsigned char *chunky, int pitch)
                      top + (have_score_font ? 14 : 10), line);
     }
 
-    /* The third line: lives and health (ours - the original hides the
-     * health and shows the lives with a small glyph). */
+    /* The third line: the health (ours - the original hides it). The lives
+     * are drawn beside the score above, the original's way; spelled out here
+     * only when its fonts are missing. */
     p = line;
-    *p++ = 'L'; *p++ = 'I'; *p++ = 'V'; *p++ = 'E'; *p++ = 'S'; *p++ = ' ';
-    p = gta_hud_int(p, player_lives);
-    *p++ = ' '; *p++ = 'H'; *p++ = 'P'; *p++ = ' ';
+    if (!(have_mult && have_score_font)) {
+        *p++ = 'L'; *p++ = 'I'; *p++ = 'V'; *p++ = 'E'; *p++ = 'S'; *p++ = ' ';
+        p = gta_hud_int(p, player_lives);
+        *p++ = ' ';
+    }
+    *p++ = 'H'; *p++ = 'P'; *p++ = ' ';
     p = gta_hud_int(p, player_health);
     if (player_armour > 0) { *p++ = ' '; *p++ = 'A'; p = gta_hud_int(p, player_armour); }
     *p = 0;
@@ -2409,6 +2971,21 @@ static void hud_score(unsigned char *chunky, int pitch)
                                  present_x() + (render_w() - bw) / 2,
                                  top + present_h() / 2 - big_font.height / 2,
                                  t);
+        else
+            gta_hud_text_big(chunky, pitch, SCREEN_W, SCREEN_H,
+                             present_x() + (render_w() - bw) / 2,
+                             top + present_h() / 2 - 12, t, 4);
+    }
+
+    if (g_paused) {
+        const char *t = gta_text_get_name(&texts, "paused");
+        int bw;
+        if (!t) t = "PAUSED";
+        bw = have_big ? gta_font_width(&big_font, t) : gta_hud_width_big(t, 4);
+        if (have_big)
+            gta_font_draw_shadow(&big_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 present_x() + (render_w() - bw) / 2,
+                                 top + present_h() / 2 - big_font.height / 2, t);
         else
             gta_hud_text_big(chunky, pitch, SCREEN_W, SCREEN_H,
                              present_x() + (render_w() - bw) / 2,
@@ -2500,6 +3077,9 @@ static void hud_score(unsigned char *chunky, int pitch)
             y += gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_KEY) + 2;
         }
     }
+    /* last, over everything the HUD put down */
+    if (g_endscreen)
+        end_screen_draw(chunky, pitch, present_x(), top, render_w(), present_h());
 }
 
 /* The player's own line, under the frame rate. Only the walking mode draws it.
@@ -2514,6 +3094,9 @@ static void hud_player(const gta_player *p, unsigned char *chunky, int pitch)
     static const char ground_letter[8] = { 'N', 'W', 'R', 'P', 'F', 'B', '-', '-' };
     char line[24];
     char *q;
+
+    if (g_endscreen)
+        return;
 
     /* WHERE HE IS, IN BLOCKS, FIRST.
      *
@@ -2940,6 +3523,7 @@ static int autowalk_run(gta_view *v, gta_player *p, const gta_map *m,
  * the linker accounts for rather than a surprise at the far end of a load. */
 static gta_sfx   sfx;
 static gta_weapons weapons;
+static gta_marks marks;
 static gta_view  view;
 static gta_player player;
 
@@ -3242,14 +3826,17 @@ static void script_ped_remap(void *ctx, unsigned long h, int remap)
 static void script_ped_type(void *ctx, unsigned long h, int type,
                             long tx, long ty, int on_player)
 {
-    int mode = (type >= 0x15 && type <= 0x2e) ? GTA_PED_MODE_HUNT
-                                              : GTA_PED_MODE_MISSION;
+    /* 1 and 8 are gunmen too (the original's routine / the original's routine, GANGS.md) */
+    int mode = ((type >= 0x15 && type <= 0x2e) || type == 1 || type == 8)
+               ? GTA_PED_MODE_HUNT : GTA_PED_MODE_MISSION;
+    int gun;
     (void)ctx;
-    printf("gta: script - ped %lu becomes type %d (%s%s)\n", h, type,
-           mode == GTA_PED_MODE_HUNT ? "hunting" : "standing",
-           on_player ? " the player" : "");
-    fflush(stdout);
     gta_peds_mission_ai(&peds, h, mode, tx, ty, on_player);
+    gun = mode == GTA_PED_MODE_HUNT && gta_peds_set_gang(&peds, h, type);
+    printf("gta: script - ped %lu becomes type %d (%s%s%s)\n", h, type,
+           mode == GTA_PED_MODE_HUNT ? "hunting" : "standing",
+           gun ? ", a gunman" : "", on_player ? " the player" : "");
+    fflush(stdout);
 }
 
 static void script_ped_sendto(void *ctx, unsigned long h, long wx, long wy)
@@ -3304,6 +3891,9 @@ static void script_explode(void *ctx, int line, int bx, int by, int face,
     if (lz < 0) lz = player.layer;
     gta_weapons_explode_face(&weapons, bx, by, lz, face, &peds, &traffic,
                              &score, 0, &wx, &wy);
+    /* EXPLODE leaves rubble at the wall; PLAIN_EXPL_BUILDING does not */
+    if (debris)
+        gta_marks_debris(&marks, bx, by, lz, face);
     printf("gta: script - %s line %d: block (%d,%d) face %d, blast at "
            "(%ld,%ld) layer %d\n", debris ? "EXPLODE" : "PLAIN_EXPL_BUILDING",
            line, bx, by, face, wx >> 16, wy >> 16, lz);
@@ -3352,6 +3942,49 @@ static int voice_rand(void)
 {
     voice_lcg = (voice_lcg * 0x79 + 1) % 0x800;
     return voice_lcg;
+}
+
+/* THE SPECIAL KEY - TAB, the original's control 7 (scancode 0x0f, command
+ * bits 0x80020: the original's routine's defaults, the original's routine bit 0x20 with 0x80000
+ * for "held").
+ *   in a car  the original's routine -> the original's routine. A car of model 4, 5 or 0x2a has
+ *             a siren: the first press puts it on (car+0x113 = 1) and it
+ *             stays on; holding the key after that SOUNDS it (= 2, the
+ *             yelp) and letting go goes back to 1. Any other car holds its
+ *             horn (car+0x12d) for as long as the key is down.
+ *   on foot   the original's routine: a shout at the player, sample 0x4c or 0x4d by
+ *             the voice dice (the original's table), once a press.
+ * NOT PORTED: the original's routine also looks up to five blocks ahead for a car and
+ * the original's routine makes it PULL OVER (lane offset 7 or 0x37 instead of the
+ * centre 0x1f); this port's traffic keeps its own lane logic. */
+static int g_horn_held, g_pl_siren, g_tab_down;
+static void special_key(int held, int in_car, int model_id)
+{
+    int edge = held && !g_tab_down;
+    g_tab_down = held;
+    if (in_car) {
+        if (model_id == 4 || model_id == 5 || model_id == 0x2a) {
+            int was = g_pl_siren;
+            if (g_pl_siren == 0)      g_pl_siren = 1;
+            else if (g_pl_siren == 1) { if (held) g_pl_siren = 2; }
+            else if (!held)           g_pl_siren = 1;
+            if (g_pl_siren != was) {
+                printf("gta: special key - siren %s (model %d)\n",
+                       g_pl_siren == 2 ? "sounding" : "on", model_id);
+                fflush(stdout);
+            }
+        } else if (g_horn_held != held) {
+            g_horn_held = held;
+            printf("gta: special key - horn %s (model %d)\n",
+                   held ? "down" : "up", model_id);
+            fflush(stdout);
+        }
+    } else if (edge) {
+        int n = 0x4c + (voice_rand() & 1);
+        gta_audio_play(&sfx, n, 64, 0);
+        printf("gta: special key - a shout, sample %d\n", n);
+        fflush(stdout);
+    }
 }
 
 /* THE ENGINE'S RATE - the original's routine's switch on the car info's
@@ -4158,13 +4791,9 @@ static void script_level_end(void *ctx, int code)
     (void)ctx;
     if (s) big_show(s);
     printf("gta: LEVEL OVER - code %d, [%s] %s\n", code, key, s ? s : "");
-    /* PASSED: on to the next level once the card has been read (220); the
-     * last one ends the game's run of levels and simply plays on */
-    if (code == 1 && g_level + 1 < GTA_LEVELS) {
-        g_level_next_ticks = 250;
-        printf("gta: level - %s next, in 5 s\n", levels[g_level + 1].name);
-    }
     fflush(stdout);
+    /* the end screen, as the original's the original's routine(0xd) */
+    level_over(code);
 }
 
 /* ---- BATCH A, the other levels (221, the research notes) ---- */
@@ -5201,6 +5830,12 @@ int main(void)
         return 0;
 
     log_line("gta: start");
+    {
+        int ev_;
+        const char *sys_ = amigagfx_system(&ev_);
+        printf("gta: system - %s, exec %d\n", sys_, ev_);
+        fflush(stdout);
+    }
 
     /* WHICH LEVEL: gta.prefs, unless the game left a startlevel.txt on its
      * way out (the next level, or one picked on the title screen) - then
@@ -5231,6 +5866,26 @@ int main(void)
                g_level + 1, GTA_LEVELS, levels[g_level].name,
                levels[g_level].section,
                g_level_direct ? " (from startlevel.txt)" : "");
+        fflush(stdout);
+    }
+    {
+        int cr_ = gta_career_load(&career, CAREER_PATH);
+        int cs_ = gta_career_slot(&career);
+        FILE *cf_ = fopen(CHEATS_PATH, "r");
+        if (cf_) {
+            unsigned int v_ = 0;
+            if (fscanf(cf_, "%x", &v_) == 1) g_cheats = cheats_at_load = (int)v_;
+            fclose(cf_);
+        }
+        printf("gta: career - " CAREER_PATH " %s, player %d %s, open levels",
+               cr_ == 0 ? "read" : cr_ == 1 ? "new" : "NOT WRITABLE",
+               cs_ + 1, gta_career_name(&career, cs_));
+        {
+            int k_;
+            for (k_ = 0; k_ < GTA_LEVELS; k_++)
+                if (gta_career_unlocked(&career, cs_, k_)) printf(" %d", k_ + 1);
+        }
+        printf("\n");
         fflush(stdout);
     }
 
@@ -5389,6 +6044,8 @@ int main(void)
                 else if (strcmp(word, "screen") == 0)  opt_screen  = (int)val;
                 else if (strcmp(word, "screen2x") == 0) opt_screen2x = (int)val;
                 else if (strcmp(word, "selftest") == 0) opt_selftest = (int)val;
+                else if (strcmp(word, "pcprof") == 0) amiga_watchdog_set_profile((int)val);
+                else if (strcmp(word, "mips") == 0) opt_mips = (int)val;
                 else if (strcmp(word, "bench") == 0) opt_bench = (int)val;
                 /* THE RIG'S SOUND SWITCH. `audio 0` in opts.txt silences the
                  * port whatever gta.prefs says, so the SAME binary can be run
@@ -5436,6 +6093,7 @@ int main(void)
         opt_audio = GTA_AUDIO_OFF;
     }
     gta_audio_open(&sfx, opt_audio);
+    options_apply();
     /* THE RADIO IS SCANNED AFTER THE EXTRACTION, not here: the first run
      * converts the player's soundtrack and a scan taken before it would find
      * no stations on exactly the run that just made them. See front_extract().
@@ -5569,7 +6227,8 @@ int main(void)
     if (gta_nav_build(&nav, &map) == 0) {
         gta_traffic_set_nav(&traffic, &nav);
         gta_service_init(&service, &map, &nav, &tiles);
-        gta_traffic_police_start(&traffic, &map);
+        if (!(g_cheats & GTA_CHEAT_NOCOPS))
+            gta_traffic_police_start(&traffic, &map);
         gta_traffic_lights_scan(&traffic, &map);
         printf("gta: map - %d districts, %d roadblock lists\n", map.n_districts,
                map.n_routes - map.n_police_routes);
@@ -5652,9 +6311,30 @@ int main(void)
         }
         gta_peds_set_nav(&peds, &nav);
         gta_weapons_init(&weapons, &tiles);
+        gta_marks_init(&marks, &tiles);
         gta_weapons_set_pickups(&weapons, &pickups);
         gta_score_init(&score);
         gta_score_set_city(map.style_number);    /* the city's wanted thresholds */
+        /* THE CHEATS at the level start (the original's routine, the research notes) */
+        if (g_cheats) {
+            if (g_cheats & GTA_CHEAT_NOCOPS) score.no_police = 1;
+            if (g_cheats & GTA_CHEAT_LIVES)  player_lives = 255;
+            if (g_cheats & GTA_CHEAT_MULT)   score.multiplier = 10;
+            if (g_cheats & GTA_CHEAT_SCORE)  score.score = 999999999L;
+            if (g_cheats & GTA_CHEAT_ARMS) {
+                int k_;
+                for (k_ = 1; k_ < 5 && k_ < GTA_WEAPON_COUNT; k_++) ammo[k_] = 99;
+                jail_free = 1;
+                player_armour = 3;
+            }
+            printf("gta: cheats - 0x%x:%s%s%s%s%s%s\n", g_cheats,
+                   g_cheats & GTA_CHEAT_NOCOPS ? " no police" : "",
+                   g_cheats & GTA_CHEAT_LIVES ? " endless lives" : "",
+                   g_cheats & GTA_CHEAT_MULT ? " x10" : "",
+                   g_cheats & GTA_CHEAT_SCORE ? " score" : "",
+                   g_cheats & GTA_CHEAT_ARMS ? " weapons" : "",
+                   g_cheats & GTA_CHEAT_KEYPAD ? " keypad-*" : "");
+        }
         printf("gta: navigation grid %ld KB\n", (long)(GTA_NAV_BYTES / 1024));
     } else {
         log_line("gta: no memory for the navigation grid - traffic will not "
@@ -5686,12 +6366,29 @@ int main(void)
      * harness - see front_menu(). */
     {
         FILE *sf = fopen(GTA_DIR "autodrive.txt", "r");
+        int scripted = 0;
+        if (sf) {
+            char ml_[200];
+            while (fgets(ml_, sizeof ml_, sf))
+                if (strncmp(ml_, "menukeys ", 9) == 0) {
+                    int n_ = (int)strlen(menu_script), j_;
+                    snprintf(menu_script + n_, sizeof menu_script - n_, "%s ", ml_ + 9);
+                    for (j_ = n_; menu_script[j_]; j_++)
+                        if (menu_script[j_] == '\r' || menu_script[j_] == '\n')
+                            menu_script[j_] = ' ';
+                }
+            fclose(sf);
+            scripted = 1;
+        }
         if (!sf) sf = fopen(GTA_DIR "autowalk.txt", "r");
         if (!sf) sf = fopen(GTA_DIR "autoinput.txt", "r");
-        if (sf) {
+        if (sf && !scripted) {
             fclose(sf);
+            scripted = 1;
+        }
+        if (scripted && !menu_script[0]) {
             log_line("gta: front end skipped - a script is driving");
-        } else if (g_level_direct) {
+        } else if (g_level_direct && !menu_script[0]) {
             log_line("gta: front end skipped - straight into the chosen level");
         } else if (front_menu(chunky, pitch)) {
             log_line("gta: front end - quit");
@@ -6303,6 +7000,16 @@ int main(void)
                 } else if (sscanf(ln, "board %d", &a) == 1) {
                     adq[adq_n].op = 32; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "pool %d %d", &a, &b) == 2) {
+                    /* TEST FIXTURE: a pool of blood at (a,b) px from the
+                     * player or his car. */
+                    adq[adq_n].op = 34; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b; adq_n++;
+                } else if (sscanf(ln, "shootped %d", &a) == 1) {
+                    /* TEST FIXTURE: shoot the ped nearest the player, if
+                     * within a px, along the player's facing. */
+                    adq[adq_n].op = 33; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
                 } else if (sscanf(ln, "killped %d", &a) == 1) {
                     adq[adq_n].op = 31; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq_n++;
@@ -6323,9 +7030,37 @@ int main(void)
                      * see gta_script_debug_start(). */
                     adq[adq_n].op = 20; adq[adq_n].t = 1;
                     adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "levelend %d", &a) == 1) {
+                    /* the script's END, or 3 for lives out, 7 for a quit */
+                    adq[adq_n].op = 36; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "gunman %d %d %d", &a, &b, &c) == 3) {
+                    /* TEST FIXTURE: a script person put down (dx, dy) px
+                     * from the player, then CHANGE_PED_TYPE a against him */
+                    adq[adq_n].op = 40; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq[adq_n].brk = b;
+                    adq[adq_n].st = c; adq_n++;
+                } else if (sscanf(ln, "tab %d", &a) == 1) {
+                    /* TEST FIXTURE: TAB down (1) or up (0), as in play */
+                    adq[adq_n].op = 41; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "lives %d", &a) == 1) {
+                    adq[adq_n].op = 38; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (sscanf(ln, "endkey %d", &a) == 1) {
+                    /* the end screen's RETURN (0) or ESC (1) */
+                    adq[adq_n].op = 37; adq[adq_n].t = 1;
+                    adq[adq_n].thr = a; adq_n++;
+                } else if (strncmp(ln, "pause", 5) == 0) {
+                    /* P, as pressed in play. As the LAST line it really holds
+                     * the world: a script's own clock is the simulation. */
+                    adq[adq_n].op = 35; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "quitask", 7) == 0) {
                     /* THE QUIT CARD (218), as ESC raises it in play */
                     adq[adq_n].op = 22; adq[adq_n].t = 1; adq_n++;
+                } else if (strncmp(ln, "quityes", 7) == 0) {
+                    /* ...and Y on it */
+                    adq[adq_n].op = 39; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "quitno", 6) == 0) {
                     adq[adq_n].op = 23; adq[adq_n].t = 1; adq_n++;
                 } else if (strncmp(ln, "quittest", 8) == 0) {
@@ -6395,12 +7130,41 @@ int main(void)
     sim_last = amiga_uclock_us();
     frame_t0 = sim_last;
     log_line("gta: interactive - ON FOOT: arrows run and turn, shift walks, "
-             "TAB frees the camera, -/= zoom, SPACE dumps a frame, ESC quits");
+             "TAB horn/shout, HELP frees the camera, -/= zoom, ESC quits");
     log_line("gta:   F1 full res  F2 half res  F3 title bar  "
              "F4 window size  F5 2.5D / 2.5D-light / flat  F6 frame cap  F7/F8 camera");
     frames = 0;
     t0 = amiga_uclock_us();
     prof_t0 = t0;
+    /* `mips 1` in opts.txt: how fast is THIS machine, in instructions a
+     * second, whatever the emulator's settings claim. The same binary differed
+     * by a factor of two between days (host load), and no fps figure means
+     * anything without this next to it. 8 register instructions a pass, then
+     * 8 with a longword memory access each. */
+#if !defined(__MORPHOS__)
+    if (opt_mips) {
+        static unsigned long mips_mem[16];
+        unsigned long m0, m1, m2;
+        long n1 = 400000L, n2 = 200000L;
+        m0 = amiga_uclock_us();
+        __asm__ volatile(
+            "1: addq.l #1,%%d1\n\tadd.l %%d1,%%d2\n\tmove.l %%d2,%%d3\n\t"
+            "lsr.l #1,%%d3\n\teor.l %%d3,%%d1\n\tsub.l %%d3,%%d2\n\t"
+            "subq.l #1,%0\n\tbne.s 1b\n\t"
+            : "+d"(n1) : : "d1", "d2", "d3", "cc");
+        m1 = amiga_uclock_us();
+        __asm__ volatile(
+            "1: move.l (%1),%%d1\n\tmove.l %%d1,4(%1)\n\tadd.l 8(%1),%%d1\n\t"
+            "move.l %%d1,12(%1)\n\tmove.l 16(%1),%%d2\n\tadd.l %%d2,%%d1\n\t"
+            "subq.l #1,%0\n\tbne.s 1b\n\t"
+            : "+d"(n2) : "a"(mips_mem) : "d1", "d2", "cc", "memory");
+        m2 = amiga_uclock_us();
+        printf("gta: mips - registers %lu MIPS, memory mix %lu MIPS\n",
+               (400000UL * 8UL) / ((m1 - m0) | 1UL),
+               (200000UL * 8UL) / ((m2 - m1) | 1UL));
+        fflush(stdout);
+    }
+#endif
     amiga_watchdog_start();
     /* the opening brief, now that frames count - Liberty City 1's text;
      * every other level's script says its own (220: San Andreas and Vice
@@ -6441,7 +7205,7 @@ int main(void)
              * channel (gta_audio.h), so all this costs per frame is one
              * comparison and, when the speed has actually changed, one
              * ADCMD_PERVOL. */
-            if (in_car) {
+            if (in_car && !g_paused) {
                 /* THE ORIGINAL'S ENGINE - see engine_rate(). The speed in
                  * its units, signed by whether the car moves the way its
                  * nose points (scaled down before the multiply: 32 bits). */
@@ -6510,7 +7274,13 @@ int main(void)
                 gta_audio_engine_stop();
             }
 
-            if (in_car != radio_was) {
+            if (opt_constant()) {
+                /* CONSTANT: on at the start, and the car changes nothing */
+                if (radio_was < 0) {
+                    radio_was = in_car;
+                    gta_audio_radio_next();
+                }
+            } else if (in_car != radio_was) {
                 radio_was = in_car;
                 if (in_car) {
                     /* A POLICE CAR CARRIES THE POLICE BAND, and an ordinary
@@ -6548,14 +7318,27 @@ int main(void)
                  * run has to be a scripted run. */
                 if (adq_i < adq_n && code != KEY_ESC)
                     continue;
+                /* THE END SCREEN: RETURN plays on, ESC goes to the title */
+                if (g_endscreen) {
+                    if (!held && (code == KEY_RETURN || code == KEY_ESC)) {
+                        end_screen_leave(code == KEY_ESC);
+                        running = 0;
+                    }
+                    continue;
+                }
                 /* QUIT GAME? is up: only the answer counts. Y or RETURN
                  * quits, N or ESC plays on; every other key is swallowed so
                  * nothing moves behind the card. */
                 if (g_quit_ask) {
                     if (!held) {
                         if (code == KEY_Y || code == KEY_RETURN) {
-                            running = 0;
-                            printf("gta: quit - confirmed\n");
+                            /* Esc+confirm (cb8 = 2, cb4 = 7): the level is
+                             * over, result 7, and its end screen comes up;
+                             * ESC there goes to the title, whose QUIT
+                             * leaves the game */
+                            g_quit_ask = 0;
+                            level_over(7);
+                            printf("gta: quit - confirmed, the end screen\n");
                         } else if (code == KEY_N || code == KEY_ESC) {
                             g_quit_ask = 0;
                             printf("gta: quit - cancelled, playing on\n");
@@ -6564,7 +7347,19 @@ int main(void)
                     }
                     continue;
                 }
+                /* Paused: P goes back and ESC still asks, the rest is
+                 * swallowed as under the quit card, and the keys start clear. */
+                if (g_paused && code != KEY_P && code != KEY_ESC) {
+                    continue;
+                }
                 switch (code) {
+                case KEY_P:
+                    if (!held) {
+                        set_paused(!g_paused);
+                        up = down = left = right = 0;
+                        fast = 0;
+                    }
+                    break;
                 case KEY_UP:     up = held;    break;
                 case KEY_DOWN:   down = held;  break;
                 case KEY_LEFT:   left = held;  break;
@@ -6587,7 +7382,12 @@ int main(void)
                     }
                     break;
                 case KEY_TAB:
-                    /* Two modes on one set of arrow keys. Walking is the
+                    special_key(held, in_car && !enter_anim,
+                                in_car ? tiles.cars[veh.model].model_id : -1);
+                    break;
+                case KEY_HELP:
+                    /* Two modes on one set of arrow keys. (TAB until v0.7.1,
+                     * which gave TAB back to the original's horn.) Walking is the
                      * default because that is now the game; the free camera
                      * stays because every renderer bug so far was reported by
                      * someone driving the camera to it and pressing SPACE. */
@@ -6737,6 +7537,14 @@ int main(void)
                      * release; holding it auto-fires at the cooldown. */
                     fire_held = held;
                     break;
+                case KEY_NUMSTAR:
+                    if (!held && (g_cheats & GTA_CHEAT_KEYPAD)) {
+                        int k_;
+                        for (k_ = 1; k_ < 5 && k_ < GTA_WEAPON_COUNT; k_++)
+                            ammo[k_] = 99;
+                        printf("gta: cheat - keypad-*: weapons 99\n");
+                    }
+                    break;
                 case KEY_X:
                 case KEY_Z:
                     if (!held) {
@@ -6807,12 +7615,13 @@ int main(void)
             /* the world stands still under the card - except under a test
              * script, whose clock IS the simulation's: paused, it never
              * reached its next line (quitcard.txt, 218) */
-            if (g_quit_ask && adq_i >= adq_n)
+            if ((g_quit_ask || g_paused || g_endscreen) && adq_i >= adq_n)
                 sim_accum = 0;
             /* ...and the reload file is polled here too while the card is
              * up: its usual poll is in the tick loop, which is not running,
              * and a paused game ignored the harness for good (218) */
-            if (g_quit_ask && !g_reload && (++quit_poll % 25) == 0) {
+            if ((g_quit_ask || g_paused || g_endscreen) && !g_reload
+                && (++quit_poll % 25) == 0) {
                 FILE *rf = fopen(GTA_DIR "reload.txt", "r");
                 if (rf) {
                     fclose(rf);
@@ -7035,6 +7844,18 @@ int main(void)
                         printf("gta: quit - cancelled, playing on\n");
                         fflush(stdout);
                         break;
+                    case 41:
+                        special_key(adq[adq_i].thr != 0, in_car && !enter_anim,
+                                    in_car ? tiles.cars[veh.model].model_id : -1);
+                        break;
+                    case 39:
+                        if (g_quit_ask) {
+                            g_quit_ask = 0;
+                            level_over(7);
+                            printf("gta: quit - confirmed, the end screen\n");
+                            fflush(stdout);
+                        }
+                        break;
                     case 24:
                         running = 0;
                         g_reload = 1;
@@ -7170,6 +7991,65 @@ int main(void)
                     case 32:
                         board_wait = adq[adq_i].thr;
                         break;
+                    case 35:
+                        set_paused(!g_paused);
+                        break;
+                    case 38:
+                        player_lives = adq[adq_i].thr;
+                        break;
+                    case 40: {
+                        unsigned long h_ = gta_peds_spawn_mission(&peds,
+                            player.x + ((long)adq[adq_i].brk << 16),
+                            player.y + ((long)adq[adq_i].st << 16),
+                            player.layer, 0);
+                        printf("gta: autodrive - gunman: ped %lu at %d,%d from him\n",
+                               h_, adq[adq_i].brk, adq[adq_i].st);
+                        fflush(stdout);
+                        if (h_)
+                            script_ped_type(0, h_, adq[adq_i].thr, 0, 0, 1);
+                        break;
+                    }
+                    case 36:
+                        level_over(adq[adq_i].thr);
+                        break;
+                    case 37:
+                        if (g_endscreen) {
+                            end_screen_leave(adq[adq_i].thr);
+                            running = 0;
+                        }
+                        break;
+                    case 34:
+                        gta_marks_pool(&marks,
+                            (in_car ? veh.ox : player.x)
+                                + ((long)adq[adq_i].thr << 16),
+                            (in_car ? veh.oy : player.y)
+                                + ((long)adq[adq_i].brk << 16),
+                            player.layer);
+                        break;
+                    case 33: {
+                        int k_, best_ = -1;
+                        long bd_ = (long)adq[adq_i].thr;
+                        for (k_ = 0; k_ < GTA_MAX_PEDS; k_++) {
+                            const gta_ped *p_ = &peds.p[k_];
+                            long dx_ = (p_->x - player.x) >> 16;
+                            long dy_ = (p_->y - player.y) >> 16;
+                            if (dx_ < 0) dx_ = -dx_;
+                            if (dy_ < 0) dy_ = -dy_;
+                            if (p_->alive && !p_->corpse && p_->pull < 0
+                                && dx_ + dy_ < bd_) {
+                                bd_ = dx_ + dy_;
+                                best_ = k_;
+                            }
+                        }
+                        if (best_ >= 0)
+                            gta_peds_shoot(&peds, best_, player.angle);
+                        printf("gta: autodrive - shootped: ped %d, %ld px away,"
+                               " at %ld,%ld\n", best_, bd_,
+                               best_ >= 0 ? peds.p[best_].x >> 16 : 0L,
+                               best_ >= 0 ? peds.p[best_].y >> 16 : 0L);
+                        fflush(stdout);
+                        break;
+                    }
                     case 31:
                         killped_line = adq[adq_i].thr;
                         printf("gta: autodrive - killped %d armed\n",
@@ -7795,6 +8675,23 @@ int main(void)
                             printf("gta: in car - model %d at (%ld,%ld)\n",
                                    enter_model, enter_cx >> 21,
                                    enter_cy >> 21);
+                            {
+                                char k_[16];
+                                const char *n_;
+                                snprintf(k_, sizeof k_, "car%d",
+                                         tiles.cars[enter_model].model_id);
+                                n_ = gta_text_get_name(&texts, k_);
+                                carname_text[0] = 0;
+                                if (n_) {
+                                    strncpy(carname_text, n_, sizeof carname_text - 1);
+                                    carname_text[sizeof carname_text - 1] = 0;
+                                    carname_ticks = 90;
+                                }
+                                printf("gta: car name - %s \"%s\" (plaque %dx%d)\n",
+                                       k_, n_ ? n_ : "(none)",
+                                       hud_icon >= 0 ? gta_hud_sprite_w(&tiles, hud_icon + 2) : 0,
+                                       hud_icon >= 0 ? gta_hud_sprite_h(&tiles, hud_icon + 2) : 0);
+                            }
                             /* the original's routine state 0x22: the door, and the
                              * car started (GTA_SND_DOOR / _CAR_START). With
                              * music on and the engine note running only one
@@ -7975,6 +8872,11 @@ int main(void)
                         }
                     }
                     if (veh.sliding) veh_slide_ticks++;
+                    if (veh.sliding && !veh_air && veh.model_id != 0x25)
+                        gta_marks_slide(&marks, &nav, veh.ox, veh.oy,
+                                player.layer, veh.wid, (int)(veh.ang16 >> 16),
+                                veh.vx, veh.vy,
+                                tiles.cars[veh.model].vtype == GTA_VEH_BIKE);
                     /* ---- THE JUMP ------------------------------------
                      *
                      * A ramp with a hole after it is a jump, and Liberty City
@@ -8112,8 +9014,12 @@ int main(void)
                                        player.layer, veh_air_from >> 16);
                                 fflush(stdout);
                                 /* the original's routine: the thump of a car coming
-                                 * down (see GTA_SND_LANDING) */
+                                 * down (see GTA_SND_LANDING), and a spark at
+                                 * each corner */
                                 gta_audio_play(&sfx, GTA_SND_LANDING, 64, 0);
+                                gta_marks_sparks(&marks, veh.ox, veh.oy, player.layer,
+                                                 veh.len, veh.wid,
+                                                 (int)(veh.ang16 >> 16));
                             } else if (veh_z < -(long)GTA_TILE_DIM << 16) {
                                 /* Short. Whatever is down there takes it. */
                                 veh_air = 0;
@@ -8136,6 +9042,14 @@ int main(void)
                                         g2_ == GTA_GROUND_WATER ? GTA_SND_SPLASH
                                                                 : GTA_SND_LANDING,
                                         64, 0);
+                                    if (g2_ == GTA_GROUND_WATER && !player_drown) {
+                                        player_drown = 1;
+                                        gta_marks_splash(&marks, veh.ox, veh.oy,
+                                                         z2_ + 1);
+                                    } else if (g2_ != GTA_GROUND_WATER)
+                                        gta_marks_sparks(&marks, veh.ox, veh.oy,
+                                                         z2_ + 1, veh.len, veh.wid,
+                                                         (int)(veh.ang16 >> 16));
                                 }
                             }
                         }
@@ -8419,13 +9333,31 @@ int main(void)
                         if (right || left)
                             player.angle = (player.angle
                                 + ((right ? 1 : 0) - (left ? 1 : 0)) * 5) & 255;
-                    } else {
+                    } else if (!player_drown) {
                         long pox_ = player.x, poy_ = player.y;
                         gta_player_update(&player, &map,
                                           (right ? 1 : 0) - (left ? 1 : 0),
                                           (up ? 1 : 0) - (down ? 1 : 0),
                                           fast);
                         ped_car_block(&player, &traffic, &tiles, pox_, poy_);
+                        /* WATER IS NOT A WALL TO A MAN WHO WALKS INTO IT */
+                        if (up) {
+                            long ax_ = player.x + (long)gta_sin(player.angle) * 40;
+                            long ay_ = player.y - (long)gta_cos(player.angle) * 40;
+                            int wz_ = water_below(&map, (int)(ax_ >> 21),
+                                                  (int)(ay_ >> 21), player.layer);
+                            if (wz_ >= 0) {
+                                player.x = ax_;
+                                player.y = ay_;
+                                player.layer = wz_;
+                                player_drown = 1;
+                                gta_marks_splash(&marks, ax_, ay_, wz_);
+                                gta_audio_play(&sfx, GTA_SND_SPLASH, 64, 0);
+                                printf("gta: in the water at (%d,%d)\n",
+                                       (int)(ax_ >> 21), (int)(ay_ >> 21));
+                                fflush(stdout);
+                            }
+                        }
                         /* THE SPEED-UP: A SECOND STEP. He covers a fixed
                          * distance per tick, so "twice as fast" is two
                          * ticks - and the collision, the layer change and
@@ -8849,14 +9781,16 @@ int main(void)
                         const gta_map_loc *loc_ = card_kind == 2 ? map.hospital : map.police;
                         int nloc_ = card_kind == 2 ? map.n_hospital : map.n_police;
                         if (card_kind == 2) {
-                            player_lives--;
+                            if (player_lives != 255)    /* 0xff: endless */
+                                player_lives--;
                             player_health = 100;
                             player_armour = 0;
                             if (player_lives < 0) {
-                                /* GAME OVER: the level starts again. */
-                                player_lives = 4;
-                                gta_score_init(&score);
-                                printf("gta: GAME OVER - the level starts again\n");
+                                /* GAME OVER: the level is over, result 3
+                                 * (the original's routine -> exit code 3) */
+                                player_lives = 0;
+                                printf("gta: GAME OVER\n");
+                                level_over(3);
                             }
                         }
                         for (k = 0; k < nloc_; k++) {
@@ -9029,6 +9963,7 @@ int main(void)
                  * original's order: peds, cars, then the block. */
                 amiga_wd_set(AMIGA_WD_PHASE_WEAPONS);
                 gta_weapons_tick(&weapons, &nav, &peds, &traffic, &tiles, &score);
+                gta_marks_tick(&marks, &nav, &peds, &weapons);
                 /* THE SIREN - see GTA_SND_SIREN: the nearest police car
                  * with its siren on (a DISPATCHED one here, cop >= 2 - the
                  * same cars whose lights flash). 206 corrected 195: there
@@ -9059,7 +9994,22 @@ int main(void)
                             d = ddx + ddy;
                             if (d < 512 && (bd < 0 || d < bd)) { bd = d; bj = j; }
                         }
-                        if (bd >= 0) {
+                        /* THE PLAYER'S OWN SIREN (TAB, special_key): his car
+                         * is nearest of all, so it is the one heard */
+                        if (!in_car && (g_pl_siren || g_horn_held)) {
+                            g_pl_siren = 0;
+                            g_horn_held = 0;
+                        }
+                        if (in_car && g_pl_siren) {
+                            int snd = g_pl_siren == 2 ? GTA_SND_SIREN_YELP
+                                                      : GTA_SND_SIREN;
+                            gta_audio_play(&sfx, snd, 64, 0);
+                            siren_wait = (snd < sfx.count &&
+                                          sfx.entry[snd].rate > 0)
+                                ? (int)(sfx.entry[snd].length * 50UL
+                                        / sfx.entry[snd].rate) + 1
+                                : 133;
+                        } else if (bd >= 0) {
                             /* SOUNDING (+0x113 == 2) when something is in
                              * its way: the original's routine switches it on while
                              * the original's routine's look-ahead finds a car or a
@@ -9102,7 +10052,34 @@ int main(void)
                         "#############...###..########..###................"
                     };
                     static unsigned long honk_serial;
-                    static int honk_was_on, honk_left;
+                    static int honk_was_on, honk_left, my_horn_left, my_horn_logged;
+                    /* THE PLAYER'S HORN (TAB, special_key; car+0x12d in
+                     * the original's routine): the model's horn sample at its rate +
+                     * (horn % 10) x 512, held - played again as it runs
+                     * out - for as long as the key is down. A model with a
+                     * horn of 60 or more has a siren instead. */
+                    if (my_horn_left > 0)
+                        my_horn_left--;
+                    if (!g_horn_held)
+                        my_horn_logged = 0;
+                    if (in_car && g_horn_held && my_horn_left == 0 &&
+                        tiles.cars[veh.model].horn < 60) {
+                        int h = tiles.cars[veh.model].horn;
+                        int n = 0x3a + h / 10;
+                        long hz = (n < sfx.count ? (long)sfx.entry[n].rate : 11025L)
+                                + (long)(h % 10) * 512L;
+                        gta_audio_play_hz(&sfx, n, 64, hz);
+                        if (!my_horn_logged) {
+                            my_horn_logged = 1;
+                            printf("gta: horn - sample %d at %ld Hz (horn %d)\n",
+                                   n, hz, h);
+                            fflush(stdout);
+                        }
+                        my_horn_left = n < sfx.count && hz > 0
+                            ? (int)(sfx.entry[n].length * 50UL
+                                    / (unsigned long)hz) + 1
+                            : 6;
+                    }
                     long plx = in_car ? veh.ox : player.x;
                     long ply = in_car ? veh.oy : player.y;
                     long bd = 0x1ffffffL;
@@ -9307,7 +10284,7 @@ int main(void)
                         } else if (kind_ == GTA_PICKUP_ARMOUR) {
                             player_armour = 3;
                         } else if (kind_ == GTA_PICKUP_LIFE || kind_ == 15) {
-                            player_lives++;
+                            if (player_lives < 99) player_lives++;
                             /* the original's routine case 0xf: [life+] and line 0xb */
                             gta_audio_speak(&voice, GTA_VOICE_EXTRA_LIFE, 64, 1);
                         } else {
@@ -9346,6 +10323,8 @@ int main(void)
                         if (bl_ > 0) player_health = 0;
                         if (bu_ > 0 && player_burning < 100) player_burning = 100;
                         if (player_burning > 0) { player_burning--; player_health--; }
+                        if (player_drown && (player_drown++ & 1))
+                            player_health -= 3;
                         if (gta_peds_cop_execute(&peds)) player_health = 0;
                         if (hb_ || hc_ || bl_) {
                             printf("gta: player hit - bullets %d, on the car %d,"
@@ -9361,7 +10340,11 @@ int main(void)
                              * lives it is the game over; the port starts
                              * the level again. */
                             player_health = 0;
+                            if (!in_car && !player_burning && !player_drown)
+                                gta_marks_pool(&marks, player.x, player.y,
+                                               player.layer);
                             player_burning = 0;
+                            player_drown = 0;
                             bust_timer = BUST_TICKS;
                             card_kind = 2;
                             /* the original's routine opens with the original's routine(0xc) -
@@ -9474,6 +10457,9 @@ int main(void)
                         log_line(ln);
                     }
                     veh_slide_ticks = 0;
+                    if (marks.count > 0 || marks.stat_pools > 0)
+                        printf("gta: marks - %d on the ground, %ld puffs of smoke, %ld pools of blood\n",
+                               marks.count, marks.stat_smoke, marks.stat_pools);
 
                     traffic_moved_last = traffic.stat_moved;
                     /* snprintf, never sprintf - see the toolchain notes; the
@@ -9787,6 +10773,7 @@ int main(void)
          * stays where he was left, which is what makes "walk there, then look
          * at it from above" possible. */
         /* The splats are ground marks: under everybody. */
+        gta_marks_draw(&marks, &view);
         gta_weapons_draw_ground(&weapons, &view);
         /* THE MISSION CARS ARRIVE WHEN HE DOES. One a frame at most, and
          * each only once - see gta_mcar for why they cannot just be parked
@@ -9882,7 +10869,7 @@ int main(void)
             int on_top = pi && (pi->vtype == GTA_VEH_BIKE
                                 || (pi->convertible & 1) || vault == 1);
 
-            if (!in_car && !on_top && vault != 2 && trains.pl_on < 0)
+            if (!in_car && !on_top && vault != 2 && trains.pl_on < 0 && !player_drown)
                 gta_render_add_sprite(&view, player.x, player.y, player.layer,
                                       gta_player_grid(&player),
                                       armed_sprite(&player, punch_left,
@@ -9986,6 +10973,7 @@ int main(void)
                                   gta_player_draw_angle(&player));
         /* The tracers, over everything on the street. */
         gta_weapons_draw_air(&weapons, &view);
+        gta_marks_draw_air(&marks, &view);
 
         /* Redraw every pass, moving or not. Holding the frame when nothing has
          * changed would be free frames per second and a dishonest measurement;

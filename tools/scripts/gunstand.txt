@@ -1,0 +1,8 @@
+# gunstand.txt - a person put 100 px north becomes a STANDING gunman (CHANGE_PED_TYPE 0x15,
+# role 0x18, GANGS.md) against the player standing still. Pass: 'a gunman',
+# 'gunman N (standing, miss 8) fires' in pairs about 30 ticks apart, then a pause; a frame.
+wait 150
+gunman 21 0 -100
+wait 400
+dump
+wait 20

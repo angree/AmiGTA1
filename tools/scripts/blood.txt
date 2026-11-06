@@ -1,0 +1,12 @@
+# blood.txt - object 0x3f, 0x40, 0x4d (gta_marks.c). shootped N shoots the living
+# ped nearest the player along the player's facing, if he is within N px.
+# Pass: "marks - ... pools of blood" above 0; the dump shows the pool (and the
+# splat 0x40 once the pool has run 4 x 24 original ticks = 192 port ticks), the
+# trail of 0x4d behind the body. Stains go when the body goes.
+wait 200
+goto 62 74
+wait 200
+shootped 2000
+wait 250
+dump
+wait 60

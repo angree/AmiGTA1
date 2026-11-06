@@ -1,0 +1,7 @@
+# liveshud.txt - the lives beside the score, the original's boxed x and digits.
+# Pass: frame shows [x]12 left of the score, top right.
+wait 100
+lives 12
+wait 50
+dump
+wait 30

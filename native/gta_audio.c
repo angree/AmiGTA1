@@ -376,10 +376,19 @@ int gta_audio_play_hz(const gta_sfx *bank, int n, int volume, long hz)
 
 /* `hz` 0 plays the sound at its own rate; otherwise at that rate, clamped
  * to what Paula can do. */
+static int au_master = 64;      /* gta_audio_sfx_master() */
+
+void gta_audio_sfx_master(int vol)
+{
+    au_master = vol < 0 ? 0 : (vol > 64 ? 64 : vol);
+}
+
 static int play_at(const gta_sfx *bank, int n, int volume, int pan, long hz)
 {
     unsigned long bytes = 0;
     int period = 0, slot, c;
+
+    volume = volume * au_master / 64;
 
     if (n >= 0 && n < AU_REQ_IDS && au_req[n] < 65535U)
         au_req[n]++;
@@ -459,6 +468,7 @@ int gta_audio_speak(const gta_sfx *voice, int n, int volume, int cut)
         au_vreq[n]++;
     if (!au_ok || !voice || !voice->file || n < 0 || n >= voice->count)
         return -1;
+    volume = volume * au_master / 64;
     if (gta_audio_speaking()) {
         if (!cut) { sp_n_busy++; return -1; }
         /* THE STOP COMPLETES BEFORE THE BUFFER IS WRITTEN - see the engine's
@@ -708,6 +718,7 @@ void gta_audio_engine_rate(long hz, int volume)
     if (p < 124) p = 124;
     if (p > 65535L) p = 65535L;
     v = volume < 0 ? 0 : (volume > 64 ? 64 : volume);
+    v = v * au_master / 64;
 
     /* Only when it actually changed. ADCMD_PERVOL is a DoIO - a round trip
      * into the device - and sending an identical one sixty times a second

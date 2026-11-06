@@ -8,7 +8,7 @@
 #   3. QEMU boots, a shell is opened through the QEMU monitor (never host
 #      input), `execute ide0:mostest` is typed into the GUEST, and a
 #      screendump is taken every 20 s until xfer\stage.txt says END.
-param([string]$Bin = 'AmiGTA', [int]$MaxMin = 20, [string]$Tag = 'g')
+param([string]$Bin = 'AmiGTA', [int]$MaxMin = 20, [string]$Tag = 'g', [string]$Script = '')
 $d = 'E:\morphos_gta'; $s = ($d -replace '\\', '/') + '/shots'
 $stage = 'C:\temp\amiga_gta\mos_iso'
 function Mon($c) { powershell -ExecutionPolicy Bypass -File "$d\mon.ps1" $c | Out-Null }
@@ -31,8 +31,16 @@ if (Test-Path 'C:\temp\amiga_gta\mos-build\AmiGTA_MorphOS') {
     Copy-Item 'C:\temp\amiga_gta\mos-build\AmiGTA_MorphOS' "$stage\Gta\" -Force
 }
 Set-Content "$stage\Gta\startlevel.txt" '0' -Encoding ascii
+if ($Script) {
+    # a feature's own walk script (repo-relative or absolute); the harness
+    # adds the way out so the guest script can bring the log back
+    $sp = if ([IO.Path]::IsPathRooted($Script)) { $Script } else { Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) $Script }
+    @((Get-Content $sp | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() -ne '' }) + 'wait 50' + 'quittest') |
+        Set-Content "$stage\Gta\autodrive.txt" -Encoding ascii
+} else {
 @('wait 400', 'film 1', 'wait 300', 'film 1', 'dump', 'wait 1500', 'quittest') |
     Set-Content "$stage\Gta\autodrive.txt" -Encoding ascii
+}
 wsl sh -c "genisoimage -quiet -R -J -V GTA -o /mnt/e/morphos_gta/gta-game.iso /mnt/c/temp/amiga_gta/mos_iso"
 
 # 2. the guest script (LF line ends; AmigaDOS)

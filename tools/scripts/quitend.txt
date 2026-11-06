@@ -1,0 +1,9 @@
+# quitend.txt - ESC and Y in play: the level ends with result 7 (m22incomplete)
+# and its end screen. Pass: "result 7", frame = the end screen.
+wait 100
+quitask
+wait 10
+quityes
+wait 10
+dump
+wait 30

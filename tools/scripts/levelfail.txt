@@ -1,0 +1,7 @@
+# levelfail.txt - END 2: the longest result text (m22failed, four lines) must not
+# run the Criminal Record into the key hint.
+wait 100
+levelend 2
+wait 10
+dump
+wait 30

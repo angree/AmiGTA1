@@ -83,6 +83,8 @@ compile gta_vehphys.c
 compile gta_peds.c
 compile gta_score.c
 compile gta_weapon.c
+compile gta_marks.c
+compile gta_career.c
 compile gta_pickup.c
 compile gta_script.c
 compile gta_script_run.c

@@ -76,6 +76,17 @@ copy THIRD-PARTY.md
 copy .gitignore
 copy .gitattributes
 
+# --- contributed files that live only in the public repository ---------------
+# stefkos' MorphOS build (pull request #2). The export above starts from an empty
+# tree, so without this every publish would delete them. Restored from the clone.
+if [ -d "$DEST/.git" ]; then
+    for p in native/morphos_gfx.c native/morphos_audio.c makefile.morphos \
+             morphos tools/bin/build_morphos.sh; do
+        git -C "$DEST" checkout HEAD -- "$p" 2>/dev/null \
+            || echo "publish: $p not in the clone's HEAD"
+    done
+fi
+
 # --- and now refuse to be wrong --------------------------------------------
 echo "--- checks ---"
 
@@ -122,7 +133,9 @@ hits=$(scan '\b(FUN|DAT|_DAT|LAB)_[0-9a-fA-F]{4,}' || true)
 if [ -n "$hits" ]; then
     echo "FAIL: decompiler symbols left in:"; echo "$hits"; bad=1
 fi
-hits=$(scan 'ghidra|decompil|disassembl|re/(notes|decomp|flat)|the DOS (binary|build)' || true)
+# (disassembl(y|ed|er), not disassembl: objdump's --disassemble-all in
+# makefile.morphos is a build flag, not a reference)
+hits=$(scan 'ghidra|decompil|disassembl(y|ed|er)|re/(notes|decomp|flat)|the DOS (binary|build)' || true)
 if [ -n "$hits" ]; then
     echo "FAIL: reverse-engineering references left in:"; echo "$hits"; bad=1
 fi

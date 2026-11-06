@@ -1,0 +1,17 @@
+# horn.txt - TAB, the original's special key (the original's routine bit 0x20). On foot a
+# shout (0x4c/0x4d); in car model 0 the horn held for two seconds.
+# Pass: 'special key - a shout', 'horn down', 'horn - sample N', 'horn up'.
+wait 100
+tab 1
+wait 5
+tab 0
+wait 50
+park 0 0 -26 0
+enter
+wait 100
+tab 1
+wait 100
+tab 0
+wait 50
+dump
+wait 20

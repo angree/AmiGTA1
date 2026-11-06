@@ -86,6 +86,12 @@ Remove-Item $log -ErrorAction SilentlyContinue
 # activation (a minimised WinUAE 2.8.1 is paused) - run-gta.ps1's way. The
 # plain Start-Process that was here put the window in front of whatever the
 # developer was doing.
+# THE DEVELOPER'S RULE (2026-11-05): never weaker than -70% CPU, JIT or not.
+$thr = [regex]::Match((Get-Content -LiteralPath $cfg -Raw), '(?m)^cpu_throttle=(-?[\d.]+)')
+if (-not $thr.Success -or [double]::Parse($thr.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt -700) {
+  Write-Output "REFUSED: $cfg must have cpu_throttle=-700 or lower"
+  exit 4
+}
 $proc = Start-Process -FilePath $exe -ArgumentList '-log', '-f', $cfg -WorkingDirectory $wd -WindowStyle Minimized -PassThru
 Add-Type -Name WinShowP -Namespace GtaHarnessP -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int c);

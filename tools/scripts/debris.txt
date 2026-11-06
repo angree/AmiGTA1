@@ -1,0 +1,10 @@
+# debris.txt - the bank job's EXPLODE (line 1084, DUMMY 343 at (183,38), south face):
+# rubble 0x2b..0x2d at the wall and two 0x05 a block out, still there once the
+# blast is gone. Pass: 'EXPLODE line 1084', the frame shows the pieces south of (183,38).
+wait 100
+goto 183 40
+wait 20
+script 1084
+wait 300
+dump
+wait 20

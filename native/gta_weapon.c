@@ -103,6 +103,24 @@ static int player_within(const gta_weapons *w, long x, long y, int layer, int r)
     return dx <= reach && dy <= reach;
 }
 
+/* Did this tick's step of a shot, (x0,y0) -> (x1,y1), pass through the
+ * player ON FOOT? Points every 4 px or closer along the step, each tested
+ * with his 6 px body plus the bullet's own 1 (the original's +/-2 units,
+ * WEAPONS.md, halved). The older test used one box widened by half the
+ * step; at a pistol's speed that was ~16 px, so a gunman's deliberate 8 px
+ * miss (the research notes section 3) always hit. */
+static int player_on_path(const gta_weapons *w, long x0, long y0,
+                          long x1, long y1, int layer)
+{
+    long ddx = x1 - x0, ddy = y1 - y0;
+    long ax = ddx < 0 ? -ddx : ddx, ay = ddy < 0 ? -ddy : ddy;
+    int n = (int)(((ax > ay ? ax : ay) >> 18) + 1), k;
+    for (k = 1; k <= n; k++)
+        if (player_within(w, x0 + ddx / n * k, y0 + ddy / n * k, layer, 1))
+            return 1;
+    return 0;
+}
+
 void gta_weapons_set_pickups(gta_weapons *w, gta_pickups *pk)
 {
     w->pk = pk;
@@ -424,9 +442,10 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
         int k;
         if (f->ticks == 0) continue;
         f->ticks--;
-        if (++f->frame_tick >= 3) {
+        /* object 0x2e: 8 frames of 3 original ticks, which are 6 of the port's */
+        if (++f->frame_tick >= 6) {
             f->frame_tick = 0;
-            f->frame = (f->frame + 1) % 7;
+            f->frame = (f->frame + 1) % 8;
         }
         for (k = 0; k < GTA_MAX_PEDS; k++) {
             gta_ped *p = &peds->p[k];
@@ -507,7 +526,9 @@ void gta_weapons_tick(gta_weapons *w, const gta_nav *nav, gta_peds *peds,
         if (b->grace > 0) {
             b->grace--;
         } else if (b->owner >= 0 && b->kind != GTA_PROJ_FLAME &&
-                   player_within(w, b->x, b->y, b->layer, b->speed / 2 + 2)) {
+                   (w->pl_in_car
+                    ? player_within(w, b->x, b->y, b->layer, b->speed / 2 + 2)
+                    : player_on_path(w, ox, oy, b->x, b->y, b->layer))) {
             /* AN AI SHOT ON THE PLAYER - a policeman's. On foot it is a hit
              * on him; in a car it is a hit on the car (+5, the original's).
              * A rocket bursts. */

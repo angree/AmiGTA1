@@ -94,9 +94,10 @@
 #define GTA_ROCKET_SPEED_MAX 15
 #define GTA_FLAME_FRAMES  10
 
-/* The explosion: twelve frames a quadrant, two ticks a frame. */
+/* The explosion: twelve frames a quadrant, two ORIGINAL ticks a frame, and
+ * the original's routine runs at 25 Hz beside the object tick: four of the port's. */
 #define GTA_EXPL_FRAMES   12
-#define GTA_EXPL_TICKS     2
+#define GTA_EXPL_TICKS     4
 /* Its reach, in world pixels (the original's 35 / 61 / 65 units). */
 #define GTA_EXPL_KILL_PX  17
 #define GTA_EXPL_BURN_PX  30

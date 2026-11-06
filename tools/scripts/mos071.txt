@@ -1,0 +1,33 @@
+# mos071.txt - v0.7.1's late features in one MorphOS run (mos-test.ps1 -Script):
+# the shout, a standing gunman who misses, the horn, and a police car's siren.
+# Pass: 'a shout', 'gunman N (standing, miss 8) fires' without 'player hit',
+# 'horn - sample 58', 'siren on (model 4)', 'siren sounding'.
+wait 150
+tab 1
+wait 5
+tab 0
+gunman 21 0 -100
+wait 300
+park 0 0 -26 0
+enter
+wait 100
+tab 1
+wait 60
+tab 0
+wait 30
+enter
+wait 80
+goto 70 70
+wait 50
+park 4 0 -26 0
+enter
+wait 100
+tab 1
+wait 10
+tab 0
+wait 100
+tab 1
+wait 80
+tab 0
+wait 60
+dump
