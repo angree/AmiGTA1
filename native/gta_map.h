@@ -66,6 +66,7 @@ typedef struct { unsigned char x, y, z; } gta_map_loc;
 #define GTA_MAP_DISTRICTS 32
 typedef struct {
     unsigned char x, y, w, h;
+    unsigned char sample;       /* byte 4: the english.fxt "%03darea%03d" index */
     char name[31];
 } gta_map_district;
 

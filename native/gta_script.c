@@ -163,6 +163,7 @@ static int parse_line(const char *ln, gta_decl *out)
     out->flag = (unsigned char)flag;
     out->x = (short)x; out->y = (short)y; out->z = (short)z;
     out->a = out->b = out->c = out->d = out->e = 0;
+    out->a_long = nv > 0 ? v[0] : 0;
     for (i = 0; i < nv; i++) {
         short sv = (short)v[i];
         if (i == 0) out->a = sv;

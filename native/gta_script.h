@@ -132,6 +132,8 @@ typedef struct {
     unsigned char flag;         /* 0 temporary, 1 permanent, 2 frenzy car */
     short x, y, z;              /* as written - blocks or pixels, see below */
     short a, b, c, d;           /* the numbers after the name, 0 if absent */
+    long  a_long;               /* the first number unclipped: TARGET_SCORE
+                                 * is 1000000, which a short cannot hold */
     short e;                    /* the fifth - SPECIFIC_DOOR/BARR's remap.
                                  * It used to land on top of d, which made
                                  * every mission-car garage open for anyone. */

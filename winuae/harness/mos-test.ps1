@@ -41,7 +41,11 @@ if ($Script) {
 @('wait 400', 'film 1', 'wait 300', 'film 1', 'dump', 'wait 1500', 'quittest') |
     Set-Content "$stage\Gta\autodrive.txt" -Encoding ascii
 }
-wsl sh -c "genisoimage -quiet -R -J -V GTA -o /mnt/e/morphos_gta/gta-game.iso /mnt/c/temp/amiga_gta/mos_iso"
+# the image without WSL (it hung for good on 2026-11-26): mkiso.py writes the
+# same -R -J -V GTA image with pycdlib
+Remove-Item "$d\gta-game.iso" -ErrorAction SilentlyContinue
+python (Join-Path $PSScriptRoot 'mkiso.py') $stage "$d\gta-game.iso" GTA
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$d\gta-game.iso")) { Write-Output "MKISO FAILED - not booting a stale image"; exit 1 }
 
 # 2. the guest script (LF line ends; AmigaDOS)
 $lines = @(

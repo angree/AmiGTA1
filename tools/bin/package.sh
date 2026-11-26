@@ -8,9 +8,9 @@
 # eats doubled backslashes, which is how this line first came out as
 # "C:<tab>empmiga_gtadist".)
 #
-#   AmiGTA-v0.7.1.zip    the game, the settings editor, the tile converter,
+#   AmiGTA-v0.7.2.zip    the game, the settings editor, the tile converter,
 #                        icons, run
-#   AmiGTA-v0.7.1.lha    the same, in the format an Amiga unpacks natively
+#   AmiGTA-v0.7.2.lha    the same, in the format an Amiga unpacks natively
 #
 # NO GAME DATA IS SHIPPED, and nothing derived from any. The player converts
 # their own style001.gry with the bundled gtabake - see LICENSING.md line 88.
@@ -26,10 +26,20 @@
 # deliberately: they are debris from testing, not part of a release.
 set -e
 
-ls /mnt/i/GITHUB >/dev/null 2>&1 || sudo -n mount -t drvfs I: /mnt/i
+# WSL (/mnt/...) or Git Bash on Windows (/i, /c - no WSL needed, 2026-11-26):
+# zip falls back to python's zipfile, lha to C:\amiga-gcc\bin\lha.exe.
+if [ -d /mnt/c ]; then
+    ls /mnt/i/GITHUB >/dev/null 2>&1 || sudo -n mount -t drvfs I: /mnt/i
+    M=/mnt
+else
+    M=
+    export PATH="$PATH:/c/amiga-gcc/bin"
+fi
+PY=python3; $PY -c "" 2>/dev/null || PY=python
+command -v zip >/dev/null 2>&1 || zip() { shift 2; $PY -m zipfile -c "$@"; }
 
-ROOT=/mnt/i/GITHUB/Amiga_GTA
-WORK=/mnt/c/temp/amiga_gta/work
+ROOT=$M/i/GITHUB/Amiga_GTA
+WORK=$M/c/temp/amiga_gta/work
 # THE ARCHIVES ARE BUILT ON THE SSD, NOT ON THE NETWORK DRIVE.
 #
 # I: is a network share. Building a staging tree there and deleting it again
@@ -39,12 +49,12 @@ WORK=/mnt/c/temp/amiga_gta/work
 # (see CLAUDE.md); the archives now do too.
 #
 #   Windows: C:\temp\amiga_gta\dist\
-DIST=/mnt/c/temp/amiga_gta/dist
+DIST=$M/c/temp/amiga_gta/dist
 # 0.0.4: weapons, car damage, the collision rewrite - and ONE GAME BINARY
 # instead of three. gta-aga / gta-rtg240 / gta-rtg480 were the same program
 # built with different screen sizes; the size is a setting in gtaprefs now, so
 # the archive carries `AmiGTA` and nothing else has to be chosen by icon.
-VER=v0.7.1
+VER=v0.7.2
 STAGE="$DIST/AmiGTA-$VER"
 
 # drvfs (the I: mount) sometimes reports EEXIST from `mkdir -p` on a directory
@@ -64,9 +74,9 @@ mkdir -p "$STAGE" 2>/dev/null || true
 # C: (tools/bin/cbuild.sh) $ROOT/build holds September's files; packaging from
 # there would ship a stale game. GTA_BUILD overrides, the C: build is the
 # default when it exists.
-BIN=${GTA_BUILD:-/mnt/c/temp/amiga_gta_build/build}
+BIN=${GTA_BUILD:-$M/c/temp/amiga_gta_build/build}
 [ -f "$BIN/AmiGTA" ] || BIN=$ROOT/build
-MOSBIN=${MOS_BUILD:-/mnt/c/temp/amiga_gta/mos-build}/AmiGTA_MorphOS
+MOSBIN=${MOS_BUILD:-$M/c/temp/amiga_gta/mos-build}/AmiGTA_MorphOS
 echo "package: binaries from $BIN"
 for b in AmiGTA gtaprefs; do
     [ -f "$BIN/$b" ] || { echo "package: missing $BIN/$b - run build.sh"; exit 1; }
@@ -85,7 +95,7 @@ cp "$ROOT/winuae/work-template/run" "$STAGE/run"
 #
 # The text lives in tools/bin/readme_gen.py so it can be written once and kept
 # out of the middle of a shell script.
-python3 "$ROOT/tools/bin/readme_gen.py" "$STAGE/README.txt"
+$PY "$ROOT/tools/bin/readme_gen.py" "$STAGE/README.txt"
 
 # THE TILE BAKER GOES IN. THE TILES DO NOT.
 #
@@ -132,7 +142,7 @@ fi
 # zero-length directory entries - so it carries a note, which also tells
 # whoever opens the drawer exactly which two files belong in it.
 mkdir -p "$STAGE/GTADATA"
-python3 "$ROOT/tools/bin/readme_gen.py" --datanote \
+$PY "$ROOT/tools/bin/readme_gen.py" --datanote \
     "$STAGE/GTADATA/_PUT_YOUR_GTA_FILES_HERE.txt"
 
 # --- archive ----------------------------------------------------------------

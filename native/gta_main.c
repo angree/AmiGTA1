@@ -604,15 +604,20 @@ static int  pager_ticks, pager_px, pager_secs, pager_led;
 static int  g_text_speed = 2, pager_frac;
 static char big_text[80];
 static int  big_ticks;
-/* THE CAR'S NAME as he gets in: the original's routine (the player takes a car) ->
- * the original's routine, which looks up english.fxt's "car%d" by the model
- * (car+0x22) and queues it as message kind 200 (the original's routine: 45 ticks, an
- * older name of the same kind is dropped first). the original's routine draws kind 200
- * as HUD sprite +2 centred at the top with the text centred three rows into
- * it. 45 of the original's ticks are 90 here (the countdown, the original's routine,
- * is taken to run once an original tick - inferred). */
-static char carname_text[64];
-static int  carname_ticks;
+/* THE MESSAGE QUEUE at the top middle of the screen - the original's routine queues,
+ * the original's routine counts down, the original's routine draws. Three slots, each a text and
+ * a KIND:
+ *   0   plain text, 45 ticks   - the crate's name (the original's routine)
+ *   1   plain text, 90 ticks
+ *   2   on HUD sprite +1, 45 ticks - the district he has come into
+ *   200 on HUD sprite +2, 45 ticks - the name of the car he got into
+ * The same text and kind again only restarts its clock; a new district or
+ * car name drops the old one first. The slots are drawn from the last to
+ * the first, stacked down from the top, each 2 px below the one above. The
+ * clocks run in original ticks here: 2 port ticks each (the countdown in
+ * the original's routine is taken to run once an original tick - inferred). */
+#define MSGQ_SLOTS 3
+static struct { char text[64]; int kind; int ticks; } msgq[MSGQ_SLOTS];
 
 /* The window in the pager device the text shows through, measured off the
  * sprite: the dark panel runs from x=9 to x=71 and y=7 to y=18 of the 80x30
@@ -865,7 +870,7 @@ static void script_arrow(void *ctx, int on, long wx, long wy)
  * one place, so there is nowhere for a fourth thing to be forgotten. */
 /* The version goes on the screen's title bar, where a tester can read it
  * without a log. Bump it here and nowhere else. */
-#define GTA_VERSION "v0.7.1"
+#define GTA_VERSION "v0.7.2"
 /* The native MorphOS build says so on its title bar; the 68k build is the
  * same program on AmigaOS, AROS and MorphOS's 68k emulation. */
 #ifdef __MORPHOS__
@@ -2661,9 +2666,95 @@ static void text_displays_tick(void)
         brief_ticks--;
     if (big_ticks > 0 && big_text[0])
         big_ticks--;
-    if (carname_ticks > 0)
-        carname_ticks--;
+    {
+        int k;
+        for (k = 0; k < MSGQ_SLOTS; k++)
+            if (msgq[k].ticks > 0)
+                msgq[k].ticks--;
+    }
 }
+
+static void msgq_drop(int kind)
+{
+    int k;
+    for (k = 0; k < MSGQ_SLOTS; k++)
+        if (msgq[k].ticks > 0 && msgq[k].kind == kind)
+            msgq[k].ticks = 0;
+}
+
+static void msgq_push(const char *text, int kind)
+{
+    int k, life = (kind == 1 ? 90 : 45) * 2;
+    if (!text || !text[0])
+        return;
+    for (k = 0; k < MSGQ_SLOTS; k++)
+        if (msgq[k].ticks > 0 && msgq[k].kind == kind
+            && strcmp(msgq[k].text, text) == 0) {
+            msgq[k].ticks = life;
+            return;
+        }
+    for (k = 0; k < MSGQ_SLOTS; k++)
+        if (msgq[k].ticks <= 0) {
+            strncpy(msgq[k].text, text, sizeof msgq[k].text - 1);
+            msgq[k].text[sizeof msgq[k].text - 1] = 0;
+            msgq[k].kind = kind;
+            msgq[k].ticks = life;
+            printf("gta: message - kind %d \"%s\"\n", kind, text);
+            fflush(stdout);
+            return;
+        }
+}
+
+/* The same through english.fxt: the key's text, or the key itself. */
+static void msgq_push_key(const char *key, int kind)
+{
+    const char *t = gta_text_get_name(&texts, key);
+    msgq_push(t ? t : key, kind);
+}
+
+/* THE DISTRICT HE IS IN - the original's routine: the first zone rectangle that holds
+ * his block (not the zone with byte 4 == 1 in Liberty City, nor 0xb in Vice
+ * City), named "<compass> <area>": the area from english.fxt's
+ * "%03darea%03d" (city, byte 4, the original's routine), the compass from where in
+ * the rectangle he is - thirds, or halves in one 7..12 blocks across, nothing
+ * along a side of 6 or less (the original's routine -> the table at 0x132c00, keys
+ * s n e w c se ne sw nw). -1 = none. */
+static int district_name(int bx, int by, char *out, int outn)
+{
+    static const unsigned char tab[16] = { 0, 1, 2, 5, 3, 6, 7, 3,
+                                           4, 8, 9, 4, 5, 1, 2, 5 };
+    static const char *const ckey[10] = { "", "s", "n", "e", "w", "c",
+                                          "se", "ne", "sw", "nw" };
+    int i, city = map.style_number;
+    for (i = 0; i < map.n_districts; i++) {
+        const gta_map_district *d = &map.districts[i];
+        int dx = bx - d->x, dy = by - d->y, row, col, code;
+        char key[16];
+        const char *area, *comp;
+        if (dx < 0 || dy < 0 || dx >= d->w || dy >= d->h)
+            continue;
+        if ((city == 1 && d->sample == 1) || (city == 3 && d->sample == 0xb))
+            continue;
+        if (d->h <= 6)            row = 0;
+        else if (d->h <= 12)      row = dy < d->h / 2 ? 2 : 1;
+        else                      row = dy < d->h / 3 ? 2 : (dy >= d->h * 2 / 3 ? 1 : 3);
+        if (d->w < 7)             col = 0;
+        else if (d->w <= 12)      col = dx < d->w / 2 ? 8 : 4;
+        else                      col = dx < d->w / 3 ? 8 : (dx < d->w * 2 / 3 ? 12 : 4);
+        code = tab[row + col];
+        snprintf(key, sizeof key, "%03darea%03d", city, d->sample);
+        area = gta_text_get_name(&texts, key);
+        if (!area) area = d->name;
+        comp = code ? gta_text_get_name(&texts, ckey[code]) : 0;
+        if (comp)
+            snprintf(out, outn, "%s %s", comp, area);
+        else
+            snprintf(out, outn, "%s", area);
+        return i * 256 + code;
+    }
+    return -1;
+}
+
 
 static void text_displays(unsigned char *chunky, int pitch)
 {
@@ -2706,20 +2797,34 @@ static void text_displays(unsigned char *chunky, int pitch)
          * text_displays_tick(), on the simulation clock) */
     }
 
-    /* THE CAR'S NAME, top middle on its plaque (see carname_text) */
-    if (carname_ticks > 0 && carname_text[0]) {
-        int sw = hud_icon >= 0 ? gta_hud_sprite_w(&tiles, hud_icon + 2) : 0;
-        int tw = have_pager ? gta_font_width(&pager_font, carname_text)
-                            : gta_hud_width(carname_text);
-        if (hud_icon >= 0)
-            gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H,
-                           px + (render_w() - sw) / 2, py, &tiles, hud_icon + 2);
-        if (have_pager)
-            gta_font_draw_shadow(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H,
-                                 px + (render_w() - tw) / 2, py + 3, carname_text);
-        else
-            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
-                         px + (render_w() - tw) / 2, py + 3, carname_text);
+    /* THE MESSAGE QUEUE, top middle (see msgq) */
+    {
+        int k, y = py;
+        for (k = MSGQ_SLOTS - 1; k >= 0; k--) {
+            const char *t = msgq[k].text;
+            int plaque = msgq[k].kind == 2 ? 1 : msgq[k].kind == 200 ? 2 : 0;
+            int tw, h, ty;
+            if (msgq[k].ticks <= 0 || !t[0])
+                continue;
+            tw = have_pager ? gta_font_width(&pager_font, t) : gta_hud_width(t);
+            h = have_pager ? pager_font.height : 6;
+            ty = y;
+            if (plaque && hud_icon >= 0) {
+                int sw = gta_hud_sprite_w(&tiles, hud_icon + plaque);
+                gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H,
+                               px + (render_w() - sw) / 2, y, &tiles,
+                               hud_icon + plaque);
+                ty = y + (plaque == 1 ? 2 : 3);
+                h = gta_hud_sprite_h(&tiles, hud_icon + plaque);
+            }
+            if (have_pager)
+                gta_font_draw_shadow(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                                     px + (render_w() - tw) / 2, ty, t);
+            else
+                gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                             px + (render_w() - tw) / 2, ty, t);
+            y += h + 2;
+        }
     }
 
     /* (a) THE BRIEF BOX, bottom left: the icon sits ON THE BOTTOM EDGE and
@@ -2880,7 +2985,9 @@ static void hud_score(unsigned char *chunky, int pitch)
     /* THE MULTIPLIER, under the score and right-aligned with it. It only
      * ever goes up - a job, or the crate - and it multiplies everything the
      * player earns, so it belongs beside the number it acts on. */
-    if (score.multiplier > 1) {
+    /* ...always, x1 included: the original's routine draws it with no test on the
+     * value (audit of v0.7.1 against the original) */
+    if (score.multiplier >= 1) {
         char m[8];
         char *q = m;
         *q++ = 'x';
@@ -2990,6 +3097,46 @@ static void hud_score(unsigned char *chunky, int pitch)
             gta_hud_text_big(chunky, pitch, SCREEN_W, SCREEN_H,
                              present_x() + (render_w() - bw) / 2,
                              top + present_h() / 2 - 12, t, 4);
+        /* AND A SECOND LINE UNDER IT that turns over every 40 frames:
+         * the level's target score, the missions passed against the
+         * target, the secrets found (the original's routine:1044-1085, the counter
+         * the original's table reloaded with 0x28). "of" for the '/' the pager
+         * font does not have. */
+        if (have_pager) {
+            static int pz_line, pz_left = 40;
+            char l2[64];
+            int k2, mp = 0, mt = 0, sf = 0, st = 0;
+            long ts = 0;
+            for (k2 = 0; k2 < script.n; k2++) {
+                const gta_decl *d = &script.d[k2];
+                if (d->type == GTA_DECL_MISSION_COUNTER) mp = d->a - d->counter;
+                else if (d->type == GTA_DECL_MISSION_TOTAL) mt = d->a;
+                else if (d->type == GTA_DECL_TARGET_SCORE) ts = d->a_long;
+                else if (d->type == GTA_DECL_SECRET_MISSION_COUNTER) {
+                    sf = d->a - d->counter;
+                    st = d->a;
+                }
+            }
+            if (pz_line == 0)
+                snprintf(l2, sizeof l2, "%s %ld",
+                         text_or("target_score", "Target Score :"), ts);
+            else if (pz_line == 1)
+                snprintf(l2, sizeof l2, "%s %d of %d",
+                         text_or("target_miss", "Target Missions :"), mp, mt);
+            else
+                snprintf(l2, sizeof l2, "%s %d of %d",
+                         text_or("secrets_found", "Secrets Found :"), sf, st);
+            bw = gta_font_width(&pager_font, l2);
+            gta_font_draw_shadow(&pager_font, chunky, pitch, SCREEN_W, SCREEN_H,
+                                 present_x() + (render_w() - bw) / 2,
+                                 top + present_h() / 2
+                                     + (have_big ? big_font.height : 24) / 2 + 4,
+                                 l2);
+            if (--pz_left < 1) {
+                pz_left = 40;
+                if (++pz_line > 2) pz_line = 0;
+            }
+        }
     }
 
     /* ESC ASKS FIRST (218): the game stands still under this card until Y or
@@ -3067,8 +3214,15 @@ static void hud_score(unsigned char *chunky, int pitch)
                                           + hud_weapon - 1) + 2;
         }
         if (player_armour > 0) {
+            char n2[8];
             gta_hud_sprite(chunky, pitch, SCREEN_W, SCREEN_H, x, y, &tiles,
                            hud_icon + HUD_ICON_ARMOUR + (ind_on ? 1 : 0));
+            /* ...with how many hits it has left beside it, as the
+             * weapon's rounds are (the original prints the count too) */
+            *gta_hud_int(n2, player_armour) = 0;
+            gta_hud_text(chunky, pitch, SCREEN_W, SCREEN_H,
+                         x + gta_hud_sprite_w(&tiles, hud_icon + HUD_ICON_ARMOUR)
+                           + 2, y + 6, n2);
             y += gta_hud_sprite_h(&tiles, hud_icon + HUD_ICON_ARMOUR) + 2;
         }
         if (jail_free) {
@@ -7270,6 +7424,32 @@ int main(void)
                         }
                     }
                 }
+
+                /* THE DAMAGED ENGINE - sound 0x35 over the engine note once
+                 * the car is past 50 damage, louder as it nears the
+                 * write-off: volume (damage-50)/50 (the original's routine:1707,
+                 * the research notes). Re-played on an effect channel
+                 * each time it runs out, as the skid is. */
+                if (veh.damage > 50 && veh.damage < GTA_CAR_WRECKED
+                    && 0x35 < sfx.count) {
+                    static unsigned long dmg_until;
+                    static int dmg_logged;
+                    unsigned long now_ = amiga_uclock_us();
+                    if ((long)(now_ - dmg_until) >= 0) {
+                        const gta_sfx_entry *e_ = &sfx.entry[0x35];
+                        long dhz_ = e_->rate ? e_->rate : 11025;
+                        int vol_ = 48 * (veh.damage - 50) / 50;
+                        gta_audio_play_hz(&sfx, 0x35, vol_ > 0 ? vol_ : 1, dhz_);
+                        dmg_until = now_ + e_->length * 1000UL
+                                           / (unsigned long)dhz_ * 1000UL;
+                        if (!dmg_logged) {
+                            dmg_logged = 1;
+                            printf("gta: damaged engine - damage %d, volume %d\n",
+                                   veh.damage, vol_);
+                            fflush(stdout);
+                        }
+                    }
+                }
             } else if (gta_audio_engine_playing()) {
                 gta_audio_engine_stop();
             }
@@ -8681,12 +8861,9 @@ int main(void)
                                 snprintf(k_, sizeof k_, "car%d",
                                          tiles.cars[enter_model].model_id);
                                 n_ = gta_text_get_name(&texts, k_);
-                                carname_text[0] = 0;
-                                if (n_) {
-                                    strncpy(carname_text, n_, sizeof carname_text - 1);
-                                    carname_text[sizeof carname_text - 1] = 0;
-                                    carname_ticks = 90;
-                                }
+                                msgq_drop(200);
+                                if (n_)
+                                    msgq_push(n_, 200);
                                 printf("gta: car name - %s \"%s\" (plaque %dx%d)\n",
                                        k_, n_ ? n_ : "(none)",
                                        hud_icon >= 0 ? gta_hud_sprite_w(&tiles, hud_icon + 2) : 0,
@@ -9749,6 +9926,33 @@ int main(void)
                         for (k = 1; k < GTA_WEAPON_COUNT; k++) ammo[k] = 0;
                         weapon = 0;
                         fire_held = 0;
+                        /* AND WHAT HE IS BOOKED FOR, in the brief box:
+                         * the original's routine writes [crimes] and then, for each
+                         * kind 2..9 with a count, its name and the count,
+                         * turns the last ", " into ".", and posts it as
+                         * kind 4 (the original's routine). The separator is
+                         * inferred - the format string is the libc's. */
+                        {
+                            static const char *const bk_[10] = { 0, 0,
+                                "crimeRTA", "crimeHAR", "crimeHIJ", "crimeCAR",
+                                "crimeGTA", "crimeSHO", "crimeMUR", "crimeBAN" };
+                            char rec_[160];
+                            int n_, any_ = 0;
+                            snprintf(rec_, sizeof rec_, "%s: ", text_or("crimes", "Crimes"));
+                            for (k = 2; k < 10 && k < GTA_CRIME_COUNT; k++) {
+                                if (!score.crimes[k]) continue;
+                                n_ = (int)strlen(rec_);
+                                snprintf(rec_ + n_, sizeof rec_ - n_, "%s %ld, ",
+                                         text_or(bk_[k], bk_[k]), score.crimes[k]);
+                                any_ = 1;
+                            }
+                            n_ = (int)strlen(rec_);
+                            if (any_ && n_ >= 2) { rec_[n_ - 2] = '.'; rec_[n_ - 1] = 0; }
+                            if (any_) {
+                                brief_show(4, rec_);
+                                printf("gta: bust record - %s\n", rec_);
+                            }
+                        }
                         printf("gta: BUSTED - multiplier %d, weapons gone,"
                                " crimes this life:", score.multiplier);
                         for (k = 0; k < GTA_CRIME_COUNT; k++)
@@ -9916,8 +10120,7 @@ int main(void)
                                             || player.anim == GTA_ANIM_RUN));
                 /* THE CAR HE IS SITTING IN, WRITTEN OFF. It burns for the
                  * same fuse the fleet's wrecks get and then comes apart in
-                 * five bursts; he is put out on the road first, since there
-                 * is no player health yet to take from him. */
+                 * five bursts; if he is still in it then, he dies (below). */
                 if (in_car && veh.damage >= GTA_CAR_WRECKED) {
                     if (veh.fuse == 0) {
                         veh.fuse = GTA_CAR_FUSE;
@@ -9949,8 +10152,14 @@ int main(void)
                             gta_traffic_leave_wreck(&traffic, veh.model,
                                                     wx, wy, wface,
                                                     player.layer, veh.remap);
-                        printf("gta: your car blew up at (%ld,%ld)\n",
-                               wx >> 16, wy >> 16);
+                        /* AND HE DIES IN IT. the original's routine: the car that
+                         * explodes sets its driver's health to 0 and puts
+                         * him in state 0x2d - whoever stayed in for the
+                         * fuse does not walk away. (He used to be put
+                         * out alive: there was no player health then.) */
+                        player_health = 0;
+                        printf("gta: your car blew up at (%ld,%ld) with you"
+                               " in it\n", wx >> 16, wy >> 16);
                         fflush(stdout);
                     }
                 }
@@ -10208,6 +10417,21 @@ int main(void)
                         printf("gta: picked up %s %d\n",
                                kind_ >= 0 && kind_ < 16 ? kind_name[kind_] : "?",
                                amount_);
+                        /* ...and its name at the top, kind 0 (the original's routine:
+                         * english.fxt keys from the table at 0x132f90 and
+                         * the strings at 0x13f7d4..0x13f80f) */
+                        {
+                            static const char *const pk_[16] = {
+                                0, "pistol", "machine-gun", "rocket", "flame",
+                                0, "speed+", "speed+", "speed+", "bribe",
+                                "armour", "multiplier+", "jail-free", "life+",
+                                0, "life+" };
+                            const char *key_ = kind_ >= 0 && kind_ < 16 ? pk_[kind_] : 0;
+                            if (kind_ >= 6 && kind_ <= 8 && in_car)
+                                key_ = "car-speed+";
+                            if (key_)
+                                msgq_push_key(key_, 0);
+                        }
                         /* WEAPONS.md: "Pickup sounds: weapons 2, other kinds
                          * 4 (even) / 3 (odd)" - the original's own rule, and
                          * the split is on the KIND, not on the crate. */
@@ -10319,7 +10543,15 @@ int main(void)
                             if (player_armour > 0) player_armour--;
                             else player_health -= 10;
                         }
-                        if (hc_ > 0 && in_car) veh.damage += 5 * hc_;
+                        /* each round on HIS car by the same rule as on the
+                         * fleet's: 5, 2 for the heavy bodies, and the
+                         * finisher past 75 (it was a flat 5) */
+                        if (hc_ > 0 && in_car) {
+                            int k2_;
+                            for (k2_ = 0; k2_ < hc_ && veh.damage < GTA_CAR_WRECKED; k2_++)
+                                veh.damage += gta_weapons_bullet_damage(
+                                    &tiles.cars[veh.model], veh.damage);
+                        }
                         if (bl_ > 0) player_health = 0;
                         if (bu_ > 0 && player_burning < 100) player_burning = 100;
                         if (player_burning > 0) { player_burning--; player_health--; }
@@ -10405,6 +10637,22 @@ int main(void)
                 ticks++;
                 sim_ticks++;
                 text_displays_tick();
+                /* THE DISTRICT - the original's routine asks every tick and a change
+                 * puts the new name up as kind 2 (the original's routine:166-183) */
+                {
+                    static int dist_last = -2;
+                    char dn_[64];
+                    long dx_ = in_car ? veh.ox : player.x;
+                    long dy_ = in_car ? veh.oy : player.y;
+                    int d_ = district_name((int)(dx_ >> 21), (int)(dy_ >> 21),
+                                           dn_, sizeof dn_);
+                    if (d_ != dist_last) {
+                        dist_last = d_;
+                        msgq_drop(2);
+                        if (d_ >= 0)
+                            msgq_push(dn_, 2);
+                    }
+                }
 
                 /* AND SAY WHAT THE TRAFFIC IS DOING, every five seconds.
                  *

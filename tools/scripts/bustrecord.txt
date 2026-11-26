@@ -1,0 +1,12 @@
+# bustrecord.txt - shoot a parked car beside a police car and wait to be arrested.
+# Pass: "gta: bust record - Crimes: ..." and the line in the brief box.
+wait 60
+weapon 1 20
+copcar 0 -70 0
+park 0 -30 0 0
+face 0
+wait 10
+fire 12
+wait 900
+film 1
+wait 20

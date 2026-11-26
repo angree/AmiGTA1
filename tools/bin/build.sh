@@ -26,20 +26,29 @@
 # itself, giving a Line-F exception and Guru 8000000B.
 set -e
 
-# /mnt/i drops out of WSL regularly.
-ls /mnt/i/GITHUB >/dev/null 2>&1 || sudo -n mount -t drvfs I: /mnt/i
+# /mnt/i drops out of WSL regularly. (Under Git Bash on Windows there is
+# no /mnt and nothing to mount - see wbuild.sh.)
+if [ -d /mnt/c ]; then
+    ls /mnt/i/GITHUB >/dev/null 2>&1 || sudo -n mount -t drvfs I: /mnt/i
+fi
 
 # THE REPOSITORY ROOT. This script lives in <root>/tools/bin, so it can
 # find its own tree; the fallback is the author's own path, so the
 # established way of calling this by absolute path still works.
-ROOT=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)
+# `pwd -W` under Git Bash gives C:/... - the Windows-built gcc needs that
+# form, not /c/...
+ROOT=$(cd "$(dirname "$0")/../.." 2>/dev/null && { pwd -W 2>/dev/null || pwd; })
 [ -d "$ROOT/native" ] || ROOT=/mnt/i/GITHUB/Amiga_GTA
 NATIVE="$ROOT/native"
 OBJ="$ROOT/build/amiga/obj"
 OUT="$ROOT/build"
-NDK=/opt/amiga/m68k-amigaos/ndk-include
+# THE TOOLCHAIN: /opt/amiga inside WSL; AMIGA_PREFIX=/c/amiga-gcc for the
+# Windows build of the same bebbo gcc 6.5.0b (wbuild.sh), which works when
+# WSL itself does not.
+PFX=${AMIGA_PREFIX:-/opt/amiga}
+NDK=${AMIGA_NDK:-$PFX/m68k-amigaos/ndk-include}
 
-export PATH=/opt/amiga/bin:$PATH
+export PATH=$PFX/bin:$PATH
 
 mkdir -p "$OBJ" "$OUT"
 

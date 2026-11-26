@@ -18,12 +18,18 @@
 # there once came out as `d?????????` in WSL and unreachable from Windows.
 set -e
 
-ls /mnt/i/GITHUB >/dev/null 2>&1 || sudo -n mount -t drvfs I: /mnt/i
+# WSL, or Git Bash on Windows (no /mnt there - 2026-11-26, WSL hung)
+if [ -d /mnt/c ]; then
+    ls /mnt/i/GITHUB >/dev/null 2>&1 || sudo -n mount -t drvfs I: /mnt/i
+    M=/mnt
+else
+    M=
+fi
 
 ROOT=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)
-[ -d "$ROOT/native" ] || ROOT=/mnt/i/GITHUB/Amiga_GTA
+[ -d "$ROOT/native" ] || ROOT=$M/i/GITHUB/Amiga_GTA
 
-DEST=${1:-/mnt/c/temp/amiga_gta/github/AmiGTA1}
+DEST=${1:-$M/c/temp/amiga_gta/github/AmiGTA1}
 
 echo "source: $ROOT"
 echo "dest:   $DEST"
@@ -65,6 +71,7 @@ for f in "$ROOT"/tools/scripts/*.txt; do copy "tools/scripts/$(basename "$f")"; 
 # --- emulator harness ------------------------------------------------------
 for f in "$ROOT"/winuae/*.uae; do copy "winuae/$(basename "$f")"; done
 for f in "$ROOT"/winuae/harness/*.ps1; do copy "winuae/harness/$(basename "$f")"; done
+for f in "$ROOT"/winuae/harness/*.py; do copy "winuae/harness/$(basename "$f")"; done
 for f in "$ROOT"/winuae/work-template/*; do
     copy "winuae/work-template/$(basename "$f")"
 done

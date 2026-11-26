@@ -1,0 +1,24 @@
+# v072.txt - the v0.7.2 additions in one run.
+# Pass, in gta.log:
+#   'message - kind 2 "<compass> <area>"' at the start (the district),
+#   'message - kind 0 "Pistol"' after the crate,
+#   'message - kind 200' on getting in,
+#   'damaged engine - damage 60' after the dent,
+#   'with you in it' when the wreck blows with him inside,
+# and the plaques on the dumped frames.
+wait 60
+film 1
+crate 0 -6 1 20
+wait 30
+film 1
+park 0 0 -26 0
+enter
+wait 85
+film 1
+wait 20
+damage 60
+wait 40
+damage 45
+wait 400
+film 1
+wait 20

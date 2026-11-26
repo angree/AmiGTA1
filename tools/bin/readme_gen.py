@@ -72,7 +72,7 @@ your own, exactly as with OpenXcom or OpenTTD.
 You can delete this note.
 """
 
-TEXT = """AmiGTA v0.7.1
+TEXT = """AmiGTA v0.7.2
 A native Amiga port of Grand Theft Auto (1997) - AmigaOS 3.x and AROS on
 68k, and MorphOS (PowerPC)
 
@@ -80,14 +80,13 @@ A native Amiga port of Grand Theft Auto (1997) - AmigaOS 3.x and AROS on
 WHICH ARCHIVE
 ===========================================================================
 
-  AmiGTA-v0.7.1-68k      AmigaOS 3.1 and later, and AROS 68k. AmiGTA is a
+  AmiGTA-v0.7.2-68k      AmigaOS 3.1 and later, and AROS 68k. AmiGTA is a
                          68020 program; the same file also runs under
                          MorphOS's 68k emulation.
 
-  AmiGTA-v0.7.1-MorphOS  MorphOS on PowerPC. AmiGTA is a native PPC build
-                         (its title bar says "AmiGTA PPC"); gtaprefs,
-                         gtabake and gtaiff are the 68k tools, which
-                         MorphOS runs as they are.
+  There is no native MorphOS PowerPC archive for v0.7.2 - it will follow.
+  On MorphOS use the 68k archive (tested there), or keep the v0.7.1
+  PowerPC build.
 
 Everything below is the same for both.
 
@@ -376,6 +375,29 @@ can edit by hand. backend.txt still works and still wins if you have one;
 gtaprefs keeps it in step with what it saves, so the two cannot disagree.
 
 ===========================================================================
+NEW IN v0.7.2
+===========================================================================
+
+  MESSAGES AT THE TOP OF THE SCREEN, as in the original: the name of the
+  district you drive into ("North Tellberg"), the name of what you just
+  picked up ("Machine Gun", "Extra Life"), and the car's name.
+
+  A car that blows up with you still in it kills you. You used to step out
+  of it alive.
+
+  PAUSE shows a second line that turns over: the level's target score, the
+  jobs passed, the secrets found.
+
+  The multiplier is always shown, x1 too, and the armour shows how many hits
+  it has left.
+
+  A damaged car sounds damaged: past half its damage the engine rattles,
+  louder as it gets closer to a write-off. Police bullets hurt your car by
+  the same rule as everyone else's, so a bus or a tanker lasts longer.
+
+  BUSTED: what you are booked for is listed in the message box.
+
+===========================================================================
 NEW IN v0.7.1
 ===========================================================================
 
@@ -617,7 +639,7 @@ than the WAVs they came from, but they are still roughly 1.3 MB a
 minute. You do not have to convert all of them.
 
 ===========================================================================
-WHAT IS NOT IN v0.7.1
+WHAT IS NOT IN v0.7.2
 ===========================================================================
 
   * Not every job has been played through - the first of each level

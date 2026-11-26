@@ -168,6 +168,7 @@ int gta_map_load(const char *path, gta_map *m)
                     m->districts[m->n_districts].y = rec[1];
                     m->districts[m->n_districts].w = rec[2];
                     m->districts[m->n_districts].h = rec[3];
+                    m->districts[m->n_districts].sample = rec[4];
                     memcpy(m->districts[m->n_districts].name, rec + 5, 30);
                     m->districts[m->n_districts].name[30] = 0;
                     m->n_districts++;
